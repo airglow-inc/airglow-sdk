@@ -1,0 +1,74 @@
+@import "./tokens.css";
+@import "tailwindcss";
+@source "./components";
+
+@theme {
+  --color-stone-50: var(--gray-050);
+  --color-stone-100: var(--gray-100);
+  --color-stone-200: var(--gray-200);
+  --color-stone-300: var(--gray-300);
+  --color-stone-400: var(--gray-400);
+  --color-stone-500: var(--gray-500);
+  --color-stone-600: var(--gray-600);
+  --color-stone-700: var(--gray-700);
+  --color-stone-800: var(--gray-800);
+  --color-stone-900: var(--gray-950);
+  --color-stone-950: var(--gray-950);
+  --color-white: var(--gray-000);
+
+  --color-green-100: #dcfce7;
+  --color-green-700: var(--olive);
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-200: #a7f3d0;
+  --color-emerald-400: var(--olive);
+  --color-emerald-500: var(--olive);
+  --color-emerald-600: var(--olive);
+  --color-emerald-700: #15803d;
+
+  --color-blue-50: #eff6ff;
+  --color-blue-500: var(--sky);
+  --color-blue-600: var(--sky);
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-600: var(--error);
+  --color-red-700: var(--error);
+  --color-rose-500: var(--error);
+  --color-rose-600: var(--error);
+
+  --font-family-sans: var(--font-sans);
+  --font-family-mono: var(--font-mono);
+
+  /* Typography scale → Tailwind text-* utilities */
+  --font-size-xs: var(--text-caption);          /* 13px */
+  --font-size-sm: var(--text-small);            /* 14px */
+  --font-size-base: var(--text-body-3);         /* 16px */
+  --font-size-lg: var(--text-body-2);           /* 18px */
+  --font-size-xl: var(--text-body-1);           /* 19–20px */
+  --font-size-2xl: var(--text-h5);              /* 20–25px */
+  --font-size-3xl: var(--text-h4);              /* 23–32px */
+  --font-size-4xl: var(--text-h3);              /* 28–36px */
+  --font-size-5xl: var(--text-h2);              /* 30–44px */
+
+  --radius-xl: var(--radius-md);
+  --radius-lg: var(--radius-md);
+  --radius-md: var(--radius-sm);
+}
+
+/* Thin scrollbar — use class "thin-scroll" on any overflow container */
+.thin-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.thin-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.thin-scroll::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 2px;
+}
+.thin-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400);
+}
+.thin-scroll::-webkit-scrollbar-thumb:active {
+  background: var(--gray-600);
+}

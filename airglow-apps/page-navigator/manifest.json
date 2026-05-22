@@ -1,0 +1,18 @@
+{
+  "id": "page-navigator",
+  "name": "Page Navigator",
+  "version": "0.1.0",
+  "description": "Floating How-To chat that explains how to do things on the current page",
+  "tags": ["ai", "productivity"],
+  "secrets": {
+    "ANTHROPIC_API_KEY": { "label": "Anthropic API Key" }
+  },
+  "userscripts": [
+    {
+      "file": "userscripts/main.ts",
+      "matches": ["<all_urls>"],
+      "runAt": "document_idle"
+    }
+  ],
+  "host_permissions": ["<all_urls>"]
+}

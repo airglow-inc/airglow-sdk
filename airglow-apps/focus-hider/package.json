@@ -1,0 +1,7 @@
+{
+  "name": "focus-hider",
+  "private": true,
+  "dependencies": {
+    "lucide-react": "^0.460.0"
+  }
+}

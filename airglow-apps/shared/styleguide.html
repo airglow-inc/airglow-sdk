@@ -1,0 +1,626 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Airglow Style Guide</title>
+  <link rel="stylesheet" href="theme/tokens.css">
+  <style>
+    body {
+      padding: var(--space-8);
+      max-width: var(--max-width-wide);
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: var(--text-h3);
+      font-weight: var(--font-bold);
+      color: var(--fg-primary);
+      margin: 0 0 var(--space-2);
+      letter-spacing: var(--tracking-tight);
+    }
+
+    h2 {
+      font-size: var(--text-h5);
+      font-weight: var(--font-semibold);
+      color: var(--fg-primary);
+      margin: var(--space-12) 0 var(--space-4);
+      padding-bottom: var(--space-2);
+      border-bottom: 1px solid var(--border-tertiary);
+    }
+
+    h3 {
+      font-size: var(--text-body-2);
+      font-weight: var(--font-medium);
+      color: var(--fg-secondary);
+      margin: var(--space-6) 0 var(--space-3);
+    }
+
+    .subtitle {
+      font-size: var(--text-body-2);
+      color: var(--fg-tertiary);
+      margin: 0 0 var(--space-8);
+    }
+
+    /* Swatch grid */
+    .swatches {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+      gap: var(--space-3);
+    }
+
+    .swatch {
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-1);
+    }
+
+    .swatch-color {
+      width: 100%;
+      aspect-ratio: 1;
+      border-radius: var(--radius-md);
+      box-shadow: var(--shadow-card);
+    }
+
+    .swatch-label {
+      font-size: var(--text-caption);
+      font-family: var(--font-mono);
+      color: var(--fg-secondary);
+      word-break: break-all;
+    }
+
+    .swatch-hex {
+      font-size: var(--text-micro);
+      font-family: var(--font-mono);
+      color: var(--fg-tertiary);
+    }
+
+    /* Depth demo */
+    .depth-demo {
+      background: var(--bg-primary);
+      border-radius: var(--radius-lg);
+      padding: var(--space-6);
+      box-shadow: var(--shadow-card);
+    }
+
+    .depth-level {
+      padding: var(--space-4);
+      border-radius: var(--radius-md);
+      margin-top: var(--space-3);
+    }
+
+    .depth-label {
+      font-size: var(--text-caption);
+      font-family: var(--font-mono);
+      color: var(--fg-tertiary);
+      margin-bottom: var(--space-2);
+    }
+
+    /* Text colors */
+    .text-demo {
+      padding: var(--space-4);
+      border-radius: var(--radius-md);
+      background: var(--bg-white);
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+      gap: var(--space-3);
+    }
+
+    .text-demo-row {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-4);
+    }
+
+    .text-demo-row .mono {
+      font-family: var(--font-mono);
+      font-size: var(--text-caption);
+      color: var(--fg-tertiary);
+      min-width: 140px;
+      flex-shrink: 0;
+    }
+
+    /* Typography scale */
+    .type-row {
+      display: flex;
+      align-items: baseline;
+      gap: var(--space-4);
+      padding: var(--space-3) 0;
+      border-bottom: 1px solid var(--border-tertiary);
+    }
+
+    .type-meta {
+      min-width: 100px;
+      flex-shrink: 0;
+      font-family: var(--font-mono);
+      font-size: var(--text-caption);
+      color: var(--fg-tertiary);
+    }
+
+    /* Component row */
+    .component-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-4);
+      align-items: flex-start;
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: var(--space-2) var(--space-6);
+      font-size: var(--text-body-3);
+      font-weight: var(--font-medium);
+      font-family: var(--font-sans);
+      border-radius: var(--radius-md);
+      border: none;
+      cursor: pointer;
+      transition: all var(--duration-normal) var(--ease-out);
+    }
+
+    .btn-primary {
+      background: var(--clay);
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--clay-interactive);
+    }
+
+    .btn-secondary {
+      background: var(--bg-secondary);
+      color: var(--fg-secondary);
+      border: 1px solid var(--border-secondary);
+    }
+
+    .btn-secondary:hover {
+      background: var(--bg-tertiary);
+    }
+
+    /* Card */
+    .demo-card {
+      background: var(--bg-white);
+      border-radius: var(--radius-md);
+      padding: var(--space-4);
+      box-shadow: var(--shadow-card);
+      max-width: 320px;
+    }
+
+    .demo-card h4 {
+      font-size: var(--text-body-3);
+      font-weight: var(--font-semibold);
+      margin: 0 0 var(--space-2);
+      color: var(--fg-primary);
+    }
+
+    .demo-card p {
+      font-size: var(--text-body-3);
+      color: var(--fg-secondary);
+      margin: 0;
+      line-height: var(--leading-relaxed);
+    }
+
+    /* Input */
+    .demo-input {
+      padding: var(--space-2) var(--space-3);
+      font-size: var(--text-body-3);
+      font-family: var(--font-sans);
+      background: var(--bg-white);
+      border: 1px solid var(--border-secondary);
+      border-radius: var(--radius-sm);
+      color: var(--fg-primary);
+      outline: none;
+      transition: border-color var(--duration-normal) var(--ease-out);
+      width: 240px;
+    }
+
+    .demo-input:focus {
+      border-color: var(--clay);
+    }
+
+    .demo-input::placeholder {
+      color: var(--fg-tertiary);
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: var(--space-1) var(--space-3);
+      font-size: var(--text-small);
+      font-weight: var(--font-medium);
+      border-radius: var(--radius-full);
+    }
+
+    .badge-clay {
+      background: color-mix(in srgb, var(--clay) 15%, transparent);
+      color: var(--clay);
+    }
+
+    .badge-olive {
+      background: color-mix(in srgb, var(--olive) 15%, transparent);
+      color: var(--olive);
+    }
+
+    .badge-sky {
+      background: color-mix(in srgb, var(--sky) 15%, transparent);
+      color: var(--sky);
+    }
+
+    .badge-error {
+      background: color-mix(in srgb, var(--error) 15%, transparent);
+      color: var(--error);
+    }
+
+    /* Toggle */
+    .toggle {
+      width: 44px;
+      height: 24px;
+      border-radius: var(--radius-full);
+      border: none;
+      cursor: pointer;
+      position: relative;
+      transition: background var(--duration-normal) var(--ease-out);
+      padding: 0;
+    }
+
+    .toggle::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: white;
+      transition: transform var(--duration-normal) var(--ease-out);
+    }
+
+    .toggle-on {
+      background: var(--clay);
+    }
+
+    .toggle-on::after {
+      transform: translateX(20px);
+    }
+
+    .toggle-off {
+      background: var(--border-primary);
+    }
+
+    .toggle-label {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--text-body-3);
+      color: var(--fg-secondary);
+    }
+
+    /* Border & shadow demos */
+    .border-demos {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-4);
+    }
+
+    .border-box {
+      width: 160px;
+      height: 64px;
+      border-radius: var(--radius-md);
+      background: var(--bg-white);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: var(--text-caption);
+      color: var(--fg-tertiary);
+    }
+
+    .shadow-box {
+      width: 160px;
+      height: 80px;
+      border-radius: var(--radius-md);
+      background: var(--bg-white);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: var(--text-caption);
+      color: var(--fg-tertiary);
+    }
+
+    /* Radius demos */
+    .radius-demos {
+      display: flex;
+      flex-wrap: wrap;
+      gap: var(--space-4);
+      align-items: flex-end;
+    }
+
+    .radius-box {
+      width: 80px;
+      height: 80px;
+      background: var(--bg-tertiary);
+      border: 1px solid var(--border-secondary);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-1);
+    }
+
+    .radius-box .label {
+      font-family: var(--font-mono);
+      font-size: var(--text-micro);
+      color: var(--fg-tertiary);
+    }
+
+    .radius-box .value {
+      font-family: var(--font-mono);
+      font-size: var(--text-micro);
+      color: var(--fg-secondary);
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Airglow Style Guide</h1>
+  <p class="subtitle">Design tokens and component reference</p>
+
+  <!-- ═══════ COLORS: SURFACES ═══════ -->
+  <h2>Surface Colors</h2>
+  <div class="swatches" id="surface-swatches">
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--bg-primary)"></div>
+      <span class="swatch-label">--bg-primary</span>
+      <span class="swatch-hex" data-var="--bg-primary"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--bg-secondary)"></div>
+      <span class="swatch-label">--bg-secondary</span>
+      <span class="swatch-hex" data-var="--bg-secondary"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--bg-tertiary)"></div>
+      <span class="swatch-label">--bg-tertiary</span>
+      <span class="swatch-hex" data-var="--bg-tertiary"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--bg-white)"></div>
+      <span class="swatch-label">--bg-white</span>
+      <span class="swatch-hex" data-var="--bg-white"></span>
+    </div>
+  </div>
+
+  <!-- ═══════ COLORS: ACCENTS ═══════ -->
+  <h2>Accent Colors</h2>
+  <div class="swatches" id="accent-swatches">
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--clay)"></div>
+      <span class="swatch-label">--clay</span>
+      <span class="swatch-hex" data-var="--clay"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--sky)"></div>
+      <span class="swatch-label">--sky</span>
+      <span class="swatch-hex" data-var="--sky"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--olive)"></div>
+      <span class="swatch-label">--olive</span>
+      <span class="swatch-hex" data-var="--olive"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--error)"></div>
+      <span class="swatch-label">--error</span>
+      <span class="swatch-hex" data-var="--error"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--plum)"></div>
+      <span class="swatch-label">--plum</span>
+      <span class="swatch-hex" data-var="--plum"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--fig)"></div>
+      <span class="swatch-label">--fig</span>
+      <span class="swatch-hex" data-var="--fig"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--coral)"></div>
+      <span class="swatch-label">--coral</span>
+      <span class="swatch-hex" data-var="--coral"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--mineral)"></div>
+      <span class="swatch-label">--mineral</span>
+      <span class="swatch-hex" data-var="--mineral"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--peach)"></div>
+      <span class="swatch-label">--peach</span>
+      <span class="swatch-hex" data-var="--peach"></span>
+    </div>
+    <div class="swatch">
+      <div class="swatch-color" style="background: var(--oat)"></div>
+      <span class="swatch-label">--oat</span>
+      <span class="swatch-hex" data-var="--oat"></span>
+    </div>
+  </div>
+
+  <!-- ═══════ DEPTH HIERARCHY ═══════ -->
+  <h2>Depth Hierarchy</h2>
+  <p style="font-size: var(--text-body-3); color: var(--fg-secondary); margin-bottom: var(--space-4);">
+    Each nested element uses a background one step deeper than its container.
+  </p>
+  <div class="depth-demo" style="background: var(--bg-primary);">
+    <div class="depth-label">Page — --bg-primary</div>
+    <div class="depth-level" style="background: var(--bg-white); box-shadow: var(--shadow-card);">
+      <div class="depth-label">Card — --bg-white</div>
+      <div class="depth-level" style="background: var(--bg-secondary);">
+        <div class="depth-label">Nested section — --bg-secondary</div>
+        <div style="margin-top: var(--space-3); display: flex; gap: var(--space-3); align-items: center;">
+          <button class="btn btn-primary">Primary Action</button>
+          <div style="background: var(--bg-tertiary); padding: var(--space-2) var(--space-3); border-radius: var(--radius-sm);">
+            <span class="depth-label" style="margin: 0;">Element — --bg-tertiary</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════ TEXT COLORS ═══════ -->
+  <h2>Text Colors</h2>
+  <div class="text-demo">
+    <div class="text-demo-row">
+      <span class="mono">--fg-primary</span>
+      <span style="color: var(--fg-primary); font-size: var(--text-body-3);">Primary text for headings and emphasis</span>
+    </div>
+    <div class="text-demo-row">
+      <span class="mono">--fg-secondary</span>
+      <span style="color: var(--fg-secondary); font-size: var(--text-body-3);">Secondary text for body content</span>
+    </div>
+    <div class="text-demo-row">
+      <span class="mono">--fg-tertiary</span>
+      <span style="color: var(--fg-tertiary); font-size: var(--text-body-3);">Tertiary text for captions and metadata</span>
+    </div>
+  </div>
+
+  <!-- ═══════ TYPOGRAPHY SCALE ═══════ -->
+  <h2>Typography Scale</h2>
+  <div>
+    <div class="type-row">
+      <span class="type-meta">text-3xl<br>23–32px</span>
+      <span style="font-size: var(--text-h4); font-weight: var(--font-bold); color: var(--fg-primary);">Page title</span>
+    </div>
+    <div class="type-row">
+      <span class="type-meta">text-2xl<br>20–25px</span>
+      <span style="font-size: var(--text-h5); font-weight: var(--font-semibold); color: var(--fg-primary);">Brand / app name</span>
+    </div>
+    <div class="type-row">
+      <span class="type-meta">text-lg<br>18px</span>
+      <span style="font-size: var(--text-body-2); color: var(--fg-primary);">Large body, section intros</span>
+    </div>
+    <div class="type-row">
+      <span class="type-meta">text-base<br>16px</span>
+      <span style="font-size: var(--text-body-3); color: var(--fg-primary);">Body text, card labels, section headers</span>
+    </div>
+    <div class="type-row">
+      <span class="type-meta">text-sm<br>14px</span>
+      <span style="font-size: var(--text-small); color: var(--fg-secondary);">Secondary text, table cells, nav items</span>
+    </div>
+    <div class="type-row">
+      <span class="type-meta">text-xs<br>13px</span>
+      <span style="font-size: var(--text-caption); color: var(--fg-tertiary);">Captions, timestamps, badges</span>
+    </div>
+  </div>
+
+  <!-- ═══════ COMPONENTS ═══════ -->
+  <h2>Components</h2>
+
+  <h3>Buttons</h3>
+  <div class="component-row">
+    <button class="btn btn-primary">Primary Button</button>
+    <button class="btn btn-secondary">Secondary Button</button>
+  </div>
+
+  <h3>Card</h3>
+  <div class="demo-card">
+    <h4>Card Title</h4>
+    <p>Body text inside a card using shadow-card for the combined border and shadow effect.</p>
+  </div>
+
+  <h3>Input</h3>
+  <input class="demo-input" type="text" placeholder="Placeholder text...">
+
+  <h3>Badges</h3>
+  <div class="component-row">
+    <span class="badge badge-clay">Clay</span>
+    <span class="badge badge-olive">Success</span>
+    <span class="badge badge-sky">Info</span>
+    <span class="badge badge-error">Error</span>
+  </div>
+
+  <h3>Toggle</h3>
+  <div class="component-row">
+    <div class="toggle-label">
+      <button class="toggle toggle-on" onclick="this.classList.toggle('toggle-on');this.classList.toggle('toggle-off')"></button>
+      Enabled
+    </div>
+    <div class="toggle-label">
+      <button class="toggle toggle-off" onclick="this.classList.toggle('toggle-on');this.classList.toggle('toggle-off')"></button>
+      Disabled
+    </div>
+  </div>
+
+  <!-- ═══════ BORDERS & SHADOWS ═══════ -->
+  <h2>Borders &amp; Shadows</h2>
+
+  <h3>Borders</h3>
+  <div class="border-demos">
+    <div class="border-box" style="border: 1px solid var(--border-primary);">--border-primary</div>
+    <div class="border-box" style="border: 1px solid var(--border-secondary);">--border-secondary</div>
+    <div class="border-box" style="border: 1px solid var(--border-tertiary);">--border-tertiary</div>
+  </div>
+
+  <h3>Shadows</h3>
+  <div class="border-demos">
+    <div class="shadow-box" style="box-shadow: var(--shadow-sm);">--shadow-sm</div>
+    <div class="shadow-box" style="box-shadow: var(--shadow-md);">--shadow-md</div>
+    <div class="shadow-box" style="box-shadow: var(--shadow-lg);">--shadow-lg</div>
+    <div class="shadow-box" style="box-shadow: var(--shadow-card);">--shadow-card</div>
+  </div>
+
+  <!-- ═══════ SPACING & RADIUS ═══════ -->
+  <h2>Spacing &amp; Radius</h2>
+  <div class="radius-demos">
+    <div class="radius-box" style="border-radius: var(--radius-xs);">
+      <span class="label">xs</span>
+      <span class="value">4px</span>
+    </div>
+    <div class="radius-box" style="border-radius: var(--radius-sm);">
+      <span class="label">sm</span>
+      <span class="value">8px</span>
+    </div>
+    <div class="radius-box" style="border-radius: var(--radius-md);">
+      <span class="label">md</span>
+      <span class="value">12px</span>
+    </div>
+    <div class="radius-box" style="border-radius: var(--radius-lg);">
+      <span class="label">lg</span>
+      <span class="value">16px</span>
+    </div>
+    <div class="radius-box" style="border-radius: var(--radius-full); width: 80px; height: 80px;">
+      <span class="label">full</span>
+      <span class="value">pill</span>
+    </div>
+  </div>
+
+  <!-- ═══════ HEX VALUE RESOLVER ═══════ -->
+  <script>
+    function rgbToHex(rgb) {
+      if (!rgb || rgb === 'transparent') return 'transparent';
+      const match = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
+      if (!match) return rgb;
+      return '#' + [match[1], match[2], match[3]]
+        .map(x => parseInt(x).toString(16).padStart(2, '0'))
+        .join('');
+    }
+
+    document.querySelectorAll('[data-var]').forEach(el => {
+      const varName = el.dataset.var;
+      const temp = document.createElement('div');
+      temp.style.background = `var(${varName})`;
+      temp.style.position = 'absolute';
+      temp.style.visibility = 'hidden';
+      document.body.appendChild(temp);
+      const computed = getComputedStyle(temp).backgroundColor;
+      document.body.removeChild(temp);
+      el.textContent = rgbToHex(computed);
+    });
+  </script>
+
+</body>
+</html>

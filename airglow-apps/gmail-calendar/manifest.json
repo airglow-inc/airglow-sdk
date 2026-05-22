@@ -1,0 +1,16 @@
+{
+  "id": "gmail-calendar",
+  "name": "Gmail Calendar",
+  "version": "0.1.0",
+  "description": "Reads email conversations and uses AI to pre-fill Google Calendar events",
+  "tags": ["gmail", "calendar", "meeting", "sonnet"],
+  "host_permissions": ["*://*.google.com/*"],
+  "userscripts": [
+    { "file": "userscripts/gmail.ts", "matches": ["*://mail.google.com/*"] },
+    { "file": "userscripts/calendar-prefill.ts", "matches": ["*://calendar.google.com/*/r/create*"] }
+  ],
+  "secrets": { },
+  "server_env": {
+    "COMPOSIO_API_KEY": { "label": "Composio API Key" }
+  }
+}
