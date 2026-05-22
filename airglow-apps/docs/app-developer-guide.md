@@ -149,12 +149,12 @@ export default async function(body: { titles: string[] }) {
 Two scopes, distinguished by the `CLIENT_` prefix in `.env`.
 
 ```bash
-# <workspace>/.env — workspace-wide
+# airglow-apps/.env — workspace-wide
 CLIENT_ANTHROPIC_API_KEY=sk-ant-...       # browser
 COMPOSIO_API_KEY=ak_...                    # server
 GOOGLE_CLIENT_SECRET=GOCSPX-...            # server
 
-# <workspace>/hn-tagger/.env — app-specific, overrides workspace
+# airglow-apps/<app>/.env — app-specific, overrides workspace
 CLIENT_NOTION_PAGE_ID=abc123
 ```
 

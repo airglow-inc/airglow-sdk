@@ -39,8 +39,7 @@ Or open the dashboard UI: `chrome-extension://<EXTENSION_ID>/dashboard.html?page
 **Dev-server-side** (bundle errors, RPC failures, startup) — mirrored to `.airglow/dev.log` in the workspace, truncated each run.
 
 ```bash
-cat .airglow/dev.log                                        # whole session
-tail -f .airglow/dev.log                                    # follow
+tail -n 100 .airglow/dev.log                                # last 100 lines
 ```
 
 ## Hitting server endpoints with curl

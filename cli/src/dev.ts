@@ -158,26 +158,40 @@ function loadEnvFiles(paths: string[]): void {
 interface AppManifest {
   id: string;
   name: string;
+  secrets?: Record<string, { label?: string } | true>;
   server_env?: Record<string, { label?: string } | true>;
   [key: string]: any;
 }
 
-// Check declared server_env keys against workspace + per-app .env files.
-// Returns a list of "[app-id] KEY (label)" strings for missing keys.
-function findMissingServerEnv(appsDir: string, manifests: AppManifest[]): string[] {
+// Check declared env keys (server_env + CLIENT_-prefixed secrets) against
+// workspace + per-app .env files. Client secrets may also be set via the
+// extension's Secrets UI; the CLI can't see that, so a warning here means
+// "not in .env" — still useful at dev startup.
+function findMissingEnv(appsDir: string, manifests: AppManifest[]): { lines: string[]; appsWithMissing: Set<string> } {
   const workspaceEnv = parseEnvFile(join(appsDir, '.env'));
-  const missing: string[] = [];
+  const lines: string[] = [];
+  const appsWithMissing = new Set<string>();
   for (const m of manifests) {
-    if (!m.server_env) continue;
     const appDir = appDirCache.get(m.id);
     const appEnv = appDir ? parseEnvFile(join(appDir, '.env')) : {};
-    for (const [key, decl] of Object.entries(m.server_env)) {
-      if (key in workspaceEnv || key in appEnv || key in process.env) continue;
+    const appLines: string[] = [];
+    const check = (envKey: string, decl: { label?: string } | true | undefined) => {
+      if (envKey in workspaceEnv || envKey in appEnv || envKey in process.env) return;
       const label = decl && typeof decl === 'object' && decl.label ? ` — ${decl.label}` : '';
-      missing.push(`    ${m.id}: ${key}${label}`);
+      appLines.push(`      ${envKey}${label}`);
+    };
+    if (m.secrets) {
+      for (const [key, decl] of Object.entries(m.secrets)) check(`CLIENT_${key}`, decl);
     }
+    if (m.server_env) {
+      for (const [key, decl] of Object.entries(m.server_env)) check(key, decl);
+    }
+    if (appLines.length === 0) continue;
+    appsWithMissing.add(m.id);
+    lines.push(`    \x1b[1m${m.id}\x1b[22m`);
+    lines.push(...appLines);
   }
-  return missing;
+  return { lines, appsWithMissing };
 }
 
 const SOURCE_EXTS = new Set(['.ts', '.tsx', '.js', '.jsx', '.css', '.json', '.html']);
@@ -603,16 +617,18 @@ export function dev(opts: { port?: number; appsDir?: string } = {}) {
       if (manifests.length === 0) {
         console.log('  No apps found. Create one with: airglow new <id>\n');
       } else {
-        console.log(`  Serving ${manifests.length} app(s):`);
+        const { lines: missing, appsWithMissing } = findMissingEnv(appsDir, manifests);
+        console.log(`  \x1b[1mServing ${manifests.length} app(s):\x1b[22m`);
         for (const m of manifests) {
-          console.log(`    ${m.id} — ${m.name}`);
+          const prefix = appsWithMissing.has(m.id) ? `\x1b[1;31m(!)\x1b[0m ` : `    `;
+          console.log(`  ${prefix}${m.id} — ${m.name}`);
         }
         console.log();
-        const missing = findMissingServerEnv(appsDir, manifests);
         if (missing.length > 0) {
-          console.log(`  \x1b[33mWarning — missing server env vars (declared in manifest.server_env):\x1b[0m`);
+          console.log(`  \x1b[1;31mWarning — missing env vars (declared in manifest.secrets / manifest.server_env):\x1b[0m`);
           for (const line of missing) console.log(line);
-          console.log(`  Set them in <workspace>/.env or <app>/.env.\n`);
+          console.log();
+          console.log(`  Set them in airglow-apps/.env or airglow-apps/<app>/.env\n`);
         }
       }
     });
