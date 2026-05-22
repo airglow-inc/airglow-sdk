@@ -19,7 +19,6 @@ airglow-sdk/
 ```bash
 cd airglow-apps
 pnpm install
-pnpm airglow new <app-name>
 pnpm airglow dev
 ```
 

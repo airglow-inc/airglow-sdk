@@ -423,6 +423,7 @@ function matchesCombo(e: KeyboardEvent, combo: string): boolean {
 }
 
 document.addEventListener('keydown', async (e: KeyboardEvent) => {
+  if (typeof e.key !== 'string') return;
   // Trigger shortcut — toggle bar (reload config to pick up changes from dashboard)
   if (e.key.length === 1 && (e.metaKey || e.ctrlKey || e.altKey)) {
     await loadConfig();
