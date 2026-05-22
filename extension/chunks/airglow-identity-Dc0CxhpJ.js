@@ -1,1 +1,0 @@
-var e=`__airglow_user_email`,t=/^[^\s@]+@[^\s@]+\.[^\s@]+$/,n=new Set([`airglow:identity:getUserEmail`,`airglow:identity:setUserEmail`,`airglow:log`]);function r(e){if(typeof e!=`string`)return;let n=e.trim().toLowerCase();return t.test(n)?n:void 0}function i(e){return typeof e==`string`?!n.has(e):!1}export{r as n,i as r,e as t};
