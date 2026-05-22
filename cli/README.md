@@ -25,16 +25,19 @@ Options:
 
 ```
 cli/
-├── bin/airglow.js     # CLI entrypoint (loads tsx, then src/cli.ts)
+├── bin/airglow.js          # CLI entrypoint (loads tsx, then src/cli.ts)
 ├── src/
-│   ├── cli.ts         # arg dispatcher
-│   ├── new.ts         # `airglow new` command
-│   └── dev.ts         # `airglow dev` command (HTTP server, bundler, RPC runner)
+│   ├── cli.ts              # arg dispatcher
+│   ├── new.ts              # `airglow new` command
+│   └── dev.ts              # `airglow dev` command (HTTP server, bundler, RPC runner)
 └── lib/
-    └── airglow-sdk.ts # SDK source
+    ├── airglow-sdk.ts      # SDK source
+    └── native-host/        # Chrome native-messaging host (extension debug bridge)
 ```
 
 ## Endpoints
+
+### Dev server (default `:3001`)
 
 | Endpoint | Purpose |
 |---|---|
@@ -45,3 +48,7 @@ cli/
 | `GET /api/apps/<id>/ui-bundle` | React panel JS bundle (no HTML wrapper). |
 | `GET /api/apps/<id>/settings` | `CLIENT_*` env values from `.env`, used as dev-fallback secrets when the user hasn't set them in the dashboard. |
 | `POST /api/apps/<id>/rpc/<fn>` | Invoke `server/<fn>.ts` default export with the JSON body as payload. |
+
+### Native-host debug bridge (default `:3101`)
+
+Extension log tail, reload trigger, and network-spy for reverse-engineering site APIs. See [`lib/native-host/README.md`](lib/native-host/README.md) for the full endpoint list.

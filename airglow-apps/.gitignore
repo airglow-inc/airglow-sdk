@@ -4,3 +4,4 @@ node_modules/
 !.env.example
 .airglow/
 local/
+shared/styleguide.html
