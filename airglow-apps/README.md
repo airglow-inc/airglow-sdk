@@ -6,7 +6,7 @@ Each directory with a `manifest.json` is one app, loaded into the Airglow Chrome
 ## Quickstart
 
 1. Install the extension — see [`../extension/README.md`](../extension/README.md).
-2. Open extension dashboard `chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`  
+2. Open extension dashboard in browser (`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
 3. Install deps and start the dev server:
    ```bash
    pnpm install
@@ -23,9 +23,9 @@ Each directory with a `manifest.json` is one app, loaded into the Airglow Chrome
 Airglow apps live inside a Chrome extension. With Airglow you can:
 
 - **Modify any web page** — add buttons, change layouts, read or extract data.
-- **Run AI on the page** — tag, summarize, translate, classify.
-- **Create dashboards** - can be a settings page or a full-fledged website on React.
 - **Act on user's behalf across services** — make requests as the logged-in user (Gmail, Notion, Linear, Calendar, anything), or via API keys (OpenAI, Anthropic).
+- **Run AI directly on the page** — research, summarize, translate, classify.
+- **Create dashboards** - can be a settings page or a full-fledged website on React.
 - **Reshape browsing itself** — redirect distracting sites, hide annoying elements, embed pages wihin other pages.
 
 ## Workspace layout
