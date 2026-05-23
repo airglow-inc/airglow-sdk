@@ -3,14 +3,17 @@
  * Launch Chrome with the Airglow extension loaded and CDP enabled.
  *
  * Usage:
- *   node scripts/chrome.mjs [--user-data-dir=<dir>] [extension-dir]
+ *   node scripts/chrome.mjs [extension-dir] [--user-data-dir=<dir>]
  *
- * Defaults:
- *   --user-data-dir  <workspace>/.airglow/chrome-profile (dedicated, isolated
- *                    from your daily Chrome; native-messaging manifest is
- *                    installed into <user-data-dir>/NativeMessagingHosts/ so
- *                    /logs and /reload work in this profile).
- *   extension-dir    ../extension (the bundled SDK extension).
+ * Defaults (all resolved against cwd, so the same script serves multiple
+ * workspaces — e.g. airglow-apps and airglow/extension):
+ *   extension-dir    <sdk>/extension (bundled SDK extension; absolute fallback)
+ *   --user-data-dir  <cwd>/.airglow/chrome-profile (dedicated profile; the
+ *                    native-messaging manifest is installed into
+ *                    <user-data-dir>/NativeMessagingHosts/ so /logs and /reload
+ *                    work in this profile).
+ *
+ * Theme + chrome.log also live under <cwd>/.airglow/.
  *
  * Loads the unpacked extension via CDP pipe (Extensions.loadUnpacked is only
  * available over pipe, not websocket). The websocket on port 9222 stays
@@ -24,8 +27,9 @@ import { installNativeHost } from '../../cli/lib/native-host/install.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_EXTENSION_DIR = resolve(__dirname, '..', '..', 'extension');
-const DEFAULT_USER_DATA_DIR = resolve(__dirname, '..', '.airglow', 'chrome-profile');
-const THEME_DIR = resolve(__dirname, '..', '.airglow', 'dev-theme');
+const WORKSPACE_DIR = resolve(process.cwd(), '.airglow');
+const DEFAULT_USER_DATA_DIR = join(WORKSPACE_DIR, 'chrome-profile');
+const THEME_DIR = join(WORKSPACE_DIR, 'dev-theme');
 
 const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
@@ -120,7 +124,7 @@ const chromeArgs = [
 ];
 chromeArgs.push(`--user-data-dir=${userDataDir}`);
 
-const logDir = resolve(__dirname, '..', '.airglow', 'logs');
+const logDir = join(WORKSPACE_DIR, 'logs');
 mkdirSync(logDir, { recursive: true });
 const logStream = createWriteStream(resolve(logDir, 'chrome.log'));
 
