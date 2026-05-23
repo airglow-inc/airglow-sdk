@@ -6,7 +6,7 @@ Each directory with a `manifest.json` is one app, loaded into the Airglow Chrome
 ## Quickstart
 
 1. Install the extension — see [`../extension/README.md`](../extension/README.md).
-2. Open extension dashboard in browser (`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
+2. Open **extension dashboard** in browser (`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
 3. Install deps and start the dev server:
    ```bash
    pnpm install

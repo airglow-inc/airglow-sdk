@@ -43,7 +43,7 @@ claude
 > [!TIP]
 > Airglow works best when you
 > 1. First **think through** how the feature should look and behave
-> 2. Then describe that **in detail**.
+> 2. Then describe that **in detail**
 
 
 Developer guide [`airglow-apps/README.md`](airglow-apps/README.md)
