@@ -16,7 +16,7 @@ Commands:
 Run from inside the workspace (cd airglow-apps).
 
 Options:
-  --port N           Bind port (default 3001, or AIRGLOW_DEV_SERVER_PORT env)
+  --port N           Bind port (default 3001)
   --apps-dir D       Apps workspace directory (default cwd)
   --help, -h         Show this message
 ```

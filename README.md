@@ -16,27 +16,20 @@ airglow-sdk/
 └── airglow-apps/   # Develop apps here — see airglow-apps/README.md
 ```
 
-## Quick start
+## Quickstart
 
 1. Install Airglow extension (see [`extension/README.md`](extension/README.md))
 
-2. Start development server
-```bash
-cd airglow-apps
-pnpm install
-pnpm airglow dev
-```
-
-3. Ask coding agent to build a feature
+2. Ask a coding agent to build a feature
 ```bash
 cd airglow-apps
 claude
 >> "Create an app to hide news feed on x.com"
 ```
 
-4. Check results in your browser
+3. Check results in your browser
 
-5. Refine your app
+4. Refine your app
 
 ----
 

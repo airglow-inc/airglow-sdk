@@ -8,8 +8,12 @@ import { createHash } from 'crypto';
 import { installNativeHost } from '../lib/native-host/install.mjs';
 import { buildSdkCode } from '../lib/airglow-sdk';
 
-const DEFAULT_PORT = Number(process.env.AIRGLOW_DEV_SERVER_PORT || 3001);
+const DEFAULT_PORT = 3001;
 const SERVER_START = Date.now(); // unique per server restart
+const CLI_VERSION = (() => {
+  try { return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')).version; }
+  catch { return 'unknown'; }
+})();
 
 // Chrome derives the unpacked extension ID by SHA-256-hashing the decoded `key`
 // from manifest.json, taking the first 16 bytes, then mapping each hex digit
@@ -494,8 +498,56 @@ async function readBody(req: IncomingMessage): Promise<any> {
   try { return JSON.parse(raw); } catch { return {}; }
 }
 
-export function dev(opts: { port?: number; appsDir?: string } = {}) {
+async function probeRunning(port: number): Promise<{ matched: boolean; sameWorkspace: boolean; appsDir?: string }> {
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 500);
+    const res = await fetch(`http://127.0.0.1:${port}/api/healthz`, { signal: ac.signal });
+    clearTimeout(timer);
+    if (!res.ok) return { matched: false, sameWorkspace: false };
+    const data: any = await res.json();
+    if (data?.service !== 'airglow-dev') return { matched: false, sameWorkspace: false };
+    return { matched: true, sameWorkspace: false, appsDir: data.appsDir };
+  } catch {
+    return { matched: false, sameWorkspace: false };
+  }
+}
+
+// Probe the native-host port (3101). Returns:
+//   'ours'     — our spy host is responding (extension connected, all good)
+//   'foreign'  — something is bound to the port but isn't the spy host
+//   'free'     — nothing on the port (Chrome may not be running yet; not a problem)
+async function probeSpyPort(): Promise<'ours' | 'foreign' | 'free'> {
+  try {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 500);
+    const res = await fetch('http://127.0.0.1:3101/status', { signal: ac.signal });
+    clearTimeout(timer);
+    if (!res.ok) return 'foreign';
+    const data: any = await res.json();
+    return data?.service === 'airglow-spy' ? 'ours' : 'foreign';
+  } catch (e: any) {
+    if (e?.cause?.code === 'ECONNREFUSED') return 'free';
+    return 'foreign';
+  }
+}
+
+export async function dev(opts: { port?: number; appsDir?: string } = {}) {
   const appsDir = opts.appsDir ? (opts.appsDir.startsWith('/') ? opts.appsDir : join(process.cwd(), opts.appsDir)) : process.cwd();
+  const port = opts.port ?? DEFAULT_PORT;
+
+  const probe = await probeRunning(port);
+  if (probe.matched) {
+    if (probe.appsDir === appsDir) {
+      console.log(`\n  \x1b[1mairglow dev\x1b[0m is already running on http://127.0.0.1:${port}\n`);
+      process.exit(0);
+    }
+    console.error(`\n  Another airglow dev server is running on :${port}`);
+    console.error(`    its workspace:  ${probe.appsDir}`);
+    console.error(`    this workspace: ${appsDir}\n`);
+    console.error(`  Stop the other server, or pass --port.\n`);
+    process.exit(1);
+  }
 
   const logPath = setupLogTee(appsDir);
 
@@ -521,7 +573,7 @@ export function dev(opts: { port?: number; appsDir?: string } = {}) {
     try {
       if (pathname === '/api/healthz' && req.method === 'GET') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        res.end(JSON.stringify({ ok: true, service: 'airglow-dev', version: CLI_VERSION, appsDir }));
         return;
       }
 
@@ -595,44 +647,44 @@ export function dev(opts: { port?: number; appsDir?: string } = {}) {
     }
   });
 
-  function tryListen(port: number, maxAttempts = 10) {
-    server.listen(port, '127.0.0.1');
-    server.on('error', (err: NodeJS.ErrnoException) => {
-      if (err.code === 'EADDRINUSE' && port - DEFAULT_PORT < maxAttempts) {
-        console.log(`  Port ${port} in use, trying ${port + 1}...`);
-        server.listen(port + 1, '127.0.0.1');
-      } else {
-        console.error(`  Failed to start: ${err.message}`);
-        process.exit(1);
+  server.on('error', (err: NodeJS.ErrnoException) => {
+    if (err.code === 'EADDRINUSE') {
+      console.error(`\n  \x1b[1mPort ${port} is in use by another process\x1b[0m (not airglow dev).`);
+      console.error(`  Stop it, or pass --port.\n`);
+    } else {
+      console.error(`  Failed to start: ${err.message}`);
+    }
+    process.exit(1);
+  });
+  server.on('listening', async () => {
+    try { installNativeHost({ quiet: false }); }
+    catch (e: any) { console.error(`  [airglow] native host install failed: ${e.message}`); }
+    const manifests = await scanManifests(appsDir);
+    console.log(`\n  airglow dev server running on http://127.0.0.1:${port}\n`);
+    console.log(`  \x1b[1mSet dev port to ${port} in the extension dashboard.\x1b[0m\n`);
+    if (logPath) console.log(`  Logs: ${logPath}\n`);
+    if (await probeSpyPort() === 'foreign') {
+      console.log(`  \x1b[1;31mWarning — port 3101 is in use by another process.\x1b[0m`);
+      console.log(`  The extension's logs endpoint and CDP network capture won't work until it's freed.\n`);
+    }
+    if (manifests.length === 0) {
+      console.log('  No apps found. Create one with: airglow new <id>\n');
+    } else {
+      const { lines: missing, appsWithMissing } = findMissingEnv(appsDir, manifests);
+      console.log(`  \x1b[1mServing ${manifests.length} app(s):\x1b[22m`);
+      for (const m of manifests) {
+        const prefix = appsWithMissing.has(m.id) ? `\x1b[1;31m(!)\x1b[0m ` : `    `;
+        console.log(`  ${prefix}${m.id} — ${m.name}`);
       }
-    });
-    server.on('listening', async () => {
-      const actualPort = (server.address() as any).port;
-      try { installNativeHost({ quiet: false }); }
-      catch (e: any) { console.error(`  [airglow] native host install failed: ${e.message}`); }
-      const manifests = await scanManifests(appsDir);
-      console.log(`\n  airglow dev server running on http://127.0.0.1:${actualPort}\n`);
-      console.log(`  \x1b[1mSet dev port to ${actualPort} in the extension dashboard.\x1b[0m\n`);
-      if (logPath) console.log(`  Logs: ${logPath}\n`);
-      if (manifests.length === 0) {
-        console.log('  No apps found. Create one with: airglow new <id>\n');
-      } else {
-        const { lines: missing, appsWithMissing } = findMissingEnv(appsDir, manifests);
-        console.log(`  \x1b[1mServing ${manifests.length} app(s):\x1b[22m`);
-        for (const m of manifests) {
-          const prefix = appsWithMissing.has(m.id) ? `\x1b[1;31m(!)\x1b[0m ` : `    `;
-          console.log(`  ${prefix}${m.id} — ${m.name}`);
-        }
+      console.log();
+      if (missing.length > 0) {
+        console.log(`  \x1b[1;31mWarning — missing env vars (declared in manifest.secrets / manifest.server_env):\x1b[0m`);
+        for (const line of missing) console.log(line);
         console.log();
-        if (missing.length > 0) {
-          console.log(`  \x1b[1;31mWarning — missing env vars (declared in manifest.secrets / manifest.server_env):\x1b[0m`);
-          for (const line of missing) console.log(line);
-          console.log();
-          console.log(`  Set them in airglow-apps/.env or airglow-apps/<app>/.env\n`);
-        }
+        console.log(`  Set them in airglow-apps/.env or airglow-apps/<app>/.env\n`);
       }
-    });
-  }
+    }
+  });
 
-  tryListen(opts.port ?? DEFAULT_PORT);
+  server.listen(port, '127.0.0.1');
 }

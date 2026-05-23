@@ -27,7 +27,7 @@
 
 import http from 'node:http';
 
-const HTTP_PORT = Number(process.env.AIRGLOW_SPY_PORT || 3101);
+const HTTP_PORT = 3101;
 const CDP_PORT = 9222;
 const CAPTURE_BUFFER_LIMIT = 2000;
 const BODY_TRUNCATE = 20000; // max chars stored per body field
@@ -321,7 +321,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /status
     if (req.method === 'GET' && url.pathname === '/status') {
-      return json(res, 200, { ok: true, buffered: captures.length });
+      return json(res, 200, { ok: true, service: 'airglow-spy', buffered: captures.length });
     }
 
     // POST /reload — reload extension
