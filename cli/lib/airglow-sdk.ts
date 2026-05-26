@@ -20,7 +20,6 @@ export function buildSdkCode(appId: string): string {
 (function() {
   const APP_ID = ${JSON.stringify(appId)};
   const SDK_VERSION = ${JSON.stringify(AIRGLOW_SDK_CONTRACT_VERSION)};
-  const EMAIL_REQUIRED_CODE = 'EMAIL_REQUIRED';
   const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
 
   let callCounter = 0;
@@ -35,28 +34,6 @@ export function buildSdkCode(appId: string): string {
     if (response?.details !== undefined) error.details = response.details;
     if (response?.onboardingUrl) error.onboardingUrl = response.onboardingUrl;
     return error;
-  }
-
-  function normalizeUserEmail(value) {
-    if (typeof value !== 'string') return undefined;
-    const email = value.trim().toLowerCase();
-    return /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(email) ? email : undefined;
-  }
-
-  function collectUserEmail(onboardingUrl) {
-    const email = normalizeUserEmail(globalThis.prompt?.(
-      'Airglow needs your email before apps can run. It is stored locally in this extension.',
-      ''
-    ));
-    if (!email) {
-      const error = makeAirglowError({
-        error: 'Enter a valid email address to use Airglow apps.',
-        code: EMAIL_REQUIRED_CODE,
-        onboardingUrl,
-      });
-      return Promise.reject(error);
-    }
-    return sendMsg({ type: 'airglow:identity:setUserEmail', email }).then(() => email);
   }
 
   function runtimeErrorPayload(kind, error, extras) {
@@ -133,13 +110,6 @@ export function buildSdkCode(appId: string): string {
               error: chrome.runtime.lastError.message,
               code: 'CHROME_RUNTIME_ERROR',
             }));
-          } else if (response?.code === EMAIL_REQUIRED_CODE && payload.type !== 'airglow:identity:setUserEmail') {
-            try {
-              await collectUserEmail(response.onboardingUrl);
-              resolve(await sendMsg(payload));
-            } catch (error) {
-              reject(error);
-            }
           } else if (response?.error) {
             reject(makeAirglowError(response));
           } else {
