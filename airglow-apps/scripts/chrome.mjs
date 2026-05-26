@@ -3,7 +3,7 @@
  * Launch Chrome with the Airglow extension loaded and CDP enabled.
  *
  * Usage:
- *   node scripts/chrome.mjs [extension-dir] [--user-data-dir=<dir>] [--fresh]
+ *   node scripts/chrome.mjs [extension-dir] [--user-data-dir=<dir>] [--fresh] [--no-cdp]
  *
  * Defaults (all resolved against cwd, so the same script serves multiple
  * workspaces — e.g. airglow-apps and airglow/extension):
@@ -15,6 +15,10 @@
  *   --fresh          Use <cwd>/.airglow/chrome-profile-fresh and wipe it before
  *                    launch. Useful for testing first-run / clean-state flows
  *                    (e.g. the "Allow User Scripts" toggle being off by default).
+ *   --no-cdp         Launch Chrome with no CDP flags and no extension loading.
+ *                    Use this to sign in to Google in the dev profile without
+ *                    the "browser may not be secure" block; quit Chrome when
+ *                    done and re-run `pnpm chrome` to resume with CDP.
  *
  * Theme + chrome.log also live under <cwd>/.airglow/.
  *
@@ -41,6 +45,29 @@ const args = process.argv.slice(2);
 const extDirArg = args.find(a => !a.startsWith('--'));
 const extDir = resolve(extDirArg || DEFAULT_EXTENSION_DIR);
 const fresh = args.includes('--fresh');
+const noCdp = args.includes('--no-cdp');
+
+if (args.includes('--help') || args.includes('-h')) {
+  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--user-data-dir=<dir>] [extension-dir]
+
+Launches Chrome with the Airglow extension loaded and CDP enabled.
+
+Flags:
+  --fresh             Use a separate profile dir and wipe it before launch.
+                      Seeds the new profile from the regular dev profile
+                      (Preferences, History, …) minus auth/session files.
+  --no-cdp            Launch without CDP flags and without loading the
+                      extension. Use to sign in to Google in the dev profile
+                      (Google blocks sign-in when CDP is on); quit Chrome
+                      when done and re-run \`pnpm chrome\` to resume with CDP.
+  --user-data-dir=<dir>  Override the profile directory.
+  --help, -h          Show this message.
+
+Profiles live under <cwd>/.airglow/:
+  chrome-profile        regular (pnpm chrome)
+  chrome-profile-fresh  wiped each --fresh run`);
+  process.exit(0);
+}
 const userDataDir = resolve(
   args.find(a => a.startsWith('--user-data-dir='))?.split('=')[1]
     || (fresh ? FRESH_USER_DATA_DIR : DEFAULT_USER_DATA_DIR)
@@ -127,12 +154,16 @@ const chromeArgs = [
   '--disable-features=Translate,OptimizationHints,MediaRouter,DialMediaRouteProvider,CalculateNativeWinOcclusion,InterestFeedContentSuggestions,CertificateTransparencyComponentUpdater,PrivacySandboxSettings4,RenderDocument,IdentityStatusDialog,FedCm',
   '--noerrdialogs',
   '--suppress-message-center-popups',
-  // CDP websocket for debugging (always available on :9222)
-  '--remote-debugging-port=9222',
-  // CDP pipe for Extensions.loadUnpacked (only method that works on branded Chrome)
-  '--remote-debugging-pipe',
-  '--enable-unsafe-extension-debugging',
 ];
+if (!noCdp) {
+  chromeArgs.push(
+    // CDP websocket for debugging (always available on :9222)
+    '--remote-debugging-port=9222',
+    // CDP pipe for Extensions.loadUnpacked (only method that works on branded Chrome)
+    '--remote-debugging-pipe',
+    '--enable-unsafe-extension-debugging',
+  );
+}
 chromeArgs.push(`--user-data-dir=${userDataDir}`);
 
 const logDir = join(WORKSPACE_DIR, 'logs');
@@ -140,11 +171,23 @@ mkdirSync(logDir, { recursive: true });
 const logStream = createWriteStream(resolve(logDir, 'chrome.log'));
 
 const chrome = spawn(CHROME_BIN, chromeArgs, {
-  stdio: ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
+  stdio: noCdp
+    ? ['ignore', 'pipe', 'pipe']
+    : ['ignore', 'pipe', 'pipe', 'pipe', 'pipe'],
 });
 
 chrome.stdout.on('data', d => { process.stdout.write(d); logStream.write(d); });
 chrome.stderr.on('data', d => { process.stderr.write(d); logStream.write(d); });
+
+if (noCdp) {
+  console.log('Launched Chrome without CDP. Extension not loaded.');
+  console.log('Use this profile to sign in to Google, then quit Chrome and re-run `pnpm chrome`.');
+  chrome.on('exit', code => process.exit(code ?? 0));
+  process.on('SIGINT', () => chrome.kill());
+  process.on('SIGTERM', () => chrome.kill());
+  // Nothing else to do — skip the CDP-pipe wiring below.
+  await new Promise(() => {});
+}
 
 const pipeOut = chrome.stdio[3];
 const pipeIn = chrome.stdio[4];
