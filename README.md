@@ -1,19 +1,20 @@
 # Airglow SDK
 
-Airglow is a platform to vibecode website features. Build apps that inject UI, automate workflows, and connect services — all running through a browser extension.
+Airglow allows your coding agent to add features to any website just by describing them.
 
-**Why Airglow:** Describe the feature → get working result directly in your browser.
-
-> [!NOTE]
-> Airglow works well for non-technical users. **Ask your coding agent** to help you install Airglow.
+| Popular usecases | Example |
+| --- | --- |
+| Add custom features | Run background research on a LinkedIn user |
+| Modify interfaces | Hide YouTube Shorts |
+| Automate work | Populate a bookkeeping spreadsheet from email |
 
 ## Structure
 
 ```
 airglow-sdk/
+├── airglow-apps/   # Develop apps here — see airglow-apps/README.md
 ├── extension/      # Chrome extension
-├── cli/            # CLI to run local Airglow apps
-└── airglow-apps/   # Develop apps here — see airglow-apps/README.md
+└── cli/            # CLI to run local Airglow apps
 ```
 
 ## Quickstart
@@ -26,10 +27,6 @@ cd airglow-apps
 claude
 >> "Create an app to hide news feed on x.com"
 ```
-
-3. Check results in your browser
-
-4. Refine your app
 
 ----
 
