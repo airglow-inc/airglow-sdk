@@ -3,7 +3,7 @@
  * Launch Chrome with the Airglow extension loaded and CDP enabled.
  *
  * Usage:
- *   node scripts/chrome.mjs [extension-dir] [--user-data-dir=<dir>]
+ *   node scripts/chrome.mjs [extension-dir] [--user-data-dir=<dir>] [--fresh]
  *
  * Defaults (all resolved against cwd, so the same script serves multiple
  * workspaces — e.g. airglow-apps and airglow/extension):
@@ -12,6 +12,9 @@
  *                    native-messaging manifest is installed into
  *                    <user-data-dir>/NativeMessagingHosts/ so /logs and /reload
  *                    work in this profile).
+ *   --fresh          Use <cwd>/.airglow/chrome-profile-fresh and wipe it before
+ *                    launch. Useful for testing first-run / clean-state flows
+ *                    (e.g. the "Allow User Scripts" toggle being off by default).
  *
  * Theme + chrome.log also live under <cwd>/.airglow/.
  *
@@ -22,13 +25,14 @@
 import { spawn } from 'node:child_process';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, createWriteStream, existsSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, createWriteStream, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { installNativeHost } from '../../cli/lib/native-host/install.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_EXTENSION_DIR = resolve(__dirname, '..', '..', 'extension');
 const WORKSPACE_DIR = resolve(process.cwd(), '.airglow');
 const DEFAULT_USER_DATA_DIR = join(WORKSPACE_DIR, 'chrome-profile');
+const FRESH_USER_DATA_DIR = join(WORKSPACE_DIR, 'chrome-profile-fresh');
 const THEME_DIR = join(WORKSPACE_DIR, 'dev-theme');
 
 const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -36,9 +40,16 @@ const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome
 const args = process.argv.slice(2);
 const extDirArg = args.find(a => !a.startsWith('--'));
 const extDir = resolve(extDirArg || DEFAULT_EXTENSION_DIR);
+const fresh = args.includes('--fresh');
 const userDataDir = resolve(
-  args.find(a => a.startsWith('--user-data-dir='))?.split('=')[1] || DEFAULT_USER_DATA_DIR
+  args.find(a => a.startsWith('--user-data-dir='))?.split('=')[1]
+    || (fresh ? FRESH_USER_DATA_DIR : DEFAULT_USER_DATA_DIR)
 );
+
+if (fresh) {
+  console.log(`Wiping fresh profile: ${userDataDir}`);
+  rmSync(userDataDir, { recursive: true, force: true });
+}
 
 if (!existsSync(extDir)) {
   console.error(`Extension directory not found: ${extDir}`);
