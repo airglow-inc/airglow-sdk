@@ -1,32 +1,42 @@
 # Airglow SDK
 
-Airglow allows your coding agent to add features to any website just by describing them.
+Airglow allows your coding agent to make custom apps on top of any website you're using. Describe the change and see it directly in your browser.
 
-| Popular usecases | Example |
+Airglow is a general purpose tool. You can create apps to add new functionality, automate interactions, extract data, modify interfaces, make custom dashboards.
+
+See examples at [airglow.dev](https://airglow.dev)
+
+| Feature | Example |
 | --- | --- |
-| Add custom features | Run background research on a LinkedIn user |
-| Modify interfaces | Hide YouTube Shorts |
-| Automate work | Populate a bookkeeping spreadsheet from email |
+| Add functionality | Run background research on a LinkedIn user |
+| Change interfaces | Hide YouTube Shorts |
+| Automate workflows | Translate marketing campaign into another language |
 
-## Structure
-
-```
-airglow-sdk/
-├── airglow-apps/   # Develop apps here — see airglow-apps/README.md
-├── extension/      # Chrome extension
-└── cli/            # CLI to run local Airglow apps
-```
 
 ## Quickstart
 
 1. Install Airglow extension (see [`extension/README.md`](extension/README.md))
 
-2. Ask a coding agent to build a feature
+2. Verify installation by opening a dashboard  
+(`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
+
+3. Ask a coding agent to build a feature
 ```bash
 cd airglow-apps
 claude
 >> "Create an app to hide news feed on x.com"
 ```
+
+## Structure
+
+```
+airglow-sdk/
+├── airglow-apps/   # Your agent should develop apps here, see airglow-apps/README.md
+├── extension/      # Chrome extension
+└── cli/            # CLI to run Airglow apps locally
+```
+
+Developer guide [`airglow-apps/README.md`](airglow-apps/README.md)
 
 ----
 
@@ -34,6 +44,3 @@ claude
 > Airglow works best when you
 > 1. First **think through** how the feature should look and behave
 > 2. Then describe that **in detail**
-
-
-Developer guide [`airglow-apps/README.md`](airglow-apps/README.md)

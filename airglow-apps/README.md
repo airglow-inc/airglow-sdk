@@ -1,39 +1,15 @@
-# Airglow apps workspace
+# Airglow apps
 
 Apps are developed and hosted in this folder.
-Each directory with a `manifest.json` is one app, loaded into the Airglow Chrome extension at runtime.
 
-## What you can build
-
-Airglow apps live inside a Chrome extension. With Airglow you can:
-
-- **Modify any web page** — add buttons, change layouts, read or extract data.
-- **Act on user's behalf across services** — make requests as the logged-in user (Gmail, Notion, Linear, Calendar, anything), or via API keys (OpenAI, Anthropic).
-- **Run AI directly on the page** — research, summarize, translate, classify.
-- **Create dashboards** - can be a settings page or a full-fledged website on React.
-- **Reshape browsing itself** — redirect distracting websites, hide annoying elements, embed pages within other pages.
-
-## Quickstart
-
-1. Install the extension — see [`../extension/README.md`](../extension/README.md).
-2. Open **extension dashboard** in browser (`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
-3. Ask an agent to build something:
-   ```bash
-   claude
-   >> "Build me an app that adds AI-generated tags to every HN title"
-   ```
-
-> [!NOTE]
-> The agent installs dependencies and starts the dev server on its own.
-
-#### Running manually (without an agent)
-
-Under the hood, the agent starts the development server:
-
+To run Airglow apps, install dependencies and start a dev server.
 ```bash
 pnpm install         # install dependencies
-pnpm airglow dev     # start the dev server on http://127.0.0.1:3001
+pnpm airglow dev     # start the dev server on localhost:3001
 ```
+
+> [!NOTE]
+> The agent is supposed to install dependencies and start the dev server on its own.
 
 ## Workspace layout
 
@@ -44,5 +20,36 @@ docs/             technical docs
 scripts/          helper scripts
 .env              secrets
 ```
+
+Each app is a folder with fixed structure:
+```
+<app-id>/
+├── manifest.json   # App definition
+├── userscripts/    # (Optional) Scripts injected into web pages
+├── ui/             # (Optional) Dashboard UI
+├── server/         # (Optional) Server functions
+└── startup.ts      # (Optional) Startup script
+```
+
+Apps are loaded into Chrome extension at runtime via local Airglow dev server (`pnpm airglow dev`).  
+For apps to work in browser, `pnpm airglow dev` must be running.
+
+A folder is identified as an app by its `manifest.json`.
+
+## App Structure
+
+Apps are developed in TypeScript. Each app has 5 main parts.
+
+- **Manifest** (`manifest.json`) - App metadata and permissions.
+- **Userscripts** (`userscripts/`) - Code that runs on web pages. Can read website data.
+- **UI** (`ui/`) - Custom dashboard. Supports React + Tailwind. 
+- **Server functions** (`server/`) - Server side functions that run locally.
+- **Startup** (`startup.ts`) - App startup script.
+
+Airglow apps are similar in structure to websites, having frontend (UI) and backend (Server functions).
+In fact, you can host a local website using Airglow.
+
+Apps use Airglow SDK ([`docs/sdk-reference.md`](docs/sdk-reference.md)) for storage and internal communication.  
+Apps are isolated from each other and have no direct access to Chrome API.
 
 Technical documentation: [`docs/app-developer-guide.md`](docs/app-developer-guide.md).

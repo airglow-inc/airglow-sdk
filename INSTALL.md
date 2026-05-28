@@ -1,14 +1,21 @@
-Airglow installation instructions (for AI Agent)
-1) Read README.md to understand the structure
-2) Ask user to open chrome://extensions. Give them the full path to airglow-sdk/extension folder, say this is the path to use for "Load unpacked".
-3) Ask user to say "done" once they have installed the extension
---- user have installed the extension ---
-4) Read AGENTS.md in airglow-sdk/airglow-apps. Run initial setup (install deps, start dev server ...)
-5) Say that initial installation is done, provide user with two options.
+### Airglow installation instructions (for AI Agent)
 
-   1. Create a new app. Ask user to say which website to change and which feature to modify. Give an example "Hide news feed on x.com, replace it with a clock and a motivating quote."
-   2. Modify existing app. List app names from airglow-apps/ to user.
+#### Install dependencies and start dev server
+- Say to user that you are starting the installation, which should take few minutes.
+- Read `airglow-sdk/README.md`, `airglow-sdk/airglow-apps/AGENTS.md`
+- **Install dependencies, start dev server:** run `pnpm install` and `pnpm airglow dev` from `airglow-sdk/airglow-apps`.
+ - If computer is missing `pnpm` or some necessary dev tool like node, install it.
 
-If installation fails, try fixing the problem. If it fails, explain the problem in plain words and briefly, and suggest one solution. Once done, continue with the rest of installation.
+#### Install extension
+1) Send instructions link <https://airglow.dev/#install>
+2) Give the user full path to `airglow-sdk/extension` folder, say this is the path to use for "Load unpacked" button.
+3) Ask user to report back when they're done. Stop and wait for their response.
 
-Assume user is non-technical, be brief and use plain language. If asked, explain.
+#### Suggest an app
+Once done, provide user with two options:
+   1. Create a new app. Ask user to say which website to change and which feature to modify.
+   2. Modify existing app. List app names from `airglow-apps/` to user.
+
+**RULES:**
+- Autonomously fix technical issues during installation, don't do destructive actions.
+- **Be brief and use plain language**

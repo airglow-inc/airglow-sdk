@@ -1,6 +1,6 @@
 {
-  "id": "page-navigator",
-  "name": "Page Navigator",
+  "id": "howto-helper",
+  "name": "How-To Helper",
   "version": "0.1.0",
   "description": "Floating How-To chat that explains how to do things on the current page",
   "tags": ["ai", "productivity"],

@@ -374,13 +374,19 @@ async function handleUi(appsDir: string, appId: string): Promise<[number, string
 
   let css = '';
   const cssPath = join(uiDir, 'globals.css');
-  try {
-    await stat(cssPath);
-    css = execSync(
-      `./node_modules/.bin/tailwindcss -i ${cssPath} --minify`,
-      { encoding: 'utf-8', timeout: 15000, cwd: appsDir },
-    );
-  } catch {}
+  let cssExists = false;
+  try { await stat(cssPath); cssExists = true; } catch {}
+  if (cssExists) {
+    try {
+      css = execSync(
+        `./node_modules/.bin/tailwindcss -i ${cssPath} --minify`,
+        { encoding: 'utf-8', timeout: 15000, cwd: appsDir, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch (e: any) {
+      const stderr = (e?.stderr?.toString?.() ?? '').trim();
+      console.error(`[airglow/${appId}] tailwind build failed for ${cssPath}${stderr ? `\n${stderr}` : ''}`);
+    }
+  }
   if (!css) {
     try { css = await readFile(join(appsDir, 'shared/theme/tokens.css'), 'utf-8'); } catch {}
   }
