@@ -1,6 +1,6 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { readdir, readFile, stat } from 'fs/promises';
-import { readFileSync, mkdirSync, createWriteStream } from 'fs';
+import { readFileSync, mkdirSync, createWriteStream, writeFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -100,6 +100,38 @@ function handleUpdateStatus(extensionDir: string, loadedBuildHash: string | null
       upstream: upstreamHead,
       behindUpstream: !!(localHead && upstreamHead && localHead !== upstreamHead),
     },
+  };
+}
+
+// ── Local Airglow config ─────────────────────────────────────────────────────
+// Stored in the ignored workspace .airglow/ directory so extension UI can
+// change preferences without relying on shell environment variables.
+interface AirglowLocalConfig {
+  autoUpdate?: boolean;
+  [key: string]: unknown;
+}
+
+function localConfigPath(appsDir: string): string {
+  return join(appsDir, '.airglow', 'config.json');
+}
+
+function readLocalConfig(appsDir: string): AirglowLocalConfig {
+  try {
+    return JSON.parse(readFileSync(localConfigPath(appsDir), 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalConfig(appsDir: string, config: AirglowLocalConfig): void {
+  const dir = join(appsDir, '.airglow');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(localConfigPath(appsDir), `${JSON.stringify(config, null, 2)}\n`);
+}
+
+function publicConfig(config: AirglowLocalConfig) {
+  return {
+    autoUpdate: config.autoUpdate !== false,
   };
 }
 
@@ -588,6 +620,27 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
         const data = handleUpdateStatus(join(appsDir, '..', 'extension'), loadedHash);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
+        return;
+      }
+
+      if (pathname === '/api/config' && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(publicConfig(readLocalConfig(appsDir))));
+        return;
+      }
+
+      if (pathname === '/api/config' && req.method === 'POST') {
+        const body = await readBody(req);
+        if (body.autoUpdate !== undefined && typeof body.autoUpdate !== 'boolean') {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'autoUpdate must be a boolean' }));
+          return;
+        }
+        const config = readLocalConfig(appsDir);
+        if (typeof body.autoUpdate === 'boolean') config.autoUpdate = body.autoUpdate;
+        writeLocalConfig(appsDir, config);
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' });
+        res.end(JSON.stringify(publicConfig(config)));
         return;
       }
 
