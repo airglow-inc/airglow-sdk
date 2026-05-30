@@ -245,6 +245,10 @@ export function buildSdkCode(appId: string): string {
     await sendMsg({ type: 'airglow:openWindow', url, width: opts.width, height: opts.height, left: opts.left, top: opts.top, popup: opts.popup, waitClose: true });
   }
 
+  async function openTab(url, opts = {}) {
+    await sendMsg({ type: 'airglow:openTab', url, active: opts.active });
+  }
+
   globalThis.airglow = {
     sdkVersion: SDK_VERSION,
     fetch: airglowFetch,
@@ -256,6 +260,7 @@ export function buildSdkCode(appId: string): string {
     captureTab,
     openWindow,
     openWindowAndWaitClose,
+    openTab,
   };
 })();
 `;

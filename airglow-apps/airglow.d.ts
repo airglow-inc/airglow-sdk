@@ -65,6 +65,9 @@ interface Airglow {
   openWindow(url: string, opts?: AirglowWindowOptions): Promise<void>;
   openWindowAndWaitClose(url: string, opts?: AirglowWindowOptions): Promise<void>;
 
+  /** Open a URL as a new tab in the current browser window. */
+  openTab(url: string, opts?: { active?: boolean }): Promise<void>;
+
   captureTab(): Promise<AirglowCaptureResult>;
 
   platform: {

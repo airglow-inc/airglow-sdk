@@ -8,24 +8,14 @@ declare const airglow: any; // eslint-disable-line
 
 const STYLE_ID = 'airglow-focus-hider-li';
 
+/* LinkedIn ships randomized hashed class names that rotate every build, so all
+   selectors below key off stable data-view-name attributes instead of classes. */
 const FEED_CSS = `
-/* Hide feed posts */
-.scaffold-finite-scroll {
-  display: none !important;
-}
-
-/* Hide "Start a post" composer */
-.share-box-feed-entry__closed-share-box {
-  display: none !important;
-}
-
-/* Hide sort bar */
-.artdeco-dropdown:has(.feed-index-sort-border) {
-  display: none !important;
-}
-
-/* Hide "New posts" button */
-.feed-new-update-pill {
+/* Hide feed posts (including promoted), composer, sort toggle, new-posts pill */
+[data-view-name="feed-full-update"],
+[data-view-name="share-sharebox-focus"],
+[data-view-name="feed-nav-feed-sort-toggle"],
+[data-view-name="feed-new-update-pill"] {
   display: none !important;
 }
 
@@ -65,8 +55,9 @@ const FEED_CSS = `
 
 /* Styles applied on ALL LinkedIn pages (not just feed) */
 const GLOBAL_CSS = `
-/* Hide right sidebar on all pages (news, promoted, "viewers also viewed", etc.) */
-.scaffold-layout__aside {
+/* Hide the feed's right rail (news, promoted, puzzles). Profile-page sidebars
+   are handled separately by hideDistractingSections() via heading text. */
+aside:has([data-view-name="news-module"]) {
   display: none !important;
 }
 
@@ -138,11 +129,40 @@ function tickClock() {
   clockRaf = requestAnimationFrame(tickClock);
 }
 
+// LinkedIn lays the feed out as the middle of a 3-column <section>
+// [left profile rail | center feed | right news rail]. Class names are
+// build-randomized, so locate the columns structurally: climb from the composer
+// (its aria-label is stable; data-view-name is a fallback for an older build) to
+// the column that is a direct child of the layout <section>.
+function feedColumns(): { grid: HTMLElement; center: HTMLElement } | null {
+  const composer = document.querySelector(
+    '[aria-label="Start a post"], [data-view-name="share-sharebox-focus"]'
+  );
+  if (!composer) return null;
+  let center = composer as HTMLElement;
+  while (center.parentElement && center.tagName !== 'SECTION') {
+    center = center.parentElement;
+  }
+  const grid = center.parentElement;
+  if (center.tagName !== 'SECTION' || !grid) return null;
+  return { grid, center };
+}
+
+// Hide the feed (center column content) and every rail to its right (news, ads,
+// puzzles), then drop the banner into the center column. Keeps the left profile rail.
 function injectBanner() {
-  if (!isFeedPage() || document.getElementById(BANNER_ID)) return;
-  const main = document.querySelector('.scaffold-layout__main') ||
-               document.querySelector('main');
-  if (!main) return;
+  if (!isFeedPage()) return;
+  const cols = feedColumns();
+  if (!cols) return;
+  for (const child of Array.from(cols.center.children) as HTMLElement[]) {
+    if (child.id !== BANNER_ID) child.style.setProperty('display', 'none', 'important');
+  }
+  const sections = Array.from(cols.grid.children) as HTMLElement[];
+  for (const s of sections.slice(sections.indexOf(cols.center) + 1)) {
+    s.style.setProperty('display', 'none', 'important');
+  }
+
+  if (document.getElementById(BANNER_ID)) return;
   const banner = document.createElement('div');
   banner.id = BANNER_ID;
   banner.innerHTML = `
@@ -150,7 +170,7 @@ function injectBanner() {
     <p class="afb-title">Time to do great things</p>
     <p class="afb-sub">Your feed is hidden — stay focused on what matters.</p>
   `;
-  main.appendChild(banner);
+  cols.center.prepend(banner);
   if (!clockRaf) clockRaf = requestAnimationFrame(tickClock);
 }
 
@@ -166,15 +186,24 @@ const HIDE_PATTERNS = [
   'your viewers also viewed',
   'People to follow',
   'More suggestions for you',
+  'Suggestions for you',
   'Based on your recent activity',
   'Explore Premium',
   'You might like',
   'People who are hiring',
+  'providers you might be interested in',
 ];
 
 function isFeedPage() {
   // Direct load: /feed/ or /. SPA nav: LinkedIn loads feed in /preload/ iframe.
   return /^\/(feed\/?)?$/.test(location.pathname) || location.pathname === '/preload/';
+}
+
+function isCompanyPage() {
+  // Company pages (incl. /people/) are visited intentionally; their employee
+  // list is headed "People you may know", which would otherwise be hidden as a
+  // distraction. Skip section-hiding here so the people list stays visible.
+  return /^\/company\//.test(location.pathname);
 }
 
 function updateFeedStyle() {
@@ -215,6 +244,7 @@ function hideMessagingOverlay() {
 }
 
 function hideDistractingSections(root: ParentNode = document) {
+  if (isCompanyPage()) return;
   const headings = root.querySelectorAll('h2, h3');
   for (const h of headings) {
     const text = h.textContent?.trim() || '';

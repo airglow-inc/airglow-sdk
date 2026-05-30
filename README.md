@@ -2,25 +2,30 @@
 
 Airglow allows your coding agent to make custom apps on top of any website you're using. Describe the change and see it directly in your browser.
 
-Airglow is a general purpose tool. You can create apps to add new functionality, automate interactions, extract data, modify interfaces, make custom dashboards.
+Airglow is a general purpose tool. You can create apps to add new features, automate workflows, modify interfaces, make custom dashboards.
+
+Some examples:
+- **Add functionality:** Run background research on a LinkedIn user
+- **Change interfaces:** Hide Youtube Shorts
+- **Automate workflows:** Create a marketing campaign in Instagram from Spreadsheets data
 
 See examples at [airglow.dev](https://airglow.dev)
-
-| Feature | Example |
-| --- | --- |
-| Add functionality | Run background research on a LinkedIn user |
-| Change interfaces | Hide YouTube Shorts |
-| Automate workflows | Translate marketing campaign into another language |
-
 
 ## Quickstart
 
 1. Install Airglow extension (see [`extension/README.md`](extension/README.md))
 
-2. Verify installation by opening a dashboard  
+2. Start a dev server
+```bash
+cd airglow-apps
+pnpm install
+pnpm airglow dev
+```
+
+3. Verify installation by opening a dashboard  
 (`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
 
-3. Ask a coding agent to build a feature
+4. Ask a coding agent to build a feature
 ```bash
 cd airglow-apps
 claude

@@ -204,12 +204,6 @@ function showHint() {
 
 // ── Clock helpers ──
 
-function formatHour(h: number): string {
-  const period = h >= 12 ? 'PM' : 'AM';
-  const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
-  return `${display}:00 ${period}`;
-}
-
 function describeArc(cx: number, cy: number, r: number, startAngle: number, endAngle: number): string {
   const start = { x: cx + r * Math.cos(startAngle), y: cy + r * Math.sin(startAngle) };
   const end = { x: cx + r * Math.cos(endAngle), y: cy + r * Math.sin(endAngle) };
@@ -328,12 +322,11 @@ function showClock(allowStart: number, allowEnd: number, isDark: boolean) {
     </div>
     <div style="text-align: center; max-width: 500px; padding: 0 24px;">
       <h1 style="font-size: 32px; font-weight: 600; margin: 0 0 12px; color: var(--fh-title); letter-spacing: -0.02em; transition: color 0.3s;">
-        Focus mode
+        Time to do great things
       </h1>
       <p style="font-size: 18px; line-height: 1.5; color: var(--fh-subtitle); margin: 0; transition: color 0.3s;">
-        Available from <span style="color: var(--fh-accent); font-weight: 600; transition: color 0.3s;">${formatHour(allowStart)}</span> to <span style="color: var(--fh-accent); font-weight: 600; transition: color 0.3s;">${formatHour(allowEnd)}</span>
+        Your feed is hidden — stay focused on what matters.
       </p>
-      <div class="fh-time-display" style="font-family: 'JetBrains Mono', monospace; font-size: 48px; font-weight: 300; color: var(--fh-accent); margin-top: 32px; letter-spacing: 2px; transition: color 0.3s;"></div>
     </div>
   `;
 
@@ -378,9 +371,6 @@ function showClock(allowStart: number, allowEnd: number, isDark: boolean) {
     if (hh) { hh.setAttribute('x2', String(100+45*Math.cos(ha))); hh.setAttribute('y2', String(100+45*Math.sin(ha))); }
     if (mh) { mh.setAttribute('x2', String(100+60*Math.cos(ma))); mh.setAttribute('y2', String(100+60*Math.sin(ma))); }
     if (sh) { sh.setAttribute('x2', String(100+60*Math.cos(sa))); sh.setAttribute('y2', String(100+60*Math.sin(sa))); }
-
-    const td = el.querySelector('.fh-time-display') as HTMLElement;
-    if (td) td.textContent = `${String(now.getHours()).padStart(2,'0')}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
     requestAnimationFrame(tick);
   }
   requestAnimationFrame(tick);

@@ -2,6 +2,9 @@
 
 Apps are developed and hosted in this folder.
 
+> [!NOTE]
+> It is expected that you make apps using a coding agent. The project is structured this way, including `AGENTS.md`
+
 To run Airglow apps, install dependencies and start a dev server.
 ```bash
 pnpm install         # install dependencies
