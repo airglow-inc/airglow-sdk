@@ -34,6 +34,30 @@ interface AirglowRedirectRule {
   target: string;
 }
 
+interface AirglowManifest {
+  /** Opaque stable runtime id. Used for storage namespaces, routes, logs, worlds, and disabled-app state. */
+  id: string;
+  /** Human-readable directory/app slug. Optional for older manifests and not guaranteed to be unique. */
+  slug?: string;
+  name: string;
+  version: string;
+  description?: string;
+  tags?: string[];
+  visibility?: 'public' | 'development' | 'hidden';
+  startup?: string;
+  userscripts?: AirglowUserscriptManifest[];
+  host_permissions?: string[];
+  secrets?: Record<string, { label?: string } | true>;
+  server_env?: Record<string, { label?: string } | true>;
+}
+
+interface AirglowUserscriptManifest {
+  file: string;
+  matches: string[];
+  allFrames?: boolean;
+  runAt?: 'document_start' | 'document_end' | 'document_idle';
+}
+
 interface Airglow {
   sdkVersion: AirglowSdkVersion;
 

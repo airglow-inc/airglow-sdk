@@ -20,11 +20,11 @@ Before any other work in this workspace, you **must**:
 
 ## Development structure
 
-- **One app per directory.** Each app lives in its own directory at the workspace root, with a `manifest.json` whose `id` matches the directory name. Apps shouldn't import from each other — shared code goes in `shared/`.
+- **One app per directory.** Each app lives in its own directory at the workspace root. `manifest.id` is an opaque stable runtime id and must be unique; `manifest.slug` is the human-readable directory/app slug and may collide. Apps shouldn't import from each other — shared code goes in `shared/`.
 
 - **`airglow.*` SDK only.** All app code talks to the extension through the SDK. There is no `chrome.*` access.
 
-- **Secrets in `.env`.** `CLIENT_*` keys are exposed to browser code through `airglow.storage`; unprefixed keys are server-only, available as `process.env.FOO` inside `server/*.ts`. A per-app `<app-id>/.env` overrides the workspace one.
+- **Secrets in `.env`.** `CLIENT_*` keys are exposed to browser code through `airglow.storage`; unprefixed keys are server-only, available as `process.env.FOO` inside `server/*.ts`. A per-app `<app-directory>/.env` overrides the workspace one.
 
 ## Best practices
 
@@ -58,7 +58,7 @@ Before any other work in this workspace, you **must**:
   - If it doesn't respond, restart it with `pnpm airglow dev` in the background — the user expects the app to be loadable in the browser the moment you hand off. 
   - If server is still down, **immediately notify the user, do not report success**.
 - **Confirm the manifests endpoint works.** Run `curl -sf http://127.0.0.1:3001/api/apps/manifests` and verify your app appears in the response. If it doesn't, **its a failure**.
-- `manifest.json` is valid; `id` matches the directory; every referenced file exists.
+- `manifest.json` is valid; `id` is stable and unique; every referenced file exists.
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No API keys or tokens are hardcoded in `userscripts/` or `ui/`.
 - The app has been tested in the real browser, not just through `curl`.

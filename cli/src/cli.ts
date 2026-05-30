@@ -32,7 +32,7 @@ const { positional, flags } = parseFlags(rest);
 switch (command) {
   case 'new':
     if (!positional[0]) {
-      console.error('Usage: airglow new <app-id>   (lowercase letters, digits, dashes; e.g. my-app)');
+      console.error('Usage: airglow new <app-slug>   (lowercase letters, digits, dashes; e.g. my-app)');
       process.exit(1);
     }
     newApp(positional[0]);
@@ -52,7 +52,7 @@ switch (command) {
   ◆ \x1b[1mairglow\x1b[0m — build apps for the web
 
 Commands:
-  \x1b[1mnew <app-id>\x1b[0m              \x1b[2mScaffold a new app (app-id: lowercase a-z, digits, dashes)\x1b[0m
+  \x1b[1mnew <app-slug>\x1b[0m            \x1b[2mScaffold a new app directory (slug: lowercase a-z, digits, dashes)\x1b[0m
   \x1b[1mdev [--port N] [--apps-dir D]\x1b[0m  \x1b[2mRun apps locally with hot reload\x1b[0m
 
 Run from inside the workspace (\x1b[36mcd airglow-apps\x1b[0m).

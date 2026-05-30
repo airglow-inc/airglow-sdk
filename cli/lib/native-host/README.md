@@ -9,7 +9,7 @@ Chrome native-messaging host exposing the running extension over `localhost:3101
 | Endpoint | Purpose |
 |---|---|
 | `GET /status` | Liveness probe. Returns `{ok, buffered}`. |
-| `GET /logs` | Extension log store. Filters: `level=info\|warn\|error`, `source=<app-id>`, `n=<count>`. |
+| `GET /logs` | Extension log store. Filters: `level=info\|warn\|error`, `source=<app-id>`, `n=<count>`. `source` is `manifest.id`. |
 | `POST /reload` | `chrome.runtime.reload()`. |
 
 ### Network-spy (dormant unless attached)

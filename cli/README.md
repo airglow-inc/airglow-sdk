@@ -10,7 +10,7 @@ $ pnpm airglow --help
   ◆ airglow — build apps for the web
 
 Commands:
-  new <app-id>                   Scaffold a new app (app-id: lowercase a-z, digits, dashes)
+  new <app-slug>                 Scaffold a new app directory (slug: lowercase a-z, digits, dashes)
   dev [--port N] [--apps-dir D]  Run apps locally with hot reload
 
 Run from inside the workspace (cd airglow-apps).
@@ -43,7 +43,7 @@ cli/
 |---|---|
 | `GET /api/healthz` | Liveness probe. |
 | `GET /api/apps/manifests` | List all app manifests. |
-| `GET /api/apps/<id>/userscript?file=...&format=iife\|esm` | Bundled userscript JS. |
+| `GET /api/apps/<id>/userscript?file=...&format=iife\|esm` | Bundled userscript JS. `<id>` is `manifest.id`, not the directory slug. |
 | `GET /api/apps/<id>/ui` | React panel HTML (full SDK inlined). |
 | `GET /api/apps/<id>/ui-bundle` | React panel JS bundle (no HTML wrapper). |
 | `GET /api/apps/<id>/settings` | `CLIENT_*` env values from `.env`, used as dev-fallback secrets when the user hasn't set them in the dashboard. |

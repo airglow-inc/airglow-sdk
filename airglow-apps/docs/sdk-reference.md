@@ -70,13 +70,13 @@ Privileged extension capabilities. Registrations persist across service-worker r
 
 ```ts
 await airglow.platform.registerRedirects([
-  { domains: ['instagram.com', 'x.com'], target: 'airglow://focus-blocker?site=instagram.com' }
+  { domains: ['instagram.com', 'x.com'], target: 'airglow://app_123e4567-e89b-12d3-a456-426614174000?site=instagram.com' }
 ]);
 
 await airglow.platform.allowIframes(['notion.so'], ['example.com']);
 ```
 
-- `airglow://{appId}` resolves to the app's UI.
+- `airglow://{appId}` resolves to the app's UI. `{appId}` is `manifest.id`, not the directory slug.
 - `registerRedirects` replaces previous registrations on each call.
 - `allowIframes(domains, initiators?)` strips `X-Frame-Options` / CSP `frame-ancestors` so the listed `domains` can be framed. Optional `initiators` restricts which parent origins are allowed.
 

@@ -17,7 +17,7 @@ pnpm airglow dev     # start the dev server on localhost:3001
 ## Workspace layout
 
 ```
-<app-id>/         one app per directory
+<app-slug>/       one app per directory; usually matches manifest.slug
 shared/           code shared across apps
 docs/             technical docs
 scripts/          helper scripts
@@ -26,7 +26,7 @@ scripts/          helper scripts
 
 Each app is a folder with fixed structure:
 ```
-<app-id>/
+<app-slug>/
 ├── manifest.json   # App definition
 ├── userscripts/    # (Optional) Scripts injected into web pages
 ├── ui/             # (Optional) Dashboard UI
@@ -38,6 +38,8 @@ Apps are loaded into Chrome extension at runtime via local Airglow dev server (`
 For apps to work in browser, `pnpm airglow dev` must be running.
 
 A folder is identified as an app by its `manifest.json`.
+Each app has a unique opaque `manifest.id` for runtime namespaces, routes, logs, and disabled-app state.
+The directory name and `manifest.slug` are human-readable labels and are not required to be globally unique.
 
 ## App Structure
 

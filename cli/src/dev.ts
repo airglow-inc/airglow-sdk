@@ -161,6 +161,7 @@ function loadEnvFiles(paths: string[]): void {
 
 interface AppManifest {
   id: string;
+  slug?: string;
   name: string;
   secrets?: Record<string, { label?: string } | true>;
   server_env?: Record<string, { label?: string } | true>;
@@ -231,7 +232,9 @@ async function computeAppHash(appDir: string, sharedMtimes: number[]): Promise<s
 
 // Cache appId → absolute app dir. Populated by scanManifests, consumed by
 // every handler that needs to locate an app's files. Lets apps live anywhere
-// under appsDir (e.g. `local/<id>` for maintainer dogfooding apps).
+// under appsDir (e.g. `local/<slug>` for maintainer dogfooding apps).
+// Duplicate ids are invalid at runtime; keep the first directory so extension
+// manifest de-duping and dev-server routes resolve the same app.
 const appDirCache = new Map<string, string>();
 
 async function scanManifestsInto(
@@ -244,15 +247,16 @@ async function scanManifestsInto(
   let entries;
   try { entries = await readdir(root, { withFileTypes: true }); }
   catch { return; }
-  for (const entry of entries) {
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
     if (!entry.isDirectory()) continue;
     if (entry.name === 'node_modules' || entry.name === 'shared' || entry.name.startsWith('.')) continue;
     const appDir = join(root, entry.name);
     try {
       const raw = await readFile(join(appDir, 'manifest.json'), 'utf-8');
       const manifest = JSON.parse(raw);
+      if (typeof manifest.slug !== 'string' || !manifest.slug) manifest.slug = entry.name;
       manifest._hash = await computeAppHash(appDir, sharedMtimes);
-      if (manifest.id) appDirCache.set(manifest.id, appDir);
+      if (manifest.id && !appDirCache.has(manifest.id)) appDirCache.set(manifest.id, appDir);
       out.push(manifest);
       // Found an app — don't descend further (apps don't contain apps).
     } catch {
@@ -265,11 +269,23 @@ async function scanManifests(appsDir: string): Promise<AppManifest[]> {
   try {
     const sharedMtimes = await collectMtimes(join(appsDir, 'shared'));
     const manifests: AppManifest[] = [];
+    appDirCache.clear();
     await scanManifestsInto(appsDir, sharedMtimes, manifests, 0);
     return manifests;
   } catch {
     return [];
   }
+}
+
+function findDuplicateAppIds(manifests: AppManifest[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const m of manifests) {
+    if (!m.id) continue;
+    if (seen.has(m.id)) duplicates.add(m.id);
+    else seen.add(m.id);
+  }
+  return [...duplicates].sort();
 }
 
 async function resolveAppDir(appsDir: string, appId: string): Promise<string | null> {
@@ -674,13 +690,20 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
       console.log(`  The extension's logs endpoint and CDP network capture won't work until it's freed.\n`);
     }
     if (manifests.length === 0) {
-      console.log('  No apps found. Create one with: airglow new <id>\n');
+      console.log('  No apps found. Create one with: airglow new <slug>\n');
     } else {
+      const duplicateIds = findDuplicateAppIds(manifests);
+      if (duplicateIds.length > 0) {
+        console.log(`  \x1b[1;31mWarning — duplicate manifest.id values detected:\x1b[0m`);
+        for (const id of duplicateIds) console.log(`    ${id}`);
+        console.log(`  Runtime namespaces and routes require unique app ids; duplicate apps may be skipped.\n`);
+      }
       const { lines: missing, appsWithMissing } = findMissingEnv(appsDir, manifests);
       console.log(`  \x1b[1mServing ${manifests.length} app(s):\x1b[22m`);
       for (const m of manifests) {
         const prefix = appsWithMissing.has(m.id) ? `\x1b[1;31m(!)\x1b[0m ` : `    `;
-        console.log(`  ${prefix}${m.id} — ${m.name}`);
+        const slug = m.slug && m.slug !== m.id ? ` (${m.slug})` : '';
+        console.log(`  ${prefix}${m.id}${slug} — ${m.name}`);
       }
       console.log();
       if (missing.length > 0) {

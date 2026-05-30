@@ -30,7 +30,7 @@ Two log streams, depending on where things break:
 ```bash
 curl -s localhost:3101/logs | jq                            # last 50
 curl -s 'localhost:3101/logs?level=error' | jq              # errors only
-curl -s 'localhost:3101/logs?source=<app-id>' | jq          # per-app
+curl -s 'localhost:3101/logs?source=<app-id>' | jq          # per-app; use manifest.id
 curl -s 'localhost:3101/logs?level=error&n=10' | jq         # last 10 errors
 ```
 
@@ -52,7 +52,7 @@ curl -s -X POST http://127.0.0.1:3001/api/apps/<app-id>/rpc/<function-name> \
   -d '{"key":"value"}' | jq
 ```
 
-The JSON body becomes the function's `body` argument; the return value is what comes back.
+`<app-id>` is `manifest.id`, not the directory slug. The JSON body becomes the function's `body` argument; the return value is what comes back.
 
 ## Driving the browser via CDP
 

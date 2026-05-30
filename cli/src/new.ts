@@ -1,15 +1,20 @@
 import { mkdirSync, writeFileSync, existsSync } from 'fs';
 import { join } from 'path';
+import { randomUUID } from 'crypto';
 
-const APP_ID_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const APP_SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 function toTitleCase(kebab: string): string {
   return kebab.split('-').map(w => w[0].toUpperCase() + w.slice(1)).join(' ');
 }
 
-export function newApp(appId: string) {
-  if (!APP_ID_PATTERN.test(appId)) {
-    console.error(`Invalid app id "${appId}". Use lowercase letters, digits, and dashes (e.g. my-app).`);
+function newAppId(): string {
+  return `app_${randomUUID()}`;
+}
+
+export function newApp(appSlug: string) {
+  if (!APP_SLUG_PATTERN.test(appSlug)) {
+    console.error(`Invalid app slug "${appSlug}". Use lowercase letters, digits, and dashes (e.g. my-app).`);
     process.exit(1);
   }
 
@@ -18,19 +23,20 @@ export function newApp(appId: string) {
     process.exit(1);
   }
 
-  const appDir = join(process.cwd(), appId);
+  const appDir = join(process.cwd(), appSlug);
 
   if (existsSync(appDir)) {
-    console.error(`${appId}/ already exists`);
+    console.error(`${appSlug}/ already exists`);
     process.exit(1);
   }
 
-  const name = toTitleCase(appId);
+  const name = toTitleCase(appSlug);
   mkdirSync(appDir);
   mkdirSync(join(appDir, 'ui'));
 
   writeFileSync(join(appDir, 'manifest.json'), JSON.stringify({
-    id: appId,
+    id: newAppId(),
+    slug: appSlug,
     name,
     version: '0.1.0',
     description: '',
@@ -38,7 +44,7 @@ export function newApp(appId: string) {
   }, null, 2) + '\n');
 
   writeFileSync(join(appDir, 'package.json'), JSON.stringify({
-    name: appId,
+    name: appSlug,
     private: true,
   }, null, 2) + '\n');
 
@@ -59,5 +65,5 @@ createRoot(document.getElementById('root')!).render(<App />);
   writeFileSync(join(appDir, 'ui', 'globals.css'), `@import "../../shared/theme/tailwind-theme.css";
 `);
 
-  console.log(`Created ${appId}/`);
+  console.log(`Created ${appSlug}/`);
 }

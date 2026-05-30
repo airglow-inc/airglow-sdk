@@ -21,7 +21,8 @@ Run `pnpm airglow dev` from the workspace root. It serves manifests, bundles use
 
 ```json
 {
-  "id": "hn-tagger",
+  "id": "app_123e4567-e89b-12d3-a456-426614174000",
+  "slug": "hn-tagger",
   "name": "HN Tagger",
   "version": "0.1.0",
   "description": "AI-generated tags for every HN title",
@@ -48,7 +49,8 @@ Run `pnpm airglow dev` from the workspace root. It serves manifests, bundles use
 
 | Field | Purpose |
 |---|---|
-| `id` | Unique app id. Must equal the directory name. Used for storage namespacing and URL routing. |
+| `id` | Unique opaque runtime id. Keep it stable after creation. Used for storage namespacing, URL routing, logs, disabled-app state, and userscript worlds. It does not need to match the directory name. |
+| `slug` | Optional human-readable app slug, usually matching the directory name. Not guaranteed to be unique. Older manifests without `slug` are still valid; the dev server falls back to the directory name. |
 | `name`, `version`, `description` | Shown in the extension dashboard. |
 | `tags` | Optional. Displayed in dashboard. |
 | `visibility` | `"public"` (default), `"development"`, or `"hidden"`. `hidden` apps are skipped entirely. |
@@ -76,7 +78,7 @@ The user must have "Allow User Scripts" enabled on the extension detail page (Ch
 
 ## UI
 
-A React + Tailwind SPA that runs inside a sandboxed iframe at `app-shell.html?app=<id>`, opened from the extension toolbar.
+A React + Tailwind SPA that runs inside a sandboxed iframe at `app-shell.html?app=<id>`, opened from the extension toolbar. The `<id>` value is `manifest.id`, not the directory slug.
 
 ```
 package.json     # react, react-dom, tailwindcss, @tailwindcss/cli
@@ -123,7 +125,7 @@ Access to `airglow.storage`, `airglow.log`, and `airglow.platform`; no DOM and n
 // startup.ts
 const sites = (await airglow.storage.get('blocked_sites')) ?? ['instagram.com', 'x.com'];
 await airglow.platform.registerRedirects([
-  { domains: sites, target: 'airglow://focus-blocker' }
+  { domains: sites, target: 'airglow://app_123e4567-e89b-12d3-a456-426614174000' }
 ]);
 ```
 
