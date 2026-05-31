@@ -6,7 +6,7 @@ The `airglow` global is injected into every app context (userscript, UI iframe, 
 
 ## airglow.fetch(url, opts?)
 
-A fetch that bypasses CORS by routing through the extension service worker. Returns `{ status, ok, json(), text() }` — no `headers`, `arrayBuffer`, or streaming. For same-origin requests, the native `fetch()` global is preferable.
+A fetch that bypasses CORS by routing through the extension service worker. The target origin must match the app manifest's `host_permissions`. Returns `{ status, ok, json(), text() }` — no `headers`, `arrayBuffer`, or streaming. For same-origin requests, the native `fetch()` global is preferable.
 
 ```ts
 const res = await airglow.fetch('https://api.anthropic.com/v1/messages', {
@@ -16,7 +16,7 @@ const res = await airglow.fetch('https://api.anthropic.com/v1/messages', {
 });
 ```
 
-With `{ includeCookies: true }`, the request runs inside a tab on the target origin — cookies, `Sec-Fetch-*`, and `Origin` are indistinguishable from a request the user made. Requires a matching `host_permissions` entry; otherwise the call rejects with `lacks host_permissions for <host>`. If no tab is open on the origin, a background tab is created for the request and closed afterward.
+With `{ includeCookies: true }`, the request runs inside a tab on the target origin — cookies, `Sec-Fetch-*`, and `Origin` are indistinguishable from a request the user made. If no tab is open on the origin, a background tab is created for the request and closed afterward.
 
 ```ts
 const res = await airglow.fetch('https://wallet.google.com/wallet/transactions', {
