@@ -51,4 +51,4 @@ cli/
 
 ### Native-host debug bridge (default `:3101`)
 
-Extension log tail, reload trigger, and network-spy for reverse-engineering site APIs. See [`lib/native-host/README.md`](lib/native-host/README.md) for the full endpoint list.
+Extension log tail, reload trigger, and opt-in network capture for reverse-engineering site APIs. See [`lib/native-host/README.md`](lib/native-host/README.md) for the full endpoint list.

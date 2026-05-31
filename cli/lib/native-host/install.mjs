@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Installs the Chrome native messaging manifest for the Airglow debug bridge.
+// Installs the Chrome native messaging manifest for the Airglow native bridge.
 // Idempotent: safe to run on every `airglow dev`.
 // macOS only (which is what the SDK currently targets).
 //
@@ -12,6 +12,8 @@ import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+// Keep the native-messaging host id stable for installed extensions. User-facing
+// docs and logs call this component the Airglow native bridge.
 const HOST_NAME = 'com.airglow.spy';
 const EXTENSION_ID = 'comikpjjijckpjkobpkkpnnhlcpmagic'; // derived from pinned manifest.key
 
@@ -33,7 +35,7 @@ export function installNativeHost({ quiet = false, extraDirs = [] } = {}) {
 
   const manifest = {
     name: HOST_NAME,
-    description: 'Airglow extension debug bridge (logs, reload)',
+    description: 'Airglow extension native bridge (logs, reload)',
     path: hostWrapper,
     type: 'stdio',
     allowed_origins: [`chrome-extension://${EXTENSION_ID}/`],

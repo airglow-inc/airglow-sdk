@@ -12,7 +12,7 @@ Chrome native-messaging host exposing the running extension over `localhost:3101
 | `GET /logs` | Extension log store. Filters: `level=info\|warn\|error`, `source=<app-id>`, `n=<count>`. |
 | `POST /reload` | `chrome.runtime.reload()`. |
 
-### Network-spy (dormant unless attached)
+### Network capture (dormant unless attached)
 
 For reverse-engineering a website's API. Zero overhead until `/attach`.
 
@@ -30,4 +30,5 @@ Loop: `/attach` → action in browser → `/read?compact=1` → `/entry?i=N&curl
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `AIRGLOW_SPY_PORT` | `3101` | HTTP server port. |
+| `AIRGLOW_BRIDGE_PORT` | `3101` | HTTP server port. |
+| `AIRGLOW_SPY_PORT` | `3101` | Deprecated alias for `AIRGLOW_BRIDGE_PORT`. |
