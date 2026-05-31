@@ -1,0 +1,323 @@
+import"./_virtual_wxt-html-plugins-Ch_nAHUK.js";import{i as e,n as t,r as n,t as r}from"./airglow-identity-Q5gT8WbV.js";var i=`<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="80 85 862 862">
+  <defs>
+    <clipPath id="roundClip">
+      <rect x="80" y="85" width="862" height="862" rx="170" ry="170"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#roundClip)">
+  <rect width="1024" height="1024" fill="#0D3B6E"/>
+  <g transform="translate(52, 18) scale(0.98)">
+    <!-- Golden A with transparent inner triangle hole -->
+    <path fill="#F8BB5B" fill-rule="evenodd" d="M416.6 246.2 L210.4 731 L313 649.9 L326.7 649.9 L446.9 551.2 L539.7 639.1 L560.2 640.1 L698 731 L490.8 246.2 Z M392.1 543.3 L510.4 543.3 L450.8 382.1 Z"/>
+    <!-- Sun/planet -->
+    <path fill="#FB864A" d="M714.632 416.635C701.3 446.692 670.155 464.771 637.443 461.441C604.73 458.111 577.867 434.126 570.866 401.999C563.864 369.872 578.312 336.885 606.672 320.245C635.032 303.605 670.876 307.085 695.506 328.87C709.65 341.38 718.632 358.707 720.703 377.476C720.758 377.977 720.809 378.478 720.854 378.98C722.016 391.856 719.875 404.817 714.632 416.635Z"/>
+    <path fill="#F6BA7A" d="M674.548 332.541L674.905 332.69C677.361 331.084 676.906 328.459 677.036 325.788C678.102 324.634 677.466 325.097 679.233 324.748C681.501 325.365 682.443 326.616 683.621 328.538L683.137 330.131L687.106 329.733C691.712 328.306 692.587 330.646 695.506 328.87C709.65 341.38 718.632 358.707 720.703 377.476C720.758 377.977 720.809 378.478 720.854 378.98C722.016 391.856 719.875 404.817 714.632 416.635C708.541 411.358 712.424 412.254 704.958 412.913L704.491 412.455C705.951 410.713 704.839 410.488 706.187 408.805L707.343 409.645L707.748 409.427L707.844 408.521L706.402 407.949C705.403 406.052 707.315 406.913 706.417 404.34C703.57 403.873 703.992 403.561 701.653 402.711C698.626 398.385 698.064 402.518 695.984 398.482L695.115 397.327C692.938 396.765 692.048 396.464 689.981 395.579L688.771 396.414C687.089 394.898 685.594 391.681 686.147 389.365C685.354 388.132 683.986 388.931 682.316 387.256C682.45 386.551 682.552 385.968 682.659 385.254C677.763 383.658 676.69 388.106 673.48 390.943C671.639 391.157 671.769 391.152 670.003 390.563C669.93 387.571 669.622 387.777 667.621 385.444C665.025 385.444 665.122 386.26 662.095 385.515L660.539 384.526C655.786 386.038 657.135 387.466 651.142 387.237L649.872 387.801C647.029 387.051 646.255 386.845 643.521 387.6L641.995 387.253C641.368 385.528 642.16 384.153 642.691 381.995C643.117 379.653 645.711 378.558 647.29 375.747L645.776 375.201C646 373.603 646.182 374.287 645.645 372.966C643.588 372.855 642.221 371.894 640.824 372.26C639.977 373.634 639.857 373.868 638.73 375.109C637.107 375.612 633.681 374.726 631.365 374.569C632.259 373.404 632.79 372.393 633.508 371.128L635.483 370.834L635.943 369.983L635.644 369.344L632.847 369.35C631.954 368.448 632.269 369.006 632.258 367.437C634.332 366.016 634.686 367.871 636.805 366.491C637.161 364.464 636.982 365.005 635.875 362.729C638.363 359.8 641.113 361.535 643.977 360.217L644.248 359.252C643.277 358.031 643.165 357.941 642.503 356.55L643.218 354.93C645.048 355.356 646.032 355.125 647.021 356.823C648.136 357.805 648.11 357.739 648.843 359.02L648.94 358.512C648.658 356.899 649.966 354.935 650.757 353.359C651.576 351.505 651.509 349.5 653.015 348.396L654.008 348.675L654.548 349.744L653.504 351.518L653.661 352.116L656.503 349.08C655.892 348.019 655.994 348.294 654.995 347.447C654.547 345.166 654.309 347.428 653.728 344.937C654.566 344.333 655.282 343.858 656.154 343.303L655.638 343.074C654.395 341.476 649.895 337.543 649.715 336.414C652.538 335.853 654.583 340.135 656.961 337.353C657.211 335.218 656.96 334.574 656.532 332.412C658.231 334.009 658.747 333.85 661.227 334.099L661.227 334.909L659.775 336.97L660.041 337.989C662.37 338.946 672.354 339.317 675.267 338.299L675.535 337.639C674.875 336.941 674.089 336.307 673.807 335.481C674.096 334.692 674.348 333.399 674.548 332.541Z"/>
+    <path fill="#F8DCA2" d="M698.326 346.136C699.209 345.341 699.572 344.917 700.22 343.921L701.006 343.828C700.817 344.033 700.627 344.237 700.437 344.442C701.071 347.71 697.659 348.985 702.83 353.815C700.96 359.38 706.433 358.415 704.524 363.207L703.244 362.181C702.529 362.505 701.323 363.487 700.47 363.977C698.649 363.702 699.031 363.577 697.374 362.127L696.967 363.834C695.338 362.944 695.038 363.48 693.535 362.192L693.661 361.507C692.12 360.75 692.191 360.617 690.54 360.89C689.676 361.466 688.858 362.007 688.015 362.617L686.959 361.313C685.367 360.555 682.949 359.9 681.212 359.366C682.488 357.538 682.74 357.079 684.851 356.781C687.624 354.432 689.172 354.362 690.861 350.96L690.852 350.909C692.744 351.167 692.438 351.735 694.21 352.094C696.354 350.82 698.902 348.946 698.326 346.136Z"/>
+    <!-- Left mountain -->
+    <path fill="#F99E3D" d="M200.8 753.5 L318.8 753.5 L355 678.2 L393.1 697.8 L448.8 634.2 L473.3 659.6 L468.4 634.2 L475.2 627.4 L446.9 570.7 L334.5 667.5 Z"/>
+    <!-- Right mountain -->
+    <path fill="#F99E3D" d="M595.4 753.5 L707.6 753.5 L556.3 669.4 Z"/>
+  </g>
+  </g>
+</svg>
+`,a=`<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;function o(e){let t=e?.position??{top:`50%`,transform:`translateY(-50%)`},n=document.createElement(`div`);n.setAttribute(`data-testid`,`airglow-edge-popup`),Object.assign(n.style,{position:`fixed`,right:`48px`,top:t.top??``,bottom:t.bottom??``,transform:t.transform??``,background:`#f9f8f3`,borderRadius:`12px`,boxShadow:`0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.06)`,padding:`12px 14px`,zIndex:`2147483647`,fontFamily:`Inter, system-ui, sans-serif`,fontSize:`14px`,color:`#1a1a1a`,minWidth:`180px`,display:`none`,opacity:`0`,transition:`opacity 0.12s ease-out`}),document.body.appendChild(n);let r=!1,i={el:n,show:l,hide:u};function o(){let e=document.createElement(`div`);if(e.setAttribute(`data-testid`,`popup-footer`),Object.assign(e.style,{marginTop:`6px`,paddingTop:`6px`,borderTop:`1px solid rgba(0,0,0,0.08)`,display:`flex`,alignItems:`center`}),r){Object.assign(e.style,{justifyContent:`space-between`,gap:`8px`,paddingTop:`6px`,marginTop:`6px`});let t=document.createElement(`span`);t.textContent=`Refresh to apply`,Object.assign(t.style,{fontSize:`12px`,color:`#888`,whiteSpace:`nowrap`});let n=document.createElement(`button`);n.textContent=`Refresh`,Object.assign(n.style,{fontSize:`12px`,padding:`3px 8px`,borderRadius:`6px`,border:`1px solid rgba(0,0,0,0.12)`,background:`#fff`,cursor:`pointer`,color:`#0D3B6E`,fontWeight:`500`,flexShrink:`0`,fontFamily:`inherit`}),n.addEventListener(`click`,e=>{e.stopPropagation(),location.reload()}),e.appendChild(t),e.appendChild(n)}else{let t=document.createElement(`button`);t.textContent=`Hide`,t.setAttribute(`data-testid`,`airglow-hide-button`),t.style.cssText=`font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid rgba(0,0,0,0.12); background:#fff; cursor:pointer; font-family:inherit; font-weight:500;`,t.style.setProperty(`color`,`#0D3B6E`,`important`),t.addEventListener(`mouseenter`,()=>{t.style.borderColor=`rgba(0,0,0,0.2)`}),t.addEventListener(`mouseleave`,()=>{t.style.borderColor=`rgba(0,0,0,0.12)`}),t.addEventListener(`click`,e=>{e.stopPropagation(),u(),i.onHideAll?.()}),e.appendChild(t)}return e}function s(e){if(e.length===0){n.innerHTML=``;let e=document.createElement(`div`);e.style.cssText=`color:#888; font-size:13px;`,e.textContent=`No apps on this page`,n.appendChild(e),n.appendChild(o());return}n.innerHTML=``;for(let t of e){let e=document.createElement(`div`);Object.assign(e.style,{display:`flex`,alignItems:`center`,justifyContent:`space-between`,padding:`6px 0`,gap:`12px`});let i=document.createElement(`div`);if(Object.assign(i.style,{display:`flex`,alignItems:`center`,gap:`5px`}),t.hasError){let e=document.createElement(`a`);e.href=`#`,e.innerHTML=a,Object.assign(e.style,{color:`#e53e3e`,display:`flex`,alignItems:`center`,flexShrink:`0`,cursor:`pointer`,transition:`transform 0.12s ease-out, filter 0.12s`}),e.title=`View error logs`,e.addEventListener(`mouseenter`,()=>{e.style.transform=`scale(1.25)`,e.style.filter=`brightness(1.3)`}),e.addEventListener(`mouseleave`,()=>{e.style.transform=`scale(1)`,e.style.filter=``}),e.addEventListener(`click`,e=>{e.preventDefault(),e.stopPropagation(),chrome.runtime.sendMessage({type:`airglow:open-dashboard`,page:`logs`})}),i.appendChild(e)}let o=document.createElement(`a`);o.textContent=t.name,o.href=`#`,Object.assign(o.style,{fontSize:`14px`,color:t.disabled?`#999`:`#1a1a1a`,whiteSpace:`nowrap`,textDecoration:`none`,cursor:`pointer`}),o.addEventListener(`mouseenter`,()=>{o.style.textDecoration=`underline`}),o.addEventListener(`mouseleave`,()=>{o.style.textDecoration=`none`}),o.addEventListener(`click`,e=>{e.preventDefault(),e.stopPropagation(),chrome.runtime.sendMessage({type:`airglow:open-app`,appId:t.id})}),i.appendChild(o);let s=document.createElement(`button`);Object.assign(s.style,{width:`36px`,height:`20px`,borderRadius:`10px`,border:`none`,cursor:`pointer`,position:`relative`,background:t.disabled?`#ddd`:`#0D3B6E`,transition:`background 0.15s`,flexShrink:`0`});let l=document.createElement(`div`);Object.assign(l.style,{width:`16px`,height:`16px`,borderRadius:`50%`,background:`#fff`,position:`absolute`,top:`2px`,left:t.disabled?`2px`:`18px`,transition:`left 0.15s`,boxShadow:`0 1px 3px rgba(0,0,0,0.2)`}),s.appendChild(l),s.addEventListener(`click`,e=>{e.stopPropagation(),chrome.runtime.sendMessage({type:`airglow:toggle-app`,appId:t.id},e=>{e?.ok&&(t.disabled=e.disabled,o.style.color=t.disabled?`#999`:`#1a1a1a`,s.style.background=t.disabled?`#ddd`:`#0D3B6E`,l.style.left=t.disabled?`2px`:`18px`,r=!0,c())})}),e.appendChild(i),e.appendChild(s),n.appendChild(e)}n.appendChild(o())}function c(){r=!0;let e=n.querySelector(`[data-testid="popup-footer"]`);e&&e.replaceWith(o())}function l(){n.style.display=`block`,requestAnimationFrame(()=>{n.style.opacity=`1`});let t={type:`airglow:get-page-apps`,url:location.href};e?.appId&&(t.appId=e.appId),chrome.runtime.sendMessage(t,t=>{t?.apps&&(s(t.apps),e?.onApps?.(t.apps))})}function u(){n.style.opacity=`0`,setTimeout(()=>{n.style.display=`none`},120)}return i}function s(){if(new URLSearchParams(location.search).get(`edge`)===`0`)return;if(!document.body){document.addEventListener(`DOMContentLoaded`,()=>s());return}let e=new URLSearchParams(location.search).get(`app`)||void 0,t=document.createElement(`div`);t.setAttribute(`data-testid`,`airglow-edge-button`),t.innerHTML=`
+    <div style="
+      width: 40px; height: 56px;
+      border-radius: 14px 0 0 14px;
+      background: #f9f8f3;
+      box-shadow: -2px 0 10px rgba(0,0,0,0.10), 0 0 0 1px rgba(0,0,0,0.05);
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      opacity: 0.5;
+      transition: opacity 0.15s;
+    ">
+      <div data-airglow-icon style="width: 22px; height: 22px; border-radius: 4px; overflow: hidden;">${i}</div>
+    </div>`,Object.assign(t.style,{position:`fixed`,right:`0px`,bottom:`20vh`,zIndex:`2147483647`}),document.body.appendChild(t);let n=t.querySelector(`[data-airglow-icon]`),r=o({position:{bottom:`20vh`},appId:e,onApps(e){let t=e.some(e=>e.hasError);n.style.outline=t?`2px solid #e53e3e`:``,n.style.outlineOffset=t?`1px`:``}}),{el:a,show:c,hide:l}=r,u=!1,d=!1,f=null;r.onHideAll=()=>{u=!1,d=!1,t.style.display=`none`};function p(){f&&clearTimeout(f),f=setTimeout(()=>{if(!u&&!d){l();let e=t.firstElementChild;e.style.opacity=`0.5`}},200)}t.addEventListener(`mouseenter`,()=>{u=!0,f&&clearTimeout(f);let e=t.firstElementChild;e.style.opacity=`1`,c()}),t.addEventListener(`mouseleave`,()=>{u=!1,p()}),a.addEventListener(`mouseenter`,()=>{d=!0,f&&clearTimeout(f)}),a.addEventListener(`mouseleave`,()=>{d=!1,p()}),t.addEventListener(`click`,e=>{e.stopPropagation(),chrome.runtime.sendMessage({type:`airglow:open-dashboard`})})}var c={enableNativeHost:!0,localManifestPollMs:5e3,enableFeedback:!0,feedbackEndpoint:``,devUserEmail:void 0},l=`__airglow_logs`,u=1e3;function d(e){let t={info:0,warn:0,error:0};for(let n of e)t[n.level]++;let n={info:Math.max(0,t.info-u),warn:Math.max(0,t.warn-u),error:Math.max(0,t.error-u)};if(n.info===0&&n.warn===0&&n.error===0)return e;let r={...n},i=[];for(let t of e){if(r[t.level]>0){r[t.level]--;continue}i.push(t)}return i}var f=[],p=null,m=300;function h(){p||=setTimeout(g,m)}async function g(){if(p=null,f.length===0)return;let e=f;f=[];try{let t=await chrome.storage.local.get(l),n=d((Array.isArray(t[l])?t[l]:[]).concat(e));await chrome.storage.local.set({[l]:n})}catch{f=e.concat(f)}}function _(e,t,n,r){let i={ts:Date.now(),level:e,source:t,message:n};r&&(i.stack=r),f.push(i),h();let a=`[${t}]`;e===`error`?console.error(a,n,r||``):e===`warn`?console.warn(a,n):console.log(a,n)}var v={info:(e,t)=>_(`info`,e,t),warn:(e,t)=>_(`warn`,e,t),error:(e,t,n)=>_(`error`,e,t,n),async getAll(){let e=await chrome.storage.local.get(l);return Array.isArray(e[l])?e[l]:[]},async clear(){f=[],await chrome.storage.local.remove(l)}},y=`0.1.0-beta.1`;function b(e){return`
+(function() {
+  const APP_ID = ${JSON.stringify(e)};
+  const SDK_VERSION = ${JSON.stringify(y)};
+  const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
+
+  let callCounter = 0;
+  const pendingCalls = {};
+
+  function makeAirglowError(response) {
+    const error = new Error(response?.error || 'Airglow SDK call failed');
+    error.name = 'AirglowError';
+    if (response?.code) error.code = response.code;
+    if (response?.status) error.status = response.status;
+    if (response?.requestId) error.requestId = response.requestId;
+    if (response?.details !== undefined) error.details = response.details;
+    if (response?.onboardingUrl) error.onboardingUrl = response.onboardingUrl;
+    return error;
+  }
+
+  function runtimeErrorPayload(kind, error, extras) {
+    const message = error?.message || String(error || kind);
+    return {
+      kind,
+      message,
+      name: error?.name,
+      stack: error?.stack,
+      ...extras,
+    };
+  }
+
+  function notifyRuntimeError(payload) {
+    if (usePostMessage && globalThis.parent && globalThis.parent !== globalThis) {
+      globalThis.parent.postMessage({
+        _airglow_app_error: true,
+        appId: APP_ID,
+        sdkVersion: SDK_VERSION,
+        ...payload,
+      }, '*');
+    }
+  }
+
+  function logRuntimeError(payload) {
+    sendMsg({
+      type: 'airglow:log',
+      level: 'error',
+      message: payload.message || 'Unhandled app error',
+      stack: payload.stack,
+      data: {
+        kind: payload.kind,
+        name: payload.name,
+        filename: payload.filename,
+        lineno: payload.lineno,
+        colno: payload.colno,
+      },
+    }).catch(function() {});
+  }
+
+  // Listen for postMessage responses from parent (app-shell)
+  if (usePostMessage) {
+    window.addEventListener('message', function(e) {
+      if (e.data?._airglow_response && e.data._callId != null) {
+        const cb = pendingCalls[e.data._callId];
+        if (cb) {
+          delete pendingCalls[e.data._callId];
+          cb(e.data);
+        }
+      }
+    });
+  }
+
+  function sendMsg(payload) {
+    if (usePostMessage) {
+      return new Promise((resolve, reject) => {
+        const callId = callCounter++;
+        pendingCalls[callId] = (response) => {
+          if (response?.error) reject(makeAirglowError(response));
+          else resolve(response);
+        };
+        window.parent.postMessage(
+          { ...payload, _airglow: true, _appId: APP_ID, _callId: callId },
+          '*'
+        );
+      });
+    }
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(
+        { ...payload, _airglow: true, _appId: APP_ID },
+        async (response) => {
+          if (chrome.runtime.lastError) {
+            reject(makeAirglowError({
+              error: chrome.runtime.lastError.message,
+              code: 'CHROME_RUNTIME_ERROR',
+            }));
+          } else if (response?.error) {
+            reject(makeAirglowError(response));
+          } else {
+            resolve(response);
+          }
+        }
+      );
+    });
+  }
+
+  const storage = {
+    async get(key) {
+      const res = await sendMsg({ type: 'airglow:storage:get', key });
+      return res?.value;
+    },
+    async set(key, value) {
+      await sendMsg({ type: 'airglow:storage:set', key, value });
+    },
+    async delete(key) {
+      await sendMsg({ type: 'airglow:storage:delete', key });
+    },
+    async list() {
+      const res = await sendMsg({ type: 'airglow:storage:list' });
+      return res?.keys ?? [];
+    },
+  };
+
+  const log = {
+    async info(message, data) {
+      await sendMsg({ type: 'airglow:log', level: 'info', message, data });
+    },
+    async warn(message, data) {
+      await sendMsg({ type: 'airglow:log', level: 'warn', message, data });
+    },
+    async error(message, data) {
+      await sendMsg({ type: 'airglow:log', level: 'error', message, data });
+    },
+  };
+
+  // Auto-capture uncaught errors. The global error handler also fires for
+  // errors from the host page (e.g. Outlook's own ResizeObserver loop), so we
+  // only report errors whose filename or stack points back to our bundle —
+  // app-loader prepends a "//# sourceURL=airglow-app://..." directive that
+  // tags every frame of our injected code.
+  function isAppError(filename, stack) {
+    if (typeof filename === 'string' && filename.indexOf('airglow-app://') === 0) return true;
+    if (typeof stack === 'string' && stack.indexOf('airglow-app://') !== -1) return true;
+    return false;
+  }
+  window.addEventListener('error', function(e) {
+    if (!isAppError(e.filename, e.error?.stack)) return;
+    const payload = runtimeErrorPayload('uncaught_error', e.error || e.message, {
+      message: e.message || e.error?.message || 'Uncaught error',
+      filename: e.filename,
+      lineno: e.lineno,
+      colno: e.colno,
+    });
+    notifyRuntimeError(payload);
+    logRuntimeError(payload);
+  });
+  window.addEventListener('unhandledrejection', function(e) {
+    const reason = e.reason;
+    if (!isAppError(reason?.fileName, reason?.stack)) return;
+    const payload = runtimeErrorPayload('unhandled_rejection', reason, {
+      message: reason?.message || 'Unhandled promise rejection',
+    });
+    notifyRuntimeError(payload);
+    logRuntimeError(payload);
+  });
+
+  async function airglowFetch(url, opts = {}) {
+    const { includeCookies, ...fetchOpts } = opts;
+    const res = await sendMsg({
+      type: 'airglow:fetch',
+      url,
+      method: fetchOpts.method || 'GET',
+      headers: fetchOpts.headers,
+      body: fetchOpts.body,
+      includeCookies: !!includeCookies,
+    });
+    return {
+      status: res.status,
+      ok: res.status >= 200 && res.status < 300,
+      json: () => Promise.resolve(res.body),
+      text: () => Promise.resolve(typeof res.body === 'string' ? res.body : JSON.stringify(res.body)),
+    };
+  }
+
+  async function rpc(functionName, payload) {
+    const res = await sendMsg({ type: 'airglow:rpc', functionName, payload });
+    return res?.result;
+  }
+
+  const platform = {
+    async registerRedirects(rules) {
+      await sendMsg({ type: 'airglow:platform:registerRedirects', rules });
+    },
+    async allowIframes(domains, initiators) {
+      await sendMsg({ type: 'airglow:platform:allowIframes', domains, initiators: initiators || [] });
+    },
+  };
+
+  const identity = {
+    async launchWebAuthFlow(url) {
+      const res = await sendMsg({ type: 'airglow:identity:launchWebAuthFlow', url });
+      return res?.redirectUrl;
+    },
+    async getRedirectURL() {
+      const res = await sendMsg({ type: 'airglow:identity:getRedirectURL' });
+      return res?.url;
+    },
+    async getUserEmail() {
+      const res = await sendMsg({ type: 'airglow:identity:getUserEmail' });
+      return res?.email;
+    },
+    async setUserEmail(email) {
+      const res = await sendMsg({ type: 'airglow:identity:setUserEmail', email });
+      return res?.email;
+    },
+  };
+
+  async function captureTab() {
+    const res = await sendMsg({ type: 'airglow:captureTab' });
+    if (res?.error) throw new Error(res.error);
+    return { base64: res.base64, mediaType: res.mediaType };
+  }
+
+  async function openWindow(url, opts = {}) {
+    await sendMsg({ type: 'airglow:openWindow', url, width: opts.width, height: opts.height, left: opts.left, top: opts.top, popup: opts.popup });
+  }
+
+  async function openWindowAndWaitClose(url, opts = {}) {
+    await sendMsg({ type: 'airglow:openWindow', url, width: opts.width, height: opts.height, left: opts.left, top: opts.top, popup: opts.popup, waitClose: true });
+  }
+
+  async function openTab(url, opts = {}) {
+    await sendMsg({ type: 'airglow:openTab', url, active: opts.active });
+  }
+
+  globalThis.airglow = {
+    sdkVersion: SDK_VERSION,
+    fetch: airglowFetch,
+    storage,
+    log,
+    rpc,
+    platform,
+    identity,
+    captureTab,
+    openWindow,
+    openWindowAndWaitClose,
+    openTab,
+  };
+})();
+`}var x=`__app_sources`,S=`__app_manifests`,C=12e3,w=8e3,T=[1e3,3e3],E=[500,1500],D=new URLSearchParams(window.location.search),O=D.get(`app`);O?k(O):document.getElementById(`loading`).textContent=`Missing app parameter`;async function k(e){for(let t=0;t<5;t++){let n=((await chrome.storage.local.get(x))[x]||{})[e];if(n?.url){A(e,n);return}t<4&&await new Promise(e=>setTimeout(e,1e3))}v.warn(`airglow`,`no source registered for app '${e}' after 5 attempts`),document.getElementById(`loading`).textContent=`App '${e}' not found. Is an app source reachable?`}function A(i,a){let o=a.url.replace(/\/+$/,``),s=null,l=null,u=0,d=!1,f,p=null,m=``;chrome.storage.local.get(S).then(e=>{let t=(Array.isArray(e[S])?e[S]:[]).find(e=>e?.id===i);t?.name&&(f=t.name,document.title=t.name)}).catch(e=>{v.warn(`airglow`,`cached manifest title lookup failed: ${e instanceof Error?e.message:String(e)}`)});function h(e=!1){let t=new URLSearchParams(D);return e&&t.set(`_airglow_reload`,String(Date.now())),`${o}/api/apps/${i}/ui?${t.toString()}`}function g(e=!1){let t=new URLSearchParams;e&&t.set(`_airglow_reload`,String(Date.now()));let n=t.toString();return`${o}/api/apps/${i}/ui-bundle${n?`?${n}`:``}`}function _(e=!1){let t=new URLSearchParams(D);return t.set(`app`,i),t.set(`nonce`,m),e&&t.set(`_airglow_reload`,String(Date.now())),chrome.runtime.getURL(`app-ui-sandbox.html?${t.toString()}`)}function y(e){let t=document.getElementById(`loading`);t||(t=document.createElement(`div`),t.id=`loading`,document.body.appendChild(t)),t.textContent=e}function x(){l&&=(clearTimeout(l),null)}function O(e){return new Promise(t=>setTimeout(t,e))}function k(e){return e===408||e===409||e===425||e===429||e>=500&&e<=599}async function A(e){let t=``;for(let n=0;n<=E.length;n++)try{let r=await fetch(e,{signal:AbortSignal.timeout(w)});if(!r.ok&&k(r.status)&&n<E.length){t=`UI bundle request failed with HTTP ${r.status}`,await O(E[n]);continue}return r}catch(e){if(t=e instanceof Error?e.message:String(e),n<E.length){await O(E[n]);continue}throw Error(`UI bundle request failed after ${E.length+1} attempts: ${t}`)}throw Error(`UI bundle request failed: ${t}`)}let M=null;async function N(){return t((await chrome.storage.local.get(r))[r])||M||(M=new Promise(e=>{let n=document.getElementById(`airglow-email-required`);n&&n.remove();let r=document.createElement(`div`);r.id=`airglow-email-required`,r.style.cssText=[`position:fixed`,`inset:0`,`z-index:2147483647`,`display:flex`,`align-items:center`,`justify-content:center`,`padding:24px`,`background:rgba(245,245,244,.96)`,`color:#1c1917`,`font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif`].join(`;`),r.innerHTML=`
+        <form id="airglow-email-required-form" style="width:min(460px,100%);border:1px solid #e7e5e4;border-radius:10px;background:#fff;padding:22px;box-shadow:0 12px 32px rgba(28,25,23,.14)">
+          <div style="font-size:13px;color:#78716c;margin-bottom:6px">Airglow setup</div>
+          <div style="font-size:20px;font-weight:650;line-height:1.25;margin-bottom:8px">Email required</div>
+          <div style="font-size:14px;line-height:1.5;color:#57534e;margin-bottom:16px">Airglow stores your email locally in this extension so apps can identify this browser. Apps stay paused until this is filled.</div>
+          <input id="airglow-email-required-input" type="email" required placeholder="you@example.com" style="box-sizing:border-box;width:100%;height:40px;padding:0 12px;border:1px solid #d6d3d1;border-radius:6px;background:#fafaf9;color:#1c1917;font-size:14px;outline:none" />
+          <div id="airglow-email-required-error" style="display:none;margin-top:8px;color:#b91c1c;font-size:13px">Enter a valid email address.</div>
+          <button type="submit" style="margin-top:16px;height:38px;padding:0 16px;border:0;border-radius:999px;background:#1c1917;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Continue</button>
+        </form>
+      `,document.body.appendChild(r);let a=document.getElementById(`airglow-email-required-form`),o=document.getElementById(`airglow-email-required-input`),s=document.getElementById(`airglow-email-required-error`);o?.focus(),a?.addEventListener(`submit`,n=>{n.preventDefault();let a=t(o?.value);if(!a){s&&(s.style.display=`block`),o&&(o.style.borderColor=`#b91c1c`);return}chrome.runtime.sendMessage({type:`airglow:identity:setUserEmail`,_airglow:!0,_appId:i,email:a},()=>{r.remove(),M=null,e(a)})})}),M)}function P(){document.getElementById(`airglow-app-crash`)?.remove(),d=!1}function F(e){return[e.name?`${e.name}: ${e.message}`:e.message,e.filename?`${e.filename}:${e.lineno??0}:${e.colno??0}`:``,e.stack||``].filter(Boolean).join(`
+
+`)}function I(e,t,n){d=!0,x();let r=document.getElementById(`airglow-app-crash`);r&&r.remove();let i=document.createElement(`div`);i.id=`airglow-app-crash`,i.style.cssText=[`position:fixed`,`inset:0`,`z-index:2147483647`,`display:flex`,`align-items:center`,`justify-content:center`,`padding:24px`,`background:#f5f5f4`,`color:#1c1917`,`font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif`].join(`;`);let a=n?F(n):``;i.innerHTML=`
+      <div style="width:min(640px,100%);border:1px solid #e7e5e4;border-radius:8px;background:#fff;padding:20px;box-shadow:0 12px 32px rgba(28,25,23,.12)">
+        <div style="font-size:13px;color:#78716c;margin-bottom:6px">Airglow app crashed</div>
+        <div style="font-size:20px;font-weight:650;line-height:1.25;margin-bottom:8px">${j(e)}</div>
+        <div style="font-size:14px;line-height:1.5;color:#57534e;margin-bottom:16px">${j(t)}</div>
+        ${a?`<pre style="max-height:220px;overflow:auto;white-space:pre-wrap;background:#fafaf9;border:1px solid #e7e5e4;border-radius:6px;padding:12px;font-size:12px;line-height:1.45;color:#44403c;margin-bottom:16px">${j(a)}</pre>`:``}
+        <div style="display:flex;gap:8px;align-items:center">
+          <button id="airglow-reload-app" style="height:36px;padding:0 14px;border:0;border-radius:999px;background:#1c1917;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Reload app</button>
+          <button id="airglow-reload-extension" style="height:36px;padding:0 14px;border:1px solid #d6d3d1;border-radius:999px;background:#fff;color:#44403c;font-size:14px;font-weight:600;cursor:pointer">Reload extension</button>
+        </div>
+      </div>
+    `,document.body.appendChild(i),document.getElementById(`airglow-reload-app`)?.addEventListener(`click`,()=>R(!0)),document.getElementById(`airglow-reload-extension`)?.addEventListener(`click`,()=>chrome.runtime.reload())}function L(){x(),l=setTimeout(()=>{let e=T[u];if(e!==void 0){u++,y(`App did not load. Retrying ${u}/${T.length}...`),window.setTimeout(()=>R(!0),e);return}I(`App '${i}' did not finish loading`,`The UI iframe did not fire a load event. This is usually a dev server, network, or bundle problem. Reloading the app iframe is enough; you should not need to restart the whole extension.`)},C)}function R(e=!1){if(P(),y(`Loading...`),s){if(a.type===`official`){x(),z(e).catch(e=>{I(`App '${i}' failed to load`,e instanceof Error?e.message:String(e))});return}L(),s.setAttribute(`sandbox`,`allow-scripts allow-same-origin allow-forms`),s.src=h(e)}}async function z(e=!1){if(!s)return;let t=await A(g(e));if(!t.ok){let e=`${t.status}`;try{let n=await t.json();n?.error&&(e=typeof n.error==`string`?n.error:JSON.stringify(n.error))}catch{}throw Error(`UI bundle request failed: ${e}`)}m=crypto.randomUUID(),p={sdk:b(i),code:await t.text()},s.setAttribute(`sandbox`,`allow-scripts allow-forms`),L(),s.src=_(e)}window.addEventListener(`message`,e=>{if(!s||e.source!==s.contentWindow)return;let t=e.source,r=e.data;if(r?._airglow_app_error&&r.appId===i){d||I(`App '${i}' hit an unhandled error`,`The app iframe is still isolated. You can reload only this app without restarting the extension.`,r);return}r?._airglow&&(async()=>{n(r.type)&&await N();let e={...r,_appId:i};chrome.runtime.sendMessage(e,e=>{let n=chrome.runtime.lastError?{error:chrome.runtime.lastError.message||`Chrome runtime message failed`,code:`CHROME_RUNTIME_ERROR`}:e||{};t?.postMessage({_airglow_response:!0,_callId:r._callId,...n},`*`)})})().catch(e=>{t?.postMessage({_airglow_response:!0,_callId:r._callId,error:e?.message||String(e),code:e?.code||`EMAIL_REQUIRED`},`*`)})}),s=document.createElement(`iframe`),s.style.cssText=`position:fixed;inset:0;width:100%;height:100%;border:none;`,s.setAttribute(`sandbox`,`allow-scripts allow-same-origin allow-forms`),s.setAttribute(`allow`,`clipboard-read; clipboard-write`),s.onload=()=>{u=0,x(),document.getElementById(`loading`)?.remove(),p&&s?.contentWindow&&(s.contentWindow.postMessage({type:`airglow:ui:run`,appId:i,nonce:m,...p},`*`),p=null)},s.onerror=()=>{I(`App '${i}' failed to load`,`The browser reported an iframe load error. Reloading this app iframe should recover after a transient server or network issue.`)},document.body.appendChild(s),B(),R(!1);function B(){if(!c.enableFeedback)return;let e=document.createElement(`button`);e.id=`airglow-feedback-button`,e.type=`button`,e.textContent=`Feedback`,e.style.cssText=[`position:fixed`,`right:16px`,`bottom:16px`,`z-index:2147483646`,`height:34px`,`padding:0 13px`,`border:1px solid rgba(214,211,209,.9)`,`border-radius:999px`,`background:rgba(255,255,255,.92)`,`color:#1c1917`,`font:600 13px system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif`,`box-shadow:0 8px 24px rgba(28,25,23,.16)`,`cursor:pointer`].join(`;`),e.addEventListener(`click`,()=>V()),document.body.appendChild(e)}function V(){let e=document.getElementById(`airglow-feedback-overlay`);e&&e.remove();let t=document.createElement(`div`);t.id=`airglow-feedback-overlay`,t.style.cssText=[`position:fixed`,`inset:0`,`z-index:2147483647`,`display:flex`,`align-items:flex-end`,`justify-content:flex-end`,`padding:20px`,`background:rgba(28,25,23,.18)`,`font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif`].join(`;`),t.innerHTML=`
+      <form id="airglow-feedback-form" style="width:min(420px,100%);border:1px solid #e7e5e4;border-radius:12px;background:#fff;padding:16px;box-shadow:0 16px 40px rgba(28,25,23,.18);color:#1c1917">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px">
+          <div>
+            <div style="font-size:13px;color:#78716c">Airglow feedback</div>
+            <div style="font-size:18px;font-weight:650">What should we fix or improve?</div>
+          </div>
+          <button id="airglow-feedback-close" type="button" style="border:0;background:transparent;font-size:22px;line-height:1;cursor:pointer;color:#78716c">×</button>
+        </div>
+        <select id="airglow-feedback-kind" style="box-sizing:border-box;width:100%;height:36px;border:1px solid #d6d3d1;border-radius:6px;background:#fafaf9;color:#1c1917;margin-bottom:8px;padding:0 10px">
+          <option value="general">General</option>
+          <option value="bug">Bug</option>
+          <option value="idea">Idea</option>
+        </select>
+        <textarea id="airglow-feedback-message" required minlength="3" maxlength="2000" placeholder="Short note. Please don't paste secrets, prompts, or page content." style="box-sizing:border-box;width:100%;min-height:120px;border:1px solid #d6d3d1;border-radius:6px;background:#fafaf9;color:#1c1917;padding:10px;font-size:14px;resize:vertical"></textarea>
+        <div id="airglow-feedback-status" style="min-height:18px;margin-top:8px;font-size:13px;color:#57534e"></div>
+        <button id="airglow-feedback-submit" type="submit" style="margin-top:8px;height:36px;padding:0 14px;border:0;border-radius:999px;background:#1c1917;color:#fff;font-size:14px;font-weight:600;cursor:pointer">Send feedback</button>
+      </form>
+    `,document.body.appendChild(t),document.getElementById(`airglow-feedback-close`)?.addEventListener(`click`,()=>t.remove()),t.addEventListener(`click`,e=>{e.target===t&&t.remove()});let n=document.getElementById(`airglow-feedback-form`),r=document.getElementById(`airglow-feedback-message`),i=document.getElementById(`airglow-feedback-kind`),a=document.getElementById(`airglow-feedback-status`);r?.focus(),n?.addEventListener(`submit`,e=>{e.preventDefault(),H(i?.value||`general`,r?.value||``,a,t)})}async function H(t,n,r,o){try{let s=await e(await N()),l=c.feedbackEndpoint;if(!c.enableFeedback||!l||!s)throw Error(`Feedback is not configured.`);let u=await fetch(l,{method:`POST`,headers:{"Content-Type":`application/json`},body:JSON.stringify({userHash:s,kind:t,message:n,appId:i,appName:f,sourceType:a.type})});if(!u.ok)throw Error(`Feedback HTTP ${u.status}`);r&&(r.textContent=`Sent. Thank you.`),setTimeout(()=>o.remove(),600)}catch(e){v.warn(`airglow`,`feedback submit failed: ${e instanceof Error?e.message:String(e)}`),r&&(r.style.color=`#b91c1c`,r.textContent=e instanceof Error?e.message:`Could not send feedback.`)}}}s();function j(e){let t=document.createElement(`div`);return t.textContent=e||``,t.innerHTML}
