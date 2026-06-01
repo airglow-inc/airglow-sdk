@@ -205,6 +205,15 @@ export function buildSdkCode(appId: string): string {
     return res?.result;
   }
 
+  const llm = {
+    anthropic: {
+      async messages(payload) {
+        const res = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload });
+        return res?.result;
+      },
+    },
+  };
+
   const platform = {
     async registerRedirects(rules) {
       await sendMsg({ type: 'airglow:platform:registerRedirects', rules });
@@ -257,6 +266,7 @@ export function buildSdkCode(appId: string): string {
     storage,
     log,
     rpc,
+    llm,
     platform,
     identity,
     captureTab,
