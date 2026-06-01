@@ -1,8 +1,8 @@
 import { createServer, IncomingMessage, ServerResponse } from 'http';
 import { readdir, readFile, stat } from 'fs/promises';
 import { readFileSync, mkdirSync, createWriteStream } from 'fs';
-import { join } from 'path';
-import { execSync } from 'child_process';
+import { isAbsolute, join, relative, resolve } from 'path';
+import { execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 // @ts-ignore — .mjs side-module
 import { installNativeHost } from '../lib/native-host/install.mjs';
@@ -60,7 +60,7 @@ function currentExtensionBuildHash(extensionDir: string): string | null {
 
 function localRepoHead(cwd: string): string | null {
   try {
-    return execSync('git rev-parse HEAD', { encoding: 'utf-8', cwd, timeout: 2000 }).trim();
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', cwd, timeout: 2000 }).trim();
   } catch {
     return null;
   }
@@ -74,7 +74,7 @@ function upstreamRepoHead(localHead: string | null): string | null {
     return upstreamHeadCache.sha;
   }
   try {
-    const out = execSync(`git ls-remote ${UPSTREAM_REMOTE} HEAD`, { encoding: 'utf-8', timeout: 5000 });
+    const out = execFileSync('git', ['ls-remote', UPSTREAM_REMOTE, 'HEAD'], { encoding: 'utf-8', timeout: 5000 });
     const sha = out.split(/\s+/)[0] || null;
     upstreamHeadCache = { sha, checkedAt: now, localHeadAtCheck: localHead };
     return sha;
@@ -162,9 +162,57 @@ function loadEnvFiles(paths: string[]): void {
 interface AppManifest {
   id: string;
   name: string;
+  startup?: string;
+  userscripts?: Array<{ file?: string }>;
   secrets?: Record<string, { label?: string } | true>;
   server_env?: Record<string, { label?: string } | true>;
   [key: string]: any;
+}
+
+const BUNDLE_FORMATS = new Set(['iife', 'esm', 'cjs']);
+const SERVER_FUNCTION_RE = /^[A-Za-z0-9_-]+$/;
+const configuredBridgePort = Number(process.env.AIRGLOW_BRIDGE_PORT || process.env.AIRGLOW_SPY_PORT || 3101);
+const BRIDGE_PORT = Number.isInteger(configuredBridgePort) && configuredBridgePort > 0 ? configuredBridgePort : 3101;
+
+function normalizeDeclaredFile(file: unknown): string | null {
+  if (typeof file !== 'string') return null;
+  const normalized = file.replace(/\\/g, '/');
+  if (!normalized || normalized.includes('\0') || normalized.startsWith('/')) return null;
+  const parts = normalized.split('/');
+  if (parts.some(part => !part || part === '.' || part === '..')) return null;
+  return normalized;
+}
+
+function resolveInside(root: string, file: string): string | null {
+  const normalized = normalizeDeclaredFile(file);
+  if (!normalized) return null;
+  const target = resolve(root, normalized);
+  const rel = relative(root, target);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return null;
+  return target;
+}
+
+function normalizeBundleFormat(format: string): string | null {
+  return BUNDLE_FORMATS.has(format) ? format : null;
+}
+
+function executableManifestFiles(manifest: AppManifest): Set<string> {
+  const files = new Set<string>();
+  const startup = normalizeDeclaredFile(manifest.startup);
+  if (startup) files.add(startup);
+  for (const userscript of manifest.userscripts ?? []) {
+    const file = normalizeDeclaredFile(userscript?.file);
+    if (file) files.add(file);
+  }
+  return files;
+}
+
+async function readAppManifest(appRoot: string): Promise<AppManifest | null> {
+  try {
+    return JSON.parse(await readFile(join(appRoot, 'manifest.json'), 'utf-8'));
+  } catch {
+    return null;
+  }
 }
 
 // Check declared env keys (server_env + CLIENT_-prefixed secrets) against
@@ -292,18 +340,28 @@ async function findUiEntry(uiDir: string): Promise<string | null> {
 // Resolve esbuild binary from the workspace where pnpm install ran (airglow-apps/).
 const esbuildBin = join(process.cwd(), 'node_modules', '.bin', 'esbuild');
 
-function esbuild(entryPath: string, cwd: string, extraFlags = ''): string {
-  return execSync(
-    `${esbuildBin} ${entryPath} --bundle --target=es2022 --jsx=automatic --loader:.svg=text --loader:.txt=text --loader:.md=text ${extraFlags}`.trim(),
+function esbuild(entryPath: string, cwd: string, extraArgs: string[] = []): string {
+  return execFileSync(
+    esbuildBin,
+    [
+      entryPath,
+      '--bundle',
+      '--target=es2022',
+      '--jsx=automatic',
+      '--loader:.svg=text',
+      '--loader:.txt=text',
+      '--loader:.md=text',
+      ...extraArgs,
+    ],
     { encoding: 'utf-8', timeout: 15000, cwd, maxBuffer: 10 * 1024 * 1024 },
   );
 }
 
 type BundleResult = { ok: true; code: string } | { ok: false; stderr: string; hint: string | null };
 
-function bundle(entryPath: string, cwd: string, extraFlags = ''): BundleResult {
+function bundle(entryPath: string, cwd: string, extraArgs: string[] = []): BundleResult {
   try {
-    return { ok: true, code: esbuild(entryPath, cwd, extraFlags) };
+    return { ok: true, code: esbuild(entryPath, cwd, extraArgs) };
   } catch (e: any) {
     const raw: string = (typeof e.stderr === 'string' ? e.stderr : e.stderr?.toString?.() ?? '') || e.message || '';
     const stderr = raw.replace(/\x1b\[[0-9;]*m/g, '').replace(/^Command failed:.*?\n/, '').trim();
@@ -378,8 +436,9 @@ async function handleUi(appsDir: string, appId: string): Promise<[number, string
   try { await stat(cssPath); cssExists = true; } catch {}
   if (cssExists) {
     try {
-      css = execSync(
-        `./node_modules/.bin/tailwindcss -i ${cssPath} --minify`,
+      css = execFileSync(
+        join(appsDir, 'node_modules', '.bin', 'tailwindcss'),
+        ['-i', cssPath, '--minify'],
         { encoding: 'utf-8', timeout: 15000, cwd: appsDir, stdio: ['ignore', 'pipe', 'pipe'] },
       );
     } catch (e: any) {
@@ -418,10 +477,27 @@ async function handleUiBundle(appsDir: string, appId: string): Promise<[number, 
 }
 
 async function handleUserscript(appsDir: string, appId: string, file: string, format: string): Promise<[number, string, string]> {
-  if (file.includes('..')) return [400, 'application/json', JSON.stringify({ error: 'invalid file path' })];
+  const normalizedFile = normalizeDeclaredFile(file);
+  if (!normalizedFile) return [400, 'application/json', JSON.stringify({ error: 'invalid file path' })];
+
+  const normalizedFormat = normalizeBundleFormat(format);
+  if (!normalizedFormat) {
+    return [400, 'application/json', JSON.stringify({ error: 'invalid bundle format', allowed: [...BUNDLE_FORMATS] })];
+  }
+
   const appRoot = await resolveAppDir(appsDir, appId);
   if (!appRoot) return [404, 'application/json', JSON.stringify({ error: `app ${appId} not found` })];
-  const result = bundle(join(appRoot, file), appRoot, `--format=${format}`);
+
+  const manifest = await readAppManifest(appRoot);
+  if (!manifest) return [404, 'application/json', JSON.stringify({ error: `manifest for ${appId} not found` })];
+  if (!executableManifestFiles(manifest).has(normalizedFile)) {
+    return [404, 'application/json', JSON.stringify({ error: `${normalizedFile} is not declared in manifest.userscripts or manifest.startup` })];
+  }
+
+  const entryPath = resolveInside(appRoot, normalizedFile);
+  if (!entryPath) return [400, 'application/json', JSON.stringify({ error: 'invalid file path' })];
+
+  const result = bundle(entryPath, appRoot, [`--format=${normalizedFormat}`]);
   if (!result.ok) {
     console.error(`[airglow/${appId}] userscript bundle failed${result.hint ? ` — ${result.hint.split('\n')[0]}` : ''}`);
     return [500, 'application/json', JSON.stringify({ error: 'bundle failed', hint: result.hint, stderr: result.stderr })];
@@ -450,6 +526,8 @@ async function handleSettings(appsDir: string, appId: string): Promise<[number, 
 }
 
 async function handleRpc(appsDir: string, appId: string, functionName: string, body: any): Promise<[number, any]> {
+  if (!SERVER_FUNCTION_RE.test(functionName)) return [400, { error: 'invalid server function name' }];
+
   const appRoot = await resolveAppDir(appsDir, appId);
   if (!appRoot) return [404, { error: `app ${appId} not found` }];
   const serverDir = join(appRoot, 'server');
@@ -459,8 +537,9 @@ async function handleRpc(appsDir: string, appId: string, functionName: string, b
   }
   if (!entryFile) return [404, { error: `server function '${functionName}' not found` }];
 
-  const bundled = execSync(
-    `${esbuildBin} ${join(serverDir, entryFile)} --bundle --platform=node --format=cjs --target=es2022`,
+  const bundled = execFileSync(
+    esbuildBin,
+    [join(serverDir, entryFile), '--bundle', '--platform=node', '--format=cjs', '--target=es2022'],
     { encoding: 'utf-8', timeout: 15000, cwd: appRoot, maxBuffer: 10 * 1024 * 1024 },
   );
 
@@ -519,19 +598,19 @@ async function probeRunning(port: number): Promise<{ matched: boolean; sameWorks
   }
 }
 
-// Probe the native-host port (3101). Returns:
-//   'ours'     — our spy host is responding (extension connected, all good)
-//   'foreign'  — something is bound to the port but isn't the spy host
+// Probe the native bridge port (3101). Returns:
+//   'ours'     — our bridge is responding (extension connected, all good)
+//   'foreign'  — something is bound to the port but isn't the bridge
 //   'free'     — nothing on the port (Chrome may not be running yet; not a problem)
-async function probeSpyPort(): Promise<'ours' | 'foreign' | 'free'> {
+async function probeBridgePort(): Promise<'ours' | 'foreign' | 'free'> {
   try {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 500);
-    const res = await fetch('http://127.0.0.1:3101/status', { signal: ac.signal });
+    const res = await fetch(`http://127.0.0.1:${BRIDGE_PORT}/status`, { signal: ac.signal });
     clearTimeout(timer);
     if (!res.ok) return 'foreign';
     const data: any = await res.json();
-    return data?.service === 'airglow-spy' ? 'ours' : 'foreign';
+    return data?.service === 'airglow-bridge' || data?.service === 'airglow-spy' ? 'ours' : 'foreign';
   } catch (e: any) {
     if (e?.cause?.code === 'ECONNREFUSED') return 'free';
     return 'foreign';
@@ -669,8 +748,8 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
     console.log(`\n  airglow dev server running on http://127.0.0.1:${port}\n`);
     console.log(`  \x1b[1mSet dev port to ${port} in the extension dashboard.\x1b[0m\n`);
     if (logPath) console.log(`  Logs: ${logPath}\n`);
-    if (await probeSpyPort() === 'foreign') {
-      console.log(`  \x1b[1;31mWarning — port 3101 is in use by another process.\x1b[0m`);
+    if (await probeBridgePort() === 'foreign') {
+      console.log(`  \x1b[1;31mWarning — port ${BRIDGE_PORT} is in use by another process.\x1b[0m`);
       console.log(`  The extension's logs endpoint and CDP network capture won't work until it's freed.\n`);
     }
     if (manifests.length === 0) {

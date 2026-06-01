@@ -34,6 +34,39 @@ interface AirglowRedirectRule {
   target: string;
 }
 
+interface AirglowAnthropicTextBlock {
+  type: 'text';
+  text: string;
+}
+
+interface AirglowAnthropicMessage {
+  role: 'user' | 'assistant';
+  content: string | AirglowAnthropicTextBlock[];
+}
+
+interface AirglowAnthropicMessagesRequest {
+  model?: string;
+  max_tokens?: number;
+  messages: AirglowAnthropicMessage[];
+  system?: string | AirglowAnthropicTextBlock[];
+  temperature?: number;
+  top_p?: number;
+  top_k?: number;
+  stop_sequences?: string[];
+}
+
+interface AirglowAnthropicMessagesResponse {
+  id?: string;
+  type?: string;
+  role?: 'assistant';
+  content?: any[];
+  model?: string;
+  stop_reason?: string | null;
+  stop_sequence?: string | null;
+  usage?: any;
+  [key: string]: any;
+}
+
 interface Airglow {
   sdkVersion: AirglowSdkVersion;
 
@@ -57,9 +90,19 @@ interface Airglow {
 
   rpc<T = any>(functionName: string, payload?: any): Promise<T>;
 
+  llm: {
+    anthropic: {
+      messages<T = AirglowAnthropicMessagesResponse>(
+        payload: AirglowAnthropicMessagesRequest,
+      ): Promise<T>;
+    };
+  };
+
   identity: {
     getRedirectURL(): Promise<string>;
     launchWebAuthFlow(url: string): Promise<string>;
+    getUserEmail(): Promise<string | undefined>;
+    setUserEmail(email: string): Promise<string | undefined>;
   };
 
   openWindow(url: string, opts?: AirglowWindowOptions): Promise<void>;

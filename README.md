@@ -41,6 +41,13 @@ airglow-sdk/
 └── cli/            # CLI to run Airglow apps locally
 ```
 
+## Included in this export
+
+- Hosted official-app server code lives in Airglow Cloud; the SDK workspace keeps local example apps and the ready-to-load extension.
+- `airglow.llm.anthropic.messages(...)` routes Anthropic-compatible calls through the Airglow Cloud LLM gateway, keeping provider keys server-side.
+- CLI dev-server bundling is hardened against undeclared files, path traversal, shell interpolation, and unsafe native-bridge helper commands.
+- The exported extension includes dashboard feedback and update/reload buttons.
+
 Developer guide [`airglow-apps/README.md`](airglow-apps/README.md)
 
 ----

@@ -13,7 +13,7 @@ Extension to run Airglow apps in your browser.
 ## Update
 
 1. Pull the latest repo version with `git pull`.
-2. Open Airglow Dashboard and press **Reload**.
+2. Open Airglow Dashboard and press **Update Airglow** or **Reload Airglow** when the dashboard shows that action.
 
 
 To run apps: see [`../airglow-apps/README.md`](../airglow-apps/README.md).

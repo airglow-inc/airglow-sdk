@@ -1,6 +1,7 @@
 # Airglow apps
 
 Apps are developed and hosted in this folder.
+Official app sources live in the `airglow-inc/apps` repository and are deployed through Airglow Cloud; this workspace is for local/user-developed apps and examples.
 
 > [!NOTE]
 > It is expected that you make apps using a coding agent. The project is structured this way, including `AGENTS.md`

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Airglow extension debug bridge — Chrome native messaging host.
+// Airglow extension native bridge — Chrome native messaging host.
 //
 // Chrome spawns this process when the extension calls
 // chrome.runtime.connectNative('com.airglow.spy'). The process opens an HTTP
@@ -11,7 +11,7 @@
 //   POST /reload      — chrome.runtime.reload() the extension
 //   GET  /status      — liveness + buffered-capture count
 //
-// Network-spy endpoints (dormant — only useful when reverse-engineering a
+// Network capture endpoints (dormant — only useful when reverse-engineering a
 // website's API; require an explicit POST /attach to activate, otherwise
 // zero overhead):
 //   POST /attach      — start CDP + fetch/XHR interception on a tab
@@ -27,7 +27,7 @@
 
 import http from 'node:http';
 
-const HTTP_PORT = 3101;
+const HTTP_PORT = Number(process.env.AIRGLOW_BRIDGE_PORT || process.env.AIRGLOW_SPY_PORT || 3101);
 const CDP_PORT = 9222;
 const CAPTURE_BUFFER_LIMIT = 2000;
 const BODY_TRUNCATE = 20000; // max chars stored per body field
@@ -217,19 +217,25 @@ function json(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
 // Build a curl command string from a captured entry (for replay)
 function buildCurl(entry) {
-  let cmd = `curl -s -X ${entry.method} '${entry.url}'`;
+  let cmd = `curl -s -X ${shellQuote(entry.method || 'GET')}`;
   const headers = entry.reqHeaders || {};
   for (const [k, v] of Object.entries(headers)) {
     // Skip pseudo-headers and very long values
     if (k.startsWith(':')) continue;
-    cmd += ` \\\n  -H '${k}: ${v.length > 200 ? v.substring(0, 200) + '...' : v}'`;
+    const value = String(v);
+    cmd += ` \\\n  -H ${shellQuote(`${k}: ${value.length > 200 ? value.substring(0, 200) + '...' : value}`)}`;
   }
   if (entry.reqBody) {
     // Reference saved file instead of inlining huge bodies
-    cmd += ` \\\n  -d '<request body, ${entry.reqBody.length} chars>'`;
+    cmd += ` \\\n  -d ${shellQuote(`<request body, ${entry.reqBody.length} chars>`)}`;
   }
+  cmd += ` \\\n  -- ${shellQuote(entry.url || '')}`;
   return cmd;
 }
 
@@ -321,7 +327,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /status
     if (req.method === 'GET' && url.pathname === '/status') {
-      return json(res, 200, { ok: true, service: 'airglow-spy', buffered: captures.length });
+      return json(res, 200, { ok: true, service: 'airglow-bridge', buffered: captures.length });
     }
 
     // POST /reload — reload extension
@@ -423,5 +429,5 @@ server.listen(HTTP_PORT, '127.0.0.1', () => {
 });
 
 function log(msg) {
-  process.stderr.write(`[airglow-spy] ${msg}\n`);
+  process.stderr.write(`[airglow-bridge] ${msg}\n`);
 }

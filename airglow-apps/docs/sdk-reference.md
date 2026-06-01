@@ -9,10 +9,10 @@ The `airglow` global is injected into every app context (userscript, UI iframe, 
 A fetch that bypasses CORS by routing through the extension service worker. Returns `{ status, ok, json(), text() }` — no `headers`, `arrayBuffer`, or streaming. For same-origin requests, the native `fetch()` global is preferable.
 
 ```ts
-const res = await airglow.fetch('https://api.anthropic.com/v1/messages', {
+const res = await airglow.fetch('https://api.example.com/items', {
   method: 'POST',
-  headers: { 'x-api-key': await airglow.storage.get('ANTHROPIC_API_KEY') },
-  body: JSON.stringify({ model: 'claude-haiku-4-5-20251001', messages: [...] }),
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ page: 1 }),
 });
 ```
 
@@ -61,6 +61,27 @@ const result = await airglow.rpc('tag', { titles: ['Show HN: ...'] });
 ```
 
 Transport failures and HTTP 4xx/5xx responses reject with `AirglowError` (`code`, `status`, `requestId`, `details`). A server function that returns `{ error }` with HTTP 200 comes back as a normal value.
+
+---
+
+## airglow.llm.anthropic.messages(payload)
+
+Calls the Airglow Cloud LLM gateway. The app sends Anthropic-compatible `messages` payloads, but provider credentials stay server-side in Airglow Cloud.
+
+```ts
+const result = await airglow.llm.anthropic.messages({
+  max_tokens: 600,
+  messages: [
+    { role: 'user', content: 'Summarize this page in 5 bullets.' },
+  ],
+});
+
+const text = result.content?.find((block: any) => block.type === 'text')?.text;
+```
+
+Supported request fields: `model`, `max_tokens`, `messages`, `system`, `temperature`, `top_p`, `top_k`, and `stop_sequences`. The gateway enforces app identity, model allowlists, body limits, timeouts, and rate limits.
+
+Use this instead of storing provider API keys in extension storage or calling `api.anthropic.com` directly from browser code.
 
 ---
 

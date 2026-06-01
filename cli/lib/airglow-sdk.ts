@@ -20,6 +20,7 @@ export function buildSdkCode(appId: string): string {
 (function() {
   const APP_ID = ${JSON.stringify(appId)};
   const SDK_VERSION = ${JSON.stringify(AIRGLOW_SDK_CONTRACT_VERSION)};
+  const STARTUP_TOKEN = typeof globalThis !== 'undefined' ? globalThis.__AIRGLOW_STARTUP_TOKEN__ : undefined;
   const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
 
   let callCounter = 0;
@@ -48,8 +49,9 @@ export function buildSdkCode(appId: string): string {
   }
 
   function notifyRuntimeError(payload) {
-    if (usePostMessage && globalThis.parent && globalThis.parent !== globalThis) {
-      globalThis.parent.postMessage({
+    if (usePostMessage) {
+      const target = globalThis.parent || globalThis;
+      target.postMessage({
         _airglow_app_error: true,
         appId: APP_ID,
         sdkVersion: SDK_VERSION,
@@ -96,7 +98,7 @@ export function buildSdkCode(appId: string): string {
           else resolve(response);
         };
         window.parent.postMessage(
-          { ...payload, _airglow: true, _appId: APP_ID, _callId: callId },
+          { ...payload, _airglow: true, _appId: APP_ID, _callId: callId, ...(STARTUP_TOKEN ? { _airglowStartupToken: STARTUP_TOKEN } : {}) },
           '*'
         );
       });
@@ -152,8 +154,8 @@ export function buildSdkCode(appId: string): string {
   // Auto-capture uncaught errors. The global error handler also fires for
   // errors from the host page (e.g. Outlook's own ResizeObserver loop), so we
   // only report errors whose filename or stack points back to our bundle —
-  // app-loader prepends a "//# sourceURL=airglow-app://..." directive that
-  // tags every frame of our injected code.
+  // app-loader and the UI sandbox prepend "//# sourceURL=airglow-app://..."
+  // directives that tag every frame of app-owned code.
   function isAppError(filename, stack) {
     if (typeof filename === 'string' && filename.indexOf('airglow-app://') === 0) return true;
     if (typeof stack === 'string' && stack.indexOf('airglow-app://') !== -1) return true;
@@ -202,6 +204,15 @@ export function buildSdkCode(appId: string): string {
     const res = await sendMsg({ type: 'airglow:rpc', functionName, payload });
     return res?.result;
   }
+
+  const llm = {
+    anthropic: {
+      async messages(payload) {
+        const res = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload });
+        return res?.result;
+      },
+    },
+  };
 
   const platform = {
     async registerRedirects(rules) {
@@ -255,6 +266,7 @@ export function buildSdkCode(appId: string): string {
     storage,
     log,
     rpc,
+    llm,
     platform,
     identity,
     captureTab,

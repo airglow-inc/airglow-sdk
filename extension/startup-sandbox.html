@@ -3,22 +3,71 @@
 <head><meta charset="utf-8"></head>
 <body>
 <script>
-// Sandbox for running app startup scripts.
-// Receives { type: 'airglow:startup:run', appId, code, sdk } from parent.
-// Injects the standard airglow SDK, evals the code, reports done.
+// Sandbox for running app startup scripts and local RPC bundles.
+// This page has unsafe-eval but no chrome.* access; parent bridges only the
+// narrow messages declared by the offscreen runner.
+
+function errorPayload(e) {
+  return {
+    error: e && e.message ? e.message : String(e),
+    name: e && e.name ? e.name : undefined,
+    stack: e && e.stack ? e.stack : undefined,
+  };
+}
+
+async function runStartup(data) {
+  try {
+    window.__AIRGLOW_STARTUP_TOKEN__ = data.token || '';
+    new Function(data.sdk)();
+    var fn = new Function('return (async () => {\n' + data.code + '\n})();\n//# sourceURL=airglow-startup://' + data.appId);
+    await fn();
+    window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, token: data.token, ok: true }, '*');
+  } catch (e) {
+    window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, token: data.token, ok: false, ...errorPayload(e) }, '*');
+  } finally {
+    window.__AIRGLOW_STARTUP_TOKEN__ = '';
+  }
+}
+
+async function runLocalRpc(data) {
+  try {
+    var processShim = { env: data.env && typeof data.env === 'object' ? data.env : {} };
+    var context = data.context && typeof data.context === 'object' ? data.context : {};
+    var factory = new Function(
+      'process',
+      String(data.code || '') + '\n//# sourceURL=airglow-rpc://' + data.appId + '/' + data.functionName
+    );
+    var handler = factory(processShim);
+    if (typeof handler !== 'function') {
+      throw new Error('RPC bundle did not return a handler function');
+    }
+    var result = await handler(data.payload, context);
+    window.parent.postMessage({
+      type: 'airglow:rpc-local:done',
+      appId: data.appId,
+      requestId: data.requestId,
+      token: data.token,
+      ok: true,
+      result: result,
+    }, '*');
+  } catch (e) {
+    window.parent.postMessage({
+      type: 'airglow:rpc-local:done',
+      appId: data.appId,
+      requestId: data.requestId,
+      token: data.token,
+      ok: false,
+      code: 'LOCAL_RPC_HANDLER_ERROR',
+      ...errorPayload(e),
+    }, '*');
+  }
+}
 
 window.addEventListener('message', async function(event) {
+  if (event.source !== window.parent) return;
   var data = event.data || {};
-  if (data.type !== 'airglow:startup:run') return;
-
-  try {
-    new Function(data.sdk)();
-    var fn = new Function('return (async () => {\n' + data.code + '\n})();');
-    await fn();
-    window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, ok: true }, '*');
-  } catch (e) {
-    window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, ok: false, error: e.message }, '*');
-  }
+  if (data.type === 'airglow:startup:run') await runStartup(data);
+  if (data.type === 'airglow:rpc-local:run') await runLocalRpc(data);
 });
 
 window.parent.postMessage({ type: 'airglow:startup:ready' }, '*');
