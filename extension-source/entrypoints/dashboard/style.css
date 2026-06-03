@@ -1,27 +1,5 @@
-/* Bundled fonts — variable weight, served from the extension package so the
-   dashboard renders consistently across machines and works offline. */
-@font-face {
-  font-family: 'Inter';
-  font-style: normal;
-  font-weight: 100 900;
-  font-display: swap;
-  src: url('/fonts/inter-variable.woff2') format('woff2-variations');
-}
-@font-face {
-  font-family: 'JetBrains Mono';
-  font-style: normal;
-  font-weight: 100 800;
-  font-display: swap;
-  src: url('/fonts/jetbrains-mono-variable.woff2') format('woff2-variations');
-}
-
-:root {
-  --font-sans: 'Inter', sans-serif;
-  --font-mono: 'JetBrains Mono', monospace;
-}
-
-body { font-family: var(--font-sans); }
-
+/* All @import rules first — CSS spec requires @import to precede every other
+   rule (aside from @charset and @layer). */
 /* source("../..") pins Tailwind content scanning to extension-source/. The
    shared theme intentionally does not import tailwindcss so each consumer
    chooses its own scope — without this pin, scanning would walk up into
@@ -29,6 +7,9 @@ body { font-family: var(--font-sans); }
    used by any app. */
 @import "tailwindcss" source("../..");
 @import "../../../airglow-apps/shared/theme/tailwind-theme.css";
+/* Fonts + reset + form-control font inheritance. Shared across every
+   extension entrypoint so new pages get the right typography for free. */
+@import "../../lib/airglow-base.css";
 
 @keyframes spin {
   to { transform: rotate(360deg); }

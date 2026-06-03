@@ -24,6 +24,9 @@ export interface AppManifest {
   userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
   secrets?: Record<string, { scope: string; label?: string }>;
   host_permissions?: string[];
+  // Dev-server-injected: RPC handler names found in `<app>/server/*.ts`.
+  // Surfaced in the dashboard so users know which apps depend on the server.
+  _serverFunctions?: string[];
 }
 
 export interface AppSource {
@@ -51,6 +54,30 @@ async function getLocalSource(): Promise<AppSource> {
 
 const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
+// Per-app userscript source cache. Keyed by appId; hash-gated so we only
+// re-fetch when the manifest's _hash actually changes. Lets the extension
+// re-register userscripts on SW restart while the dev server is offline.
+// Scope is intentionally userscripts-only — server functions (RPC) and UI
+// bundles inherently require the dev server, so caching them wouldn't help.
+const APP_SOURCE_CACHE_KEY = '__app_sources_cache';
+
+interface AppSourceCacheEntry {
+  hash: string;
+  userscripts: Record<string, string>; // file → code
+}
+type AppSourceCache = Record<string, AppSourceCacheEntry>;
+
+async function readSourceCache(): Promise<AppSourceCache> {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(APP_SOURCE_CACHE_KEY, (r) => {
+      resolve((r[APP_SOURCE_CACHE_KEY] as AppSourceCache | undefined) || {});
+    });
+  });
+}
+
+async function writeSourceCache(cache: AppSourceCache): Promise<void> {
+  await chrome.storage.local.set({ [APP_SOURCE_CACHE_KEY]: cache });
+}
 
 function isManifestEnabled(manifest: AppManifest): boolean {
   return manifest.visibility !== 'hidden';
@@ -75,15 +102,20 @@ async function discoverSources(): Promise<AppSource[]> {
 export interface LoadResult {
   reachable: boolean;
   manifests: SourcedManifest[];
+  // True when the manifests came from chrome.storage cache because the dev
+  // server was unreachable. Callers should skip work that depends on a fresh
+  // server response (e.g. cleanupDevSecrets, applyFirstEncounterDefaults).
+  fromCache?: boolean;
 }
 
 /**
  * Load manifests from the local dev server.
  * Stores source map in chrome.storage.local for app-shell to read.
+ * Falls back to the cached manifest snapshot when the dev server is unreachable.
  */
 export async function loadAppManifests(): Promise<LoadResult> {
   const sources = await discoverSources();
-  if (sources.length === 0) return { reachable: false, manifests: [] };
+  if (sources.length === 0) return loadCachedManifests();
 
   const manifestsById = new Map<string, SourcedManifest>();
   const sourceMap: Record<string, AppSource> = {};
@@ -115,7 +147,64 @@ export async function loadAppManifests(): Promise<LoadResult> {
     [APP_MANIFESTS_KEY]: allManifests,
   });
 
+  // Opportunistically refresh the userscript source cache for any apps whose
+  // manifest hash changed since we last cached them. This is what lets a
+  // future SW restart re-register scripts when the dev server is down.
+  await refreshUserscriptSourceCache(allManifests);
+
   return { reachable: true, manifests: allManifests };
+}
+
+async function loadCachedManifests(): Promise<LoadResult> {
+  const stored = await chrome.storage.local.get([APP_MANIFESTS_KEY, APP_SOURCES_KEY]);
+  const cachedManifests = (stored[APP_MANIFESTS_KEY] as SourcedManifest[] | undefined) || [];
+  if (cachedManifests.length === 0) return { reachable: false, manifests: [] };
+  // Cached manifests already carry _source from the last successful poll.
+  // Defensive fallback in case an older cache lacks it.
+  const fallback = await getLocalSource();
+  const manifests = cachedManifests
+    .filter(isManifestEnabled)
+    .map((m) => (m._source ? m : { ...m, _source: fallback }));
+  return { reachable: false, manifests, fromCache: true };
+}
+
+/**
+ * Fetch and cache userscript source for any app whose hash changed since the
+ * last cache write. Removes cache entries for apps no longer present.
+ */
+async function refreshUserscriptSourceCache(manifests: SourcedManifest[]): Promise<void> {
+  const cache = await readSourceCache();
+  const currentIds = new Set(manifests.map((m) => m.id));
+  let dirty = false;
+
+  // Evict entries for removed apps so the cache doesn't grow unbounded.
+  for (const id of Object.keys(cache)) {
+    if (!currentIds.has(id)) { delete cache[id]; dirty = true; }
+  }
+
+  for (const manifest of manifests) {
+    const hash = (manifest as any)._hash as string | undefined;
+    if (!hash) continue;
+    const cached = cache[manifest.id];
+    if (cached?.hash === hash) continue;
+    const userscripts: Record<string, string> = {};
+    let allOk = true;
+    for (const us of manifest.userscripts || []) {
+      try {
+        userscripts[us.file] = await fetchFromServer(manifest, us.file);
+      } catch (e) {
+        // Source briefly unreachable mid-poll — keep the prior cache entry rather
+        // than half-writing a new one.
+        allOk = false;
+        break;
+      }
+    }
+    if (!allOk) continue;
+    cache[manifest.id] = { hash, userscripts };
+    dirty = true;
+  }
+
+  if (dirty) await writeSourceCache(cache);
 }
 
 class SourceUnreachableError extends Error {
@@ -125,9 +214,10 @@ class SourceUnreachableError extends Error {
 }
 
 /**
- * Fetch a userscript's source code from the correct source server.
+ * Fetch a userscript's source from the dev server. Throws SourceUnreachableError
+ * on network failure (caller may want to fall back to cache).
  */
-async function fetchUserscriptSource(manifest: SourcedManifest, file: string): Promise<string> {
+async function fetchFromServer(manifest: SourcedManifest, file: string): Promise<string> {
   let res: Response;
   try {
     res = await fetch(
@@ -145,6 +235,23 @@ async function fetchUserscriptSource(manifest: SourcedManifest, file: string): P
     throw new Error(`${manifest.id}/${file}: ${detail}`);
   }
   return await res.text();
+}
+
+/**
+ * Fetch a userscript's source code, preferring live dev server and falling back
+ * to the on-disk cache when the server is unreachable.
+ */
+async function fetchUserscriptSource(manifest: SourcedManifest, file: string): Promise<string> {
+  try {
+    return await fetchFromServer(manifest, file);
+  } catch (e) {
+    if (e instanceof SourceUnreachableError) {
+      const cache = await readSourceCache();
+      const cached = cache[manifest.id]?.userscripts?.[file];
+      if (cached !== undefined) return cached;
+    }
+    throw e;
+  }
 }
 
 /**

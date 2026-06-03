@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail } from 'lucide-react';
+import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, X } from 'lucide-react';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
 // (Apache 2.0, https://fonts.google.com/icons?icon.query=extension)
@@ -28,6 +28,10 @@ interface AppManifest {
   secrets?: Record<string, { label?: string }>;
   visibility?: AppVisibility;
   _sourceType: 'local' | 'public';
+  // Dev-server-injected: names of `server/*.ts` RPC handlers. Non-empty list
+  // means RPC calls will fail when the dev server is down — surfaced as a
+  // warning chip in the dashboard.
+  _serverFunctions?: string[];
 }
 
 interface SecretKey {
@@ -86,11 +90,24 @@ export default function App() {
 
   // Setup banners
   const [userScriptsEnabled, setUserScriptsEnabled] = useState<boolean | null>(null);
+  // Closeable "dev server offline — running from cache" banner. Dismissal is
+  // session-scoped: comes back on the next dashboard open so the user notices
+  // again if the server is still down, but stays quiet within a session.
+  const [offlineBannerDismissed, setOfflineBannerDismissed] = useState(
+    () => sessionStorage.getItem('__airglow_offline_banner_dismissed') === '1',
+  );
   const [isPinned, setIsPinned] = useState<boolean | null>(null);
   const [updateStatus, setUpdateStatus] = useState<{
     extension: { loaded: string | null; current: string | null; needsReload: boolean };
-    repo: { local: string | null; upstream: string | null; behindUpstream: boolean };
+    // local/upstream are build timestamps (ms); behindUpstream fires only when
+    // upstream is strictly later, so a local-only rebuild won't trip the prompt.
+    repo: { local: number | null; upstream: number | null; behindUpstream: boolean };
   } | null>(null);
+  // Server-independent "git pull" signal — the background checks origin/main's
+  // extension/manifest.json hash on a 60-min alarm and persists the result so
+  // the dashboard banner stays in lockstep with the toolbar badge even when
+  // the dev server is offline.
+  const [gitPullDueRemote, setGitPullDueRemote] = useState<boolean>(false);
 
   // Drag-and-drop reorder
   const [appOrder, setAppOrder] = useState<Record<string, string[]>>({});
@@ -165,8 +182,26 @@ export default function App() {
 
     setLocalOnline(online);
     if (!online) {
-      setError(true);
-      setApps([]);
+      // Dev server unreachable. Fall back to the last manifest snapshot the
+      // background loader persisted — the dashboard stays usable for
+      // toggling, secrets, and logs even when the server is down.
+      const cached: AppManifest[] = await new Promise((resolve) => {
+        chrome.storage.local.get('__app_manifests', (r) => {
+          const arr = (r['__app_manifests'] as any[] | undefined) || [];
+          resolve(arr.map((m) => ({ ...m, _sourceType: 'local' as const })));
+        });
+      });
+      if (cached.length > 0) {
+        setError(false);
+        const appsById = new Map<string, AppManifest>();
+        for (const app of cached) {
+          if (!appsById.has(app.id)) appsById.set(app.id, app);
+        }
+        setApps(Array.from(appsById.values()).filter(isVisibleApp));
+      } else {
+        setError(true);
+        setApps([]);
+      }
     } else {
       setError(false);
       const appsById = new Map<string, AppManifest>();
@@ -253,7 +288,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected'], (result) => {
+    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
       const port = (result[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT;
       const savedEmail = normalizeUserEmail(result[USER_EMAIL_KEY]) || '';
       const nh = result['__native_host_connected'];
@@ -264,6 +299,7 @@ export default function App() {
       setUserEmail(savedEmail || null);
       setEmailInput(savedEmail);
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
+      setGitPullDueRemote(!!result['__git_pull_due_remote']);
       setIdentityLoaded(true);
       loadAll(port);
     });
@@ -285,6 +321,17 @@ export default function App() {
       if ('__native_host_connected' in changes) {
         const v = changes['__native_host_connected'].newValue;
         setNativeHostConnected(v === undefined ? null : (v as boolean));
+      }
+      // Side-button toggles write here too. Mirror into dashboard state so
+      // both UIs agree without requiring a dashboard reload.
+      if ('__disabled_apps' in changes) {
+        const arr = (changes['__disabled_apps'].newValue as string[] | undefined) || [];
+        setDisabledApps(new Set(arr));
+      }
+      // Background's 60-min remote-manifest check writes this; keep the
+      // banner in sync with the toolbar badge.
+      if ('__git_pull_due_remote' in changes) {
+        setGitPullDueRemote(!!changes['__git_pull_due_remote'].newValue);
       }
     };
     chrome.storage.local.onChanged.addListener(onChange);
@@ -336,14 +383,19 @@ export default function App() {
   }
 
   function toggleApp(appId: string) {
+    // Optimistic UI; storage listener below reconciles from the authoritative
+    // disabled set once the background has written it.
+    const wasDisabled = disabledApps.has(appId);
     const next = new Set(disabledApps);
-    if (next.has(appId)) next.delete(appId);
+    if (wasDisabled) next.delete(appId);
     else next.add(appId);
     setDisabledApps(next);
-    const arr = Array.from(next);
-    chrome.storage.local.set({ '__disabled_apps': arr }, () => {
-      chrome.runtime.sendMessage({ type: 'airglow:reload-app', appId });
-    });
+    // Delegate to the same path the side-button toggle uses: the background
+    // writes __disabled_apps, unregisters scripts when transitioning to
+    // disabled, and re-registers the rest. Previously the dashboard wrote
+    // storage itself and called reload-app, which early-returned in the
+    // "now-disabled" case and left the userscript registered.
+    chrome.runtime.sendMessage({ type: 'airglow:toggle-app', appId });
   }
 
   function appUrl(appId: string) {
@@ -519,6 +571,13 @@ export default function App() {
                 <Tooltip content={<span><strong>Missing secrets:</strong><br/>{missing.map(m => <span key={m}>&nbsp;&bull; {m}<br/></span>)}</span>}>
                   <Badge color="var(--error)" hoverable>
                     {missing.length} secret{missing.length > 1 ? 's' : ''} missing
+                  </Badge>
+                </Tooltip>
+              )}
+              {!disabled && localOnline === false && (app._serverFunctions?.length ?? 0) > 0 && (
+                <Tooltip content={<span>This app may break when Dev server is down.</span>}>
+                  <Badge color="var(--error)" hoverable>
+                    Server down
                   </Badge>
                 </Tooltip>
               )}
@@ -725,11 +784,11 @@ export default function App() {
                   data-testid="dev-port-input"
                 />
                 <span
-                  className="inline-flex items-center gap-1 text-base font-medium"
+                  className="inline-flex items-center gap-1.5 text-lg font-medium"
                   style={{ color: localOnline ? 'var(--olive)' : 'var(--error)' }}
                 >
                   <span
-                    className="inline-block w-1.5 h-1.5 rounded-full"
+                    className="inline-block w-2 h-2 rounded-full"
                     style={{ background: localOnline === null ? 'var(--fg-tertiary)' : localOnline ? 'var(--olive)' : 'var(--error)' }}
                   />
                   {localOnline === null ? '' : localOnline ? 'Online' : 'Offline'}
@@ -852,6 +911,47 @@ Airglow — for those who create
         ) : page === 'logs' ? (
           <LogsPage />
         ) : (<>
+        {/* Dev server offline — running from cached source. Closeable; the
+            bottom-left status pill already shows the underlying offline state.
+            Mirrors the "Enable User Scripts" treatment so error banners look
+            consistent across the dashboard. */}
+        {localOnline === false && apps !== null && apps.length > 0 && !offlineBannerDismissed && (
+          <div
+            className="relative p-5 rounded-[var(--radius-md)] mb-6 border w-fit mx-auto"
+            style={{
+              background: 'color-mix(in srgb, var(--error) 8%, var(--bg-white))',
+              borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
+            }}
+            data-testid="banner-dev-server-offline-cached"
+          >
+            <button
+              onClick={() => {
+                sessionStorage.setItem('__airglow_offline_banner_dismissed', '1');
+                setOfflineBannerDismissed(true);
+              }}
+              className="absolute top-2 right-2 inline-flex items-center justify-center h-8 w-8 rounded cursor-pointer border"
+              style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; e.currentTarget.style.color = 'var(--fg-secondary)'; }}
+              aria-label="Dismiss"
+              data-testid="banner-dev-server-offline-cached-dismiss"
+            >
+              <X size={16} strokeWidth={2.5} />
+            </button>
+            <div>
+              <div className="text-lg font-semibold flex items-center gap-2 pr-8" style={{ color: 'var(--fg-primary)' }}>
+                <TriangleAlert size={20} style={{ color: 'var(--error)' }} />
+                Dev server is offline
+              </div>
+              <div className="mt-4 text-base" style={{ color: 'var(--fg-secondary)', maxWidth: '560px' }}>
+                Only userscripts will work, UI and Server functions are disabled. Run{' '}
+                <code className="px-1.5 py-0.5 rounded" style={{ background: 'var(--bg-tertiary)', color: 'var(--fg-primary)', fontFamily: 'var(--font-mono, ui-monospace, monospace)' }}>pnpm airglow dev</code>
+                {' '}to start the server.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Setup banners */}
         {(forceBanners || updateStatus?.extension.needsReload) && (
           <div
@@ -882,7 +982,7 @@ Airglow — for those who create
             </button>
           </div>
         )}
-        {(forceBanners || updateStatus?.repo.behindUpstream) && (
+        {(forceBanners || updateStatus?.repo.behindUpstream || gitPullDueRemote) && (
           <div
             className="p-4 rounded-[var(--radius-md)] mb-6 border text-base w-fit mx-auto"
             style={{

@@ -1,6 +1,10 @@
 // App shell — hosts app UI in a sandboxed iframe.
 // The shell has chrome.* access and bridges SDK calls from the sandbox via postMessage.
 
+// Shared fonts + reset + form-control inheritance. Imported here (not via a
+// <link> in index.html) so WXT bundles it into the page and serves the fonts
+// from the extension package without an extra network hop.
+import '../../lib/airglow-base.css';
 import { createPersistentButton } from '../../lib/edge-button';
 import { normalizeUserEmail, requiresUserEmail, sha256Email, USER_EMAIL_KEY } from '../../lib/airglow-identity';
 import { runtimeConfig } from '../../lib/runtime-config';
@@ -8,6 +12,7 @@ import { logger } from '../../lib/logger';
 
 const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
+const DEV_SERVER_ONLINE_KEY = '__dev_server_online';
 const UI_LOAD_TIMEOUT_MS = 12000;
 const AUTO_RETRY_DELAYS_MS = [1000, 3000];
 type AppSource = { url: string; type: string };
@@ -21,11 +26,77 @@ if (!appId) {
   loadApp(appId);
 }
 
+function renderOfflineMessage(appId: string) {
+  // Vanilla mirror of the dashboard's classic "Dev server offline" card —
+  // centered, error-tinted, big TriangleAlert in a circle, bold title,
+  // outlined Retry button. The app UI bundle is served by the dev server,
+  // so this page can't load without it; userscripts run from cache and are
+  // unaffected.
+  void appId;
+  document.body.innerHTML = '';
+
+  // Inline SVGs so we don't depend on any icon library inside app-shell.
+  const triangleSvg = '<svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+  const refreshSvg = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>';
+
+  const ERROR = '#b91c1c';
+  const ERROR_BG_8 = 'color-mix(in srgb, #b91c1c 8%, #ffffff)';
+  const ERROR_BG_18 = 'color-mix(in srgb, #b91c1c 18%, #ffffff)';
+  const BORDER_RED = 'color-mix(in srgb, #b91c1c 30%, #e7e5e4)';
+  const FG = '#1c1917';
+  const FG_SECONDARY = '#57534e';
+  const BG_PAGE = '#f5f5f4';
+  const CODE_BG = '#fafaf9';
+  // Body, <code>, and <button> all inherit from airglow-base.css — no need
+  // to repeat font-family on every block here.
+  const wrap = document.createElement('div');
+  wrap.id = 'airglow-app-offline';
+  wrap.style.cssText = `position:fixed;inset:0;display:flex;align-items:center;justify-content:center;padding:24px;background:${BG_PAGE};color:${FG};`;
+  wrap.innerHTML = `
+    <div style="text-align:center;max-width:560px;padding:36px;border-radius:12px;border:1px solid ${BORDER_RED};background:${ERROR_BG_8}">
+      <div style="display:flex;justify-content:center;margin-bottom:18px">
+        <div style="display:inline-flex;padding:18px;border-radius:9999px;background:${ERROR_BG_18};color:${ERROR}">
+          ${triangleSvg}
+        </div>
+      </div>
+      <div style="font-size:28px;font-weight:700;line-height:1.2;margin-bottom:12px;color:${FG}">Dev server is offline</div>
+      <p style="font-size:18px;line-height:1.55;color:${FG_SECONDARY};margin:0">
+        Run <code style="background:${CODE_BG};padding:2px 8px;border-radius:4px;color:${FG};font-size:17px">pnpm airglow dev</code>
+        to start the dev server and load this app.
+      </p>
+      <button id="airglow-offline-retry" type="button" style="margin-top:24px;height:44px;padding:0 22px;border:1px solid ${ERROR};color:${ERROR};background:transparent;border-radius:8px;font-size:16px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:10px">
+        ${refreshSvg}<span>Retry</span>
+      </button>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  document.getElementById('airglow-offline-retry')?.addEventListener('click', () => location.reload());
+
+  // Auto-reload when the background flips devServerOnline → true so the user
+  // doesn't have to click Retry once `pnpm airglow dev` comes back.
+  const listener = (changes: Record<string, chrome.storage.StorageChange>) => {
+    if (DEV_SERVER_ONLINE_KEY in changes && changes[DEV_SERVER_ONLINE_KEY].newValue === true) {
+      chrome.storage.local.onChanged.removeListener(listener);
+      location.reload();
+    }
+  };
+  chrome.storage.local.onChanged.addListener(listener);
+}
+
 /**
  * Wait for the background to populate __app_sources with this app's source.
  * Retries a few times since background discovery may not have completed yet.
  */
 async function loadApp(appId: string) {
+  // Fast path: if the background already knows the dev server is offline,
+  // skip the 12s iframe load wait and surface the offline message immediately.
+  // Userscripts come from cache; the UI page does not (multi-asset bundle).
+  const onlineCheck = await chrome.storage.local.get(DEV_SERVER_ONLINE_KEY);
+  if (onlineCheck[DEV_SERVER_ONLINE_KEY] === false) {
+    renderOfflineMessage(appId);
+    return;
+  }
+
   const maxAttempts = 5;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     const result = await chrome.storage.local.get(APP_SOURCES_KEY);

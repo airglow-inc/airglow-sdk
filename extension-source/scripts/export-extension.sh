@@ -72,13 +72,19 @@ python3 -m json.tool "$target_dir/manifest.json" >/dev/null
 # rebuild" — both use the same field. Source-based (not output-based) so the
 # hash is stable across OS/toolchain differences in the build output.
 BUILD_HASH="$(cd "$repo_root" && git ls-files extension-source/ | LC_ALL=C sort | xargs -I {} git hash-object {} | shasum -a 256 | awk '{print $1}')"
+# Build timestamp (unix ms). Direction signal for the "git pull warranted"
+# check: a manifest with a later airglow_build_ts is the one to pull. Hash
+# alone can't tell which side is ahead, so a local rebuild on a branch that's
+# already ahead of origin would otherwise pester the user to pull.
+BUILD_TS="$(python3 -c 'import time; print(int(time.time()*1000))')"
 python3 -c "
 import json, sys
 path = sys.argv[1]
 with open(path) as f: m = json.load(f)
 m['airglow_build_hash'] = sys.argv[2]
+m['airglow_build_ts'] = int(sys.argv[3])
 with open(path, 'w') as f: json.dump(m, f, separators=(',', ':'))
-" "$target_dir/manifest.json" "$BUILD_HASH"
+" "$target_dir/manifest.json" "$BUILD_HASH" "$BUILD_TS"
 
 if [ -d "$target_dir/chrome-mv3" ]; then
   echo "Unexpected nested build directory: $target_dir/chrome-mv3" >&2

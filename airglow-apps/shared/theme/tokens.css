@@ -1,12 +1,13 @@
 /*
  * Airglow Design Tokens
  * Usage: @import '../../shared/theme/tokens.css' in your app's globals.css
+ *
+ * No web fonts declared here — the dev server (cli/src/dev.ts handleUi)
+ * injects an @font-face block pointing at /api/fonts/* when it emits the
+ * app UI HTML. Keeping it out of this file means the same file can be
+ * imported from the extension bundle (chrome-extension:// origin, no
+ * /api/fonts/ route) without generating phantom 404 font requests.
  */
-
-/* ═══════════════════════════════════════════
-   FONTS
-   ═══════════════════════════════════════════ */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 
 :root {
   /* ─── Color: Gray Scale (warm-tinted) ─── */

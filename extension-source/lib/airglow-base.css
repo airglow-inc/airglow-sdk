@@ -1,0 +1,40 @@
+/*
+ * Airglow base CSS for extension pages (dashboard, app-shell, startup-runner,
+ * and any future entrypoints). Import once from each page's stylesheet or TS
+ * entry — gives you Inter / JetBrains Mono, sensible reset, and font
+ * inheritance into <button>, <input>, <code> et al. so feature code doesn't
+ * have to set font-family on every block.
+ *
+ * Imports MUST stay above any other rules in the importer; the browser
+ * silently drops @font-face that lands below other rules.
+ */
+
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter-variable.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-variable.woff2') format('woff2-variations');
+}
+
+/* --font-sans / --font-mono are defined in airglow-apps/shared/theme/tokens.css
+   (single source of truth). We just reference them here so consumers of this
+   base sheet don't have to set font-family on body / code / buttons manually. */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body { font-family: var(--font-sans, 'Inter', system-ui, sans-serif); }
+
+/* Form controls fall back to UA fonts otherwise; force inheritance so a
+   button placed anywhere reads in the same family without an explicit override. */
+button, input, textarea, select { font-family: inherit; }
+
+/* Mono by default for code-ish elements. */
+code, kbd, samp, pre { font-family: var(--font-mono, 'JetBrains Mono', ui-monospace, monospace); }

@@ -5,8 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Airglow App</title>
   <style>
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: system-ui, -apple-system, sans-serif; }
+    /* Fonts + reset come from lib/airglow-base.css (imported by main.ts).
+       Only loading-indicator styling lives here, since it must paint before
+       JS runs. */
+    *, *::before, *::after { margin: 0; padding: 0; }
     #loading { display: flex; align-items: center; justify-content: center; height: 100vh; color: #a8a29e; font-size: 14px; }
   </style>
 </head>

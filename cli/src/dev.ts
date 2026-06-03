@@ -47,50 +47,45 @@ function originAllowed(origin: string | undefined): boolean {
 //     extension/ on disk. Mismatch ⇒ user pulled but didn't reload extension.
 //   - repo: local HEAD vs upstream HEAD. Behind ⇒ user should `git pull`.
 
-const UPSTREAM_REMOTE = 'https://github.com/airglow-inc/airglow-sdk.git';
+const UPSTREAM_MANIFEST_URL = 'https://raw.githubusercontent.com/airglow-inc/airglow-sdk/main/extension/manifest.json';
 const UPSTREAM_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1h
-let upstreamHeadCache: { sha: string | null; checkedAt: number; localHeadAtCheck: string | null } = { sha: null, checkedAt: 0, localHeadAtCheck: null };
+let upstreamTsCache: { ts: number | null; checkedAt: number } = { ts: null, checkedAt: 0 };
 
-function currentExtensionBuildHash(extensionDir: string): string | null {
+function currentExtensionManifest(extensionDir: string): any | null {
   try {
-    const manifest = JSON.parse(readFileSync(join(extensionDir, 'manifest.json'), 'utf8'));
-    return typeof manifest.airglow_build_hash === 'string' ? manifest.airglow_build_hash : null;
+    return JSON.parse(readFileSync(join(extensionDir, 'manifest.json'), 'utf8'));
   } catch {
     return null;
   }
 }
 
-function localRepoHead(cwd: string): string | null {
-  try {
-    return execSync('git rev-parse HEAD', { encoding: 'utf-8', cwd, timeout: 2000 }).trim();
-  } catch {
-    return null;
-  }
-}
-
-function upstreamRepoHead(localHead: string | null): string | null {
+// Fetch the build timestamp baked into origin/main's extension/manifest.json.
+// Cached for an hour so the dev server isn't hammering GitHub on every poll.
+// Returns null on transient failure; caller treats null as "no signal" rather
+// than "definitely up-to-date" so we don't silently miss a needed pull.
+async function fetchUpstreamBuildTs(): Promise<number | null> {
   const now = Date.now();
-  const fresh = now - upstreamHeadCache.checkedAt < UPSTREAM_CHECK_INTERVAL_MS;
-  const localUnchanged = upstreamHeadCache.localHeadAtCheck === localHead;
-  if (upstreamHeadCache.sha && fresh && localUnchanged) {
-    return upstreamHeadCache.sha;
+  if (upstreamTsCache.ts !== null && now - upstreamTsCache.checkedAt < UPSTREAM_CHECK_INTERVAL_MS) {
+    return upstreamTsCache.ts;
   }
   try {
-    const out = execSync(`git ls-remote ${UPSTREAM_REMOTE} HEAD`, { encoding: 'utf-8', timeout: 5000 });
-    const sha = out.split(/\s+/)[0] || null;
-    upstreamHeadCache = { sha, checkedAt: now, localHeadAtCheck: localHead };
-    return sha;
+    const res = await fetch(UPSTREAM_MANIFEST_URL, { cache: 'no-store' as RequestCache });
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    const ts = typeof json?.airglow_build_ts === 'number' ? json.airglow_build_ts : null;
+    upstreamTsCache = { ts, checkedAt: now };
+    return ts;
   } catch {
-    upstreamHeadCache = { sha: null, checkedAt: now, localHeadAtCheck: localHead };
+    upstreamTsCache = { ts: null, checkedAt: now };
     return null;
   }
 }
 
-function handleUpdateStatus(extensionDir: string, loadedBuildHash: string | null) {
-  const cwd = join(extensionDir, '..');
-  const currentBuild = currentExtensionBuildHash(extensionDir);
-  const localHead = localRepoHead(cwd);
-  const upstreamHead = upstreamRepoHead(localHead);
+async function handleUpdateStatus(extensionDir: string, loadedBuildHash: string | null) {
+  const localManifest = currentExtensionManifest(extensionDir);
+  const currentBuild = typeof localManifest?.airglow_build_hash === 'string' ? localManifest.airglow_build_hash : null;
+  const localTs = typeof localManifest?.airglow_build_ts === 'number' ? localManifest.airglow_build_ts : null;
+  const upstreamTs = await fetchUpstreamBuildTs();
   return {
     extension: {
       loaded: loadedBuildHash,
@@ -98,9 +93,11 @@ function handleUpdateStatus(extensionDir: string, loadedBuildHash: string | null
       needsReload: !!(loadedBuildHash && currentBuild && loadedBuildHash !== currentBuild),
     },
     repo: {
-      local: localHead,
-      upstream: upstreamHead,
-      behindUpstream: !!(localHead && upstreamHead && localHead !== upstreamHead),
+      local: localTs,
+      upstream: upstreamTs,
+      // Strictly later → pull. Older/equal → silent. Direction matters here:
+      // a local rebuild on a branch that's ahead of origin should not pester.
+      behindUpstream: !!(localTs && upstreamTs && upstreamTs > localTs),
     },
   };
 }
@@ -236,6 +233,21 @@ async function computeAppHash(appDir: string, sharedMtimes: number[]): Promise<s
 // under appsDir (e.g. `local/<id>` for maintainer dogfooding apps).
 const appDirCache = new Map<string, string>();
 
+// List RPC handler names from `<appDir>/server/*.ts` (sans extension).
+// Surfaces "this app has server functions" to clients (extension dashboard
+// warns users that RPC won't work when the dev server is down).
+async function listServerFunctions(appDir: string): Promise<string[]> {
+  try {
+    const entries = await readdir(join(appDir, 'server'), { withFileTypes: true });
+    return entries
+      .filter((e) => e.isFile() && e.name.endsWith('.ts') && !e.name.startsWith('.'))
+      .map((e) => e.name.slice(0, -3))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 async function scanManifestsInto(
   root: string,
   sharedMtimes: number[],
@@ -254,6 +266,7 @@ async function scanManifestsInto(
       const raw = await readFile(join(appDir, 'manifest.json'), 'utf-8');
       const manifest = JSON.parse(raw);
       manifest._hash = await computeAppHash(appDir, sharedMtimes);
+      manifest._serverFunctions = await listServerFunctions(appDir);
       if (manifest.id) appDirCache.set(manifest.id, appDir);
       out.push(manifest);
       // Found an app — don't descend further (apps don't contain apps).
@@ -396,7 +409,7 @@ async function handleUi(appsDir: string, appId: string): Promise<[number, string
   const sdkCode = buildSdkCode(appId);
   const html = `<!DOCTYPE html>
 <html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${appId}</title><style>${css}</style></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${appId}</title><style>${AIRGLOW_BASE_CSS}</style><style>${css}</style></head>
 <body><div id="root"></div>
 <script>${sdkCode}<\/script>
 <script>window.__airglow_params = Object.fromEntries(new URLSearchParams(location.search));<\/script>
@@ -404,6 +417,20 @@ async function handleUi(appsDir: string, appId: string): Promise<[number, string
 </body></html>`;
   return [200, 'text/html; charset=utf-8', html];
 }
+
+// Base CSS prepended to every UI HTML page so apps inherit Inter / JetBrains
+// Mono and a basic reset without each globals.css having to opt in. Kept in
+// sync with extension-source/lib/airglow-base.css (same fonts, same vars) —
+// the difference is the woff2 URL: extension pages use /fonts/, dev-server
+// pages use /api/fonts/.
+const AIRGLOW_BASE_CSS = `
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 100 900; font-display: swap; src: url('/api/fonts/inter-variable.woff2') format('woff2-variations'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 100 800; font-display: swap; src: url('/api/fonts/jetbrains-mono-variable.woff2') format('woff2-variations'); }
+*, *::before, *::after { box-sizing: border-box; }
+body { font-family: var(--font-sans, 'Inter', system-ui, sans-serif); }
+button, input, textarea, select { font-family: inherit; }
+code, kbd, samp, pre { font-family: var(--font-mono, 'JetBrains Mono', ui-monospace, monospace); }
+`;
 
 async function handleUiBundle(appsDir: string, appId: string): Promise<[number, string, string]> {
   const appRoot = await resolveAppDir(appsDir, appId);
@@ -587,7 +614,7 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
 
       if (pathname === '/api/extension/update-status' && req.method === 'GET') {
         const loadedHash = searchParams.get('extensionBuildHash');
-        const data = handleUpdateStatus(join(appsDir, '..', 'extension'), loadedHash);
+        const data = await handleUpdateStatus(join(appsDir, '..', 'extension'), loadedHash);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
         return;
@@ -597,6 +624,29 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
         const [status, data] = await handleManifests(appsDir);
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
+        return;
+      }
+
+      // /api/fonts/<file> — serves the bundled woff2s so app UIs and offline
+      // overlays (served by the dev server) can use the same Inter / JetBrains
+      // Mono as the extension dashboard. Sourced from extension-source/public/
+      // fonts/ in-tree; same-monorepo path resolution is fine for the dogfood
+      // workflow.
+      const fontMatch = pathname.match(/^\/api\/fonts\/([a-zA-Z0-9_.-]+\.woff2)$/);
+      if (fontMatch && req.method === 'GET') {
+        const fontFile = fontMatch[1];
+        const fontPath = join(__dirname, '..', '..', 'extension-source', 'public', 'fonts', fontFile);
+        try {
+          const data = readFileSync(fontPath);
+          res.writeHead(200, {
+            'Content-Type': 'font/woff2',
+            'Cache-Control': 'public, max-age=31536000, immutable',
+          });
+          res.end(data);
+        } catch {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: `font ${fontFile} not found` }));
+        }
         return;
       }
 

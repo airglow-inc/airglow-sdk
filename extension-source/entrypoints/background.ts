@@ -187,26 +187,36 @@ export default defineBackground(() => {
   }
 
   // Independent of the dev server: hit origin/main's extension/manifest.json
-  // directly and compare its airglow_build_hash to the loaded one. Wakes the SW
-  // on a chrome.alarms schedule so it keeps checking even when the user isn't
-  // actively interacting with the extension and the dev server is offline.
-  // Caveat: only detects changes to extension-source/ (since the hash is over
-  // that tree). CLI-only / docs-only commits won't trip this — the dev-server
-  // check (when running) catches those.
+  // directly and compare its airglow_build_ts (build time, baked in by
+  // export-extension.sh) to the loaded one. Only prompts "git pull" when
+  // remote is *strictly later* than local — hash diffs alone aren't enough
+  // because they fire when local is ahead too (rebuild on a feature branch).
+  // Wakes the SW on a chrome.alarms schedule so it keeps checking even when
+  // the user isn't actively interacting with the extension and the dev server
+  // is offline. Caveat: only detects changes to extension/manifest.json's
+  // build stamp. CLI-only / docs-only commits won't trip this.
   const REMOTE_MANIFEST_URL = 'https://raw.githubusercontent.com/airglow-inc/airglow-sdk/main/extension/manifest.json';
   const REMOTE_CHECK_ALARM = 'airglow:remote-update-check';
+
+  // Persisted so the dashboard can render the "git pull" banner in sync with
+  // the toolbar badge — the badge fires on (server-side OR remote-only)
+  // signal, but the dashboard previously only saw the server-side one.
+  const GIT_PULL_DUE_REMOTE_KEY = '__git_pull_due_remote';
 
   async function refreshRemoteUpdateStatus() {
     try {
       const res = await fetch(REMOTE_MANIFEST_URL, { signal: AbortSignal.timeout(5000), cache: 'no-store' });
       if (!res.ok) return;
       const remote: any = await res.json();
-      const remoteHash = typeof remote?.airglow_build_hash === 'string' ? remote.airglow_build_hash : null;
-      if (!remoteHash) return;
-      const loadedHash = (chrome.runtime.getManifest() as { airglow_build_hash?: string }).airglow_build_hash || '';
-      const next = !!(loadedHash && remoteHash !== loadedHash);
+      const remoteTs = typeof remote?.airglow_build_ts === 'number' ? remote.airglow_build_ts : 0;
+      const loadedTs = (chrome.runtime.getManifest() as { airglow_build_ts?: number }).airglow_build_ts || 0;
+      // Strictly later → pull. Older/equal → silent (local rebuild or
+      // already up-to-date). Missing timestamp on either side → silent so
+      // older builds don't pester after upgrading.
+      const next = !!(remoteTs && loadedTs && remoteTs > loadedTs);
       if (next !== gitPullDueRemote) {
         gitPullDueRemote = next;
+        await chrome.storage.local.set({ [GIT_PULL_DUE_REMOTE_KEY]: next });
         refreshActionBadge();
       }
     } catch { /* network blip — try again next alarm */ }
@@ -221,6 +231,15 @@ export default defineBackground(() => {
   });
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === REMOTE_CHECK_ALARM) refreshRemoteUpdateStatus();
+  });
+  // Seed from the last persisted value so the badge survives SW restarts
+  // without waiting for the network check to come back.
+  chrome.storage.local.get(GIT_PULL_DUE_REMOTE_KEY).then((r) => {
+    const v = !!r[GIT_PULL_DUE_REMOTE_KEY];
+    if (v !== gitPullDueRemote) {
+      gitPullDueRemote = v;
+      refreshActionBadge();
+    }
   });
   // Also run once at SW startup so the badge reflects current state without
   // waiting for the first alarm fire (which could be up to an hour away).
@@ -294,16 +313,32 @@ export default defineBackground(() => {
     const isSeenMigration = prior[SEEN_APPS_KEY] === undefined;
     const priorManifests = (prior['__app_manifests'] as AppManifest[] | undefined) || [];
 
-    const { reachable, manifests: allManifests } = await loadAppManifests();
+    const { reachable, manifests: allManifests, fromCache } = await loadAppManifests();
 
     await setDevServerOnline(reachable);
     if (reachable) refreshUpdateStatus();
 
-    // Detect local dev server going offline → clean up dev secrets
-    // Also cleans up on first poll after extension restart if server is down
-    if (!reachable) {
-      await cleanupDevSecrets(); // no-op if nothing to clean
-      lastAppHashes.clear(); // force re-registration when server comes back
+    // Offline + no cached manifests = nothing to register. Clean up dev secrets
+    // so they don't linger from a previous server we no longer talk to.
+    if (!reachable && allManifests.length === 0) {
+      await cleanupDevSecrets();
+      lastAppHashes.clear();
+      return;
+    }
+
+    // Offline path: register from cache so existing apps keep working across
+    // SW restarts. Skip server-state-dependent housekeeping — there's no fresh
+    // signal to act on, and clearing lastAppHashes here would force a
+    // pointless full re-register on every poll while offline.
+    if (fromCache) {
+      setAppManifests(allManifests);
+      const disabled = await getDisabledApps();
+      const manifests = allManifests.filter(m => !disabled.has(m.id));
+      try {
+        await registerAllUserscripts(manifests, undefined, { skipReload: true });
+      } catch (e) {
+        logger.error('airglow', `offline userscript registration failed: ${e}`);
+      }
       return;
     }
 
@@ -1060,12 +1095,26 @@ export default defineBackground(() => {
         const wasDisabled = disabled.has(appId);
         if (wasDisabled) disabled.delete(appId);
         else disabled.add(appId);
+        const nowDisabled = !wasDisabled;
         await chrome.storage.local.set({ '__disabled_apps': Array.from(disabled) });
         lastAppHashes.delete(appId);
-        // force=true to bypass change detection — disabled set changed, must re-register
-        // skipReload=true — user refreshes manually via edge panel button
+        // Immediately unregister this app's scripts when transitioning to
+        // disabled. Works whether or not the dev server is reachable; the
+        // re-register path below would otherwise no-op when offline and the
+        // already-registered scripts would survive on new page loads.
+        if (nowDisabled) {
+          try {
+            const scripts = await chrome.userScripts.getScripts();
+            const ids = scripts.filter(s => s.id.startsWith(appId + '__')).map(s => s.id);
+            if (ids.length > 0) await chrome.userScripts.unregister({ ids });
+          } catch (e: any) {
+            logger.warn('airglow', `unregister scripts for ${appId} failed: ${e?.message ?? e}`);
+          }
+        }
+        // force=true to bypass change detection; skipReload=true — user
+        // refreshes their own tabs (side panel hints "Refresh to apply").
         await loadAndRegisterApps(true, true);
-        sendResponse({ ok: true, disabled: !wasDisabled });
+        sendResponse({ ok: true, disabled: nowDisabled });
       }).catch(e => sendResponse({ error: e.message }));
       return true;
     }
