@@ -50,6 +50,27 @@ require_file "$build_dir/manifest.json"
 require_file "$build_dir/background.js"
 require_file "$build_dir/content-scripts/edge-button.js"
 
+# Snapshot the prior manifest's hash + ts BEFORE rsync overwrites it. Used
+# below to keep airglow_build_ts stable across rebuilds with no source change
+# — required for the pre-push staleness check (any byte diff fails the push).
+PRIOR_HASH=""
+PRIOR_TS=""
+if [ -f "$target_dir/manifest.json" ]; then
+  PRIOR_HASH="$(python3 -c "import json,sys
+try:
+  d = json.load(open(sys.argv[1]))
+  print(d.get('airglow_build_hash') or '')
+except Exception:
+  print('')" "$target_dir/manifest.json" 2>/dev/null || true)"
+  PRIOR_TS="$(python3 -c "import json,sys
+try:
+  d = json.load(open(sys.argv[1]))
+  v = d.get('airglow_build_ts')
+  print(v if isinstance(v, int) else '')
+except Exception:
+  print('')" "$target_dir/manifest.json" 2>/dev/null || true)"
+fi
+
 echo "==> Refreshing $target_dir"
 mkdir -p "$target_dir"
 # README.md in extension/ is hand-written install instructions for end users —
@@ -76,7 +97,16 @@ BUILD_HASH="$(cd "$repo_root" && git ls-files extension-source/ | LC_ALL=C sort 
 # check: a manifest with a later airglow_build_ts is the one to pull. Hash
 # alone can't tell which side is ahead, so a local rebuild on a branch that's
 # already ahead of origin would otherwise pester the user to pull.
-BUILD_TS="$(python3 -c 'import time; print(int(time.time()*1000))')"
+#
+# Determinism rule: if source hasn't changed (BUILD_HASH == PRIOR_HASH), reuse
+# the prior ts so back-to-back rebuilds produce byte-identical manifests
+# (required by the pre-push staleness hook). Only bump the ts when the source
+# actually changed.
+if [ -n "$PRIOR_HASH" ] && [ "$BUILD_HASH" = "$PRIOR_HASH" ] && [ -n "$PRIOR_TS" ]; then
+  BUILD_TS="$PRIOR_TS"
+else
+  BUILD_TS="$(python3 -c 'import time; print(int(time.time()*1000))')"
+fi
 python3 -c "
 import json, sys
 path = sys.argv[1]
