@@ -73,7 +73,6 @@ export default function App() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [emailInput, setEmailInput] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
-  const [emailSaved, setEmailSaved] = useState(false);
   const [unseenErrorCount, setUnseenErrorCount] = useState(0);
 
   // Secrets state
@@ -320,7 +319,6 @@ export default function App() {
       setUserEmail(trimmed);
       setEmailInput(trimmed);
       setEmailError(null);
-      setEmailSaved(true);
     });
   }
 
@@ -821,7 +819,7 @@ Airglow — for those who create
                 Enter your email
               </div>
               <p className="text-base mt-2 mb-4" style={{ color: 'var(--fg-secondary)' }}>
-                Airglow asks for an email to identify its users. We will never send any spam.
+                Airglow asks for an email to identify its users. We promise to never send any spam.
               </p>
               <div className="flex flex-col gap-3">
                 <input
@@ -909,16 +907,6 @@ Airglow — for those who create
             </div>
           </div>
         )}
-        {emailSaved && (
-          <div
-            className="p-4 rounded-[var(--radius-md)] mb-6 border text-base"
-            style={{ background: 'color-mix(in srgb, var(--olive) 8%, var(--bg-white))', borderColor: 'color-mix(in srgb, var(--olive) 20%, var(--border-tertiary))', color: 'var(--fg-secondary)' }}
-            data-testid="banner-email-saved"
-          >
-            Email saved locally: <strong>{userEmail}</strong>
-          </div>
-        )}
-
         {(forceBanners || userScriptsEnabled === false) && (
           <div
             className="p-5 rounded-[var(--radius-md)] mb-6 border w-fit mx-auto"
