@@ -77,6 +77,7 @@ export default defineBackground(() => {
   let userEmailSet = false;
   let userScriptsAllowed = true;
   let extensionReloadDue = false;
+  let gitPullDue = false;
 
   function refreshActionBadge() {
     const issues: string[] = [];
@@ -84,6 +85,7 @@ export default defineBackground(() => {
     if (!userEmailSet) issues.push('email not set');
     if (!userScriptsAllowed) issues.push('user scripts disabled');
     if (extensionReloadDue) issues.push('extension reload available');
+    if (gitPullDue) issues.push('newer SDK on origin — git pull');
 
     if (issues.length === 0) {
       chrome.action.setBadgeText({ text: '' });
@@ -99,18 +101,21 @@ export default defineBackground(() => {
   async function setDevServerOnline(online: boolean) {
     await chrome.storage.local.set({ [DEV_SERVER_ONLINE_KEY]: online });
     devServerOnline = online;
-    if (!online && extensionReloadDue) {
-      // Server went away — clear the "reload available" flag so it's not stuck
-      // on if the user happens to launch a different workspace later.
+    if (!online) {
+      // Server went away — clear server-derived flags so they aren't stuck on
+      // if the user happens to launch a different workspace later.
       extensionReloadDue = false;
+      gitPullDue = false;
     }
     refreshActionBadge();
   }
 
-  // Polls the dev server's update-status endpoint to learn whether the loaded
-  // extension build differs from extension/ on disk. Piggybacks on the manifest
-  // poll cycle (called from loadAndRegisterApps when the server is reachable).
-  async function refreshExtensionReloadDue() {
+  // Polls the dev server's update-status endpoint for two signals:
+  //   - extension.needsReload: loaded build hash != extension/ on disk
+  //   - repo.behindUpstream:   local HEAD != upstream HEAD (cached 1h server-side)
+  // Piggybacks on the manifest poll cycle (called from loadAndRegisterApps when
+  // the server is reachable).
+  async function refreshUpdateStatus() {
     try {
       const port = await new Promise<number>((resolve) => {
         chrome.storage.local.get('__dev_port', (r) => resolve((r['__dev_port'] as number) || 3222));
@@ -122,9 +127,11 @@ export default defineBackground(() => {
       });
       if (!res.ok) return;
       const data: any = await res.json();
-      const next = !!data?.extension?.needsReload;
-      if (next !== extensionReloadDue) {
-        extensionReloadDue = next;
+      const nextReload = !!data?.extension?.needsReload;
+      const nextPull = !!data?.repo?.behindUpstream;
+      if (nextReload !== extensionReloadDue || nextPull !== gitPullDue) {
+        extensionReloadDue = nextReload;
+        gitPullDue = nextPull;
         refreshActionBadge();
       }
     } catch { /* transient — next tick retries */ }
@@ -194,7 +201,7 @@ export default defineBackground(() => {
     const { reachable, manifests: allManifests } = await loadAppManifests();
 
     await setDevServerOnline(reachable);
-    if (reachable) refreshExtensionReloadDue();
+    if (reachable) refreshUpdateStatus();
 
     // Detect local dev server going offline → clean up dev secrets
     // Also cleans up on first poll after extension restart if server is down
