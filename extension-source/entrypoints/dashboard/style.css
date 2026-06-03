@@ -1,4 +1,26 @@
-@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+/* Bundled fonts — variable weight, served from the extension package so the
+   dashboard renders consistently across machines and works offline. */
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/inter-variable.woff2') format('woff2-variations');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 100 800;
+  font-display: swap;
+  src: url('/fonts/jetbrains-mono-variable.woff2') format('woff2-variations');
+}
+
+:root {
+  --font-sans: 'Inter', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+body { font-family: var(--font-sans); }
 
 /* source("../..") pins Tailwind content scanning to extension-source/. The
    shared theme intentionally does not import tailwindcss so each consumer

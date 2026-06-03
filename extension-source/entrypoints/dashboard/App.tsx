@@ -292,6 +292,24 @@ export default function App() {
     return () => chrome.storage.local.onChanged.removeListener(onChange);
   }, []);
 
+  // Poll the dev server's update-status endpoint while the server is online so
+  // the "Reload Airglow" banner appears without the user having to refresh the
+  // dashboard. Pauses while offline (no point hitting a dead server) and while
+  // the dashboard tab is hidden (saves a request per ~5s when nobody's looking).
+  useEffect(() => {
+    if (localOnline !== true) return;
+    const localUrl = `http://127.0.0.1:${devPort}`;
+    let cancelled = false;
+    const tick = () => {
+      if (document.hidden) return;
+      fetchUpdateStatus(localUrl)
+        .then((r) => { if (!cancelled) setUpdateStatus(r); })
+        .catch(() => { /* transient failure — next tick will retry */ });
+    };
+    const id = setInterval(tick, 5000);
+    return () => { cancelled = true; clearInterval(id); };
+  }, [localOnline, devPort]);
+
   function saveUserEmail() {
     const trimmed = normalizeUserEmail(emailInput);
     if (!trimmed) {
@@ -775,7 +793,7 @@ export default function App() {
 
         {/* Tagline */}
         <div className="px-5 py-4">
-          <p style={{ color: 'var(--fg-tertiary)', fontSize: '12px', letterSpacing: '0.02em', fontFamily: "'IBM Plex Sans', var(--font-sans)", lineHeight: '1.6' }}>
+          <p style={{ color: 'var(--fg-tertiary)', fontSize: '12px', letterSpacing: '0.02em', fontFamily: 'var(--font-sans)', lineHeight: '1.6' }}>
 Airglow — for those who create
           </p>
         </div>

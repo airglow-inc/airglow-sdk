@@ -2,6 +2,22 @@ import ICON_SVG from './icon.svg?raw';
 
 const WARN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>`;
 
+// Font family used by every edge-button surface. Backed by an @font-face
+// pointing at the extension's bundled Inter so width is consistent across sites.
+const AIRGLOW_FONT = '"Airglow Inter", sans-serif';
+
+function ensureAirglowFont() {
+  if (document.getElementById('__airglow_font')) return;
+  const style = document.createElement('style');
+  style.id = '__airglow_font';
+  // textContent (not innerHTML) so Trusted Types policies don't intercept.
+  style.textContent =
+    '@font-face { font-family: "Airglow Inter"; font-style: normal;' +
+    ' font-weight: 100 900; font-display: swap;' +
+    ' src: url("' + chrome.runtime.getURL('fonts/inter-variable.woff2') + '") format("woff2-variations"); }';
+  (document.head || document.documentElement).appendChild(style);
+}
+
 interface PageApp {
   id: string;
   name: string;
@@ -16,6 +32,7 @@ interface PopupOpts {
 }
 
 function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hide: () => void; onHideAll?: () => void } {
+  ensureAirglowFont();
   const pos = opts?.position ?? { top: '50%', transform: 'translateY(-50%)' };
   const popup = document.createElement('div');
   popup.setAttribute('data-testid', 'airglow-edge-popup');
@@ -30,7 +47,7 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
     boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.06)',
     padding: '12px 14px',
     zIndex: '2147483647',
-    fontFamily: 'Inter, system-ui, sans-serif',
+    fontFamily: AIRGLOW_FONT,
     fontSize: '14px',
     color: '#1a1a1a',
     minWidth: '180px',

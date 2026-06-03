@@ -48,6 +48,12 @@ export default defineConfig({
       js: ['content-scripts/edge-button.js'],
       run_at: 'document_idle',
     }],
+    // Expose bundled fonts so injected UI (e.g. the "Airglow is using this tab"
+    // banner) can @font-face them and render consistently across sites/OSes.
+    web_accessible_resources: [{
+      resources: ['fonts/*'],
+      matches: ['<all_urls>'],
+    }],
     action: {},
     commands: {
       '_execute_action': {

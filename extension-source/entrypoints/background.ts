@@ -76,12 +76,14 @@ export default defineBackground(() => {
   let devServerOnline = true;
   let userEmailSet = false;
   let userScriptsAllowed = true;
+  let extensionReloadDue = false;
 
   function refreshActionBadge() {
     const issues: string[] = [];
     if (!devServerOnline) issues.push('dev server offline');
     if (!userEmailSet) issues.push('email not set');
     if (!userScriptsAllowed) issues.push('user scripts disabled');
+    if (extensionReloadDue) issues.push('extension reload available');
 
     if (issues.length === 0) {
       chrome.action.setBadgeText({ text: '' });
@@ -97,7 +99,35 @@ export default defineBackground(() => {
   async function setDevServerOnline(online: boolean) {
     await chrome.storage.local.set({ [DEV_SERVER_ONLINE_KEY]: online });
     devServerOnline = online;
+    if (!online && extensionReloadDue) {
+      // Server went away — clear the "reload available" flag so it's not stuck
+      // on if the user happens to launch a different workspace later.
+      extensionReloadDue = false;
+    }
     refreshActionBadge();
+  }
+
+  // Polls the dev server's update-status endpoint to learn whether the loaded
+  // extension build differs from extension/ on disk. Piggybacks on the manifest
+  // poll cycle (called from loadAndRegisterApps when the server is reachable).
+  async function refreshExtensionReloadDue() {
+    try {
+      const port = await new Promise<number>((resolve) => {
+        chrome.storage.local.get('__dev_port', (r) => resolve((r['__dev_port'] as number) || 3222));
+      });
+      const loadedHash = (chrome.runtime.getManifest() as { airglow_build_hash?: string }).airglow_build_hash || '';
+      const qs = loadedHash ? `?extensionBuildHash=${encodeURIComponent(loadedHash)}` : '';
+      const res = await fetch(`http://127.0.0.1:${port}/api/extension/update-status${qs}`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      if (!res.ok) return;
+      const data: any = await res.json();
+      const next = !!data?.extension?.needsReload;
+      if (next !== extensionReloadDue) {
+        extensionReloadDue = next;
+        refreshActionBadge();
+      }
+    } catch { /* transient — next tick retries */ }
   }
 
   // chrome.userScripts.getScripts() throws if the user-scripts toggle is off
@@ -161,6 +191,7 @@ export default defineBackground(() => {
     const { reachable, manifests: allManifests } = await loadAppManifests();
 
     await setDevServerOnline(reachable);
+    if (reachable) refreshExtensionReloadDue();
 
     // Detect local dev server going offline → clean up dev secrets
     // Also cleans up on first poll after extension restart if server is down
@@ -315,24 +346,33 @@ export default defineBackground(() => {
         sendToHost({ type: 'reply', reqId: msg.reqId, payload: { tabs: list } });
       });
     } else if (msg.type === 'getHtml' && typeof msg.tabId === 'number') {
+      ensureAgentBanner(msg.tabId);
       domGetHtml(msg.tabId, msg.selector, msg.frame).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
     } else if (msg.type === 'setHtml' && typeof msg.tabId === 'number') {
+      ensureAgentBanner(msg.tabId);
       domSetHtml(msg.tabId, msg.selector, msg.html, msg.outer, msg.frame).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
     } else if (msg.type === 'eval' && typeof msg.tabId === 'number') {
+      ensureAgentBanner(msg.tabId);
       domEval(msg.tabId, msg.code, msg.frame, msg.main).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
     } else if (msg.type === 'frames' && typeof msg.tabId === 'number') {
       reply(msg, chrome.webNavigation.getAllFrames({ tabId: msg.tabId }).then((fr) => ({
         frames: (fr || []).map((f) => ({ frameId: f.frameId, parentFrameId: f.parentFrameId, url: f.url })),
       })));
     } else if (msg.type === 'newTab') {
-      reply(msg, openInDebugGroup(msg.url, msg.active !== false));
+      reply(msg, openInDebugGroup(msg.url, msg.active !== false).then((r: any) => {
+        if (typeof r?.id === 'number') paintBannerOnNextLoad(r.id);
+        return r;
+      }));
     } else if (msg.type === 'navigate' && typeof msg.tabId === 'number') {
+      paintBannerOnNextLoad(msg.tabId);
       reply(msg, chrome.tabs.update(msg.tabId, { url: msg.url }).then((t) => ({ id: t?.id, url: msg.url })));
     } else if (msg.type === 'reloadTab' && typeof msg.tabId === 'number') {
+      paintBannerOnNextLoad(msg.tabId);
       reply(msg, chrome.tabs.reload(msg.tabId).then(() => ({ reloaded: msg.tabId })));
     } else if (msg.type === 'closeTab' && typeof msg.tabId === 'number') {
       reply(msg, chrome.tabs.remove(msg.tabId).then(() => ({ closed: msg.tabId })));
     } else if (msg.type === 'capture' && typeof msg.tabId === 'number') {
+      ensureAgentBanner(msg.tabId);
       reply(msg, captureTab(msg.tabId));
     }
   }
@@ -388,6 +428,149 @@ export default defineBackground(() => {
   function reply(msg: any, p: Promise<any>) {
     p.then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }))
       .catch((e) => sendToHost({ type: 'reply', reqId: msg.reqId, payload: { error: String(e?.message || e) } }));
+  }
+
+  // ───── "Airglow is using this tab" banner ─────
+  // Injected each time the host drives a tab through chrome.scripting (idempotent
+  // via id check). User can dismiss with the × (persisted per-tab via
+  // sessionStorage; cleared on cross-origin nav). The banner is intentionally
+  // tied to *current* activity: it disappears with the next page navigation and
+  // only reappears when the agent runs another command. Silently no-ops on
+  // unscriptable pages (chrome://, the new-tab page, ...).
+
+  function bannerScript(fontUrl: string) {
+    if ((window as any).sessionStorage.getItem('__airglow_using_tab_dismissed') === '1') return;
+    if (document.getElementById('__airglow_using_tab')) return;
+    if (!document.body) return;
+    // Inject @font-face once per page so the banner renders in our bundled Inter
+    // regardless of what the page ships. Named 'Airglow Inter' to avoid any
+    // collision with a page-loaded 'Inter' face. textContent (not innerHTML) so
+    // Trusted Types policies don't intercept.
+    const FONT_FAMILY = 'Airglow Inter';
+    if (!document.getElementById('__airglow_using_tab_font')) {
+      const style = document.createElement('style');
+      style.id = '__airglow_using_tab_font';
+      style.textContent =
+        '@font-face { font-family: "' + FONT_FAMILY + '"; font-style: normal;' +
+        ' font-weight: 100 900; font-display: swap;' +
+        ' src: url("' + fontUrl + '") format("woff2-variations"); }';
+      (document.head || document.documentElement).appendChild(style);
+    }
+    const el = document.createElement('div');
+    el.id = '__airglow_using_tab';
+    const FONT = '"' + FONT_FAMILY + '", sans-serif';
+    el.style.cssText = [
+      'all: initial',
+      'position: fixed', 'top: 14px', 'left: 50%', 'transform: translateX(-50%)',
+      'z-index: 2147483647',
+      'display: inline-flex', 'align-items: center', 'gap: 10px',
+      'padding: 10px 14px 10px 20px', 'box-sizing: border-box',
+      'border: 2px solid #b8932f', 'border-radius: 9999px',
+      'background: #ede1c2', 'color: #232321',
+      `font-family: ${FONT}`,
+      'font-size: 16px', 'font-weight: 600', 'letter-spacing: -0.012em',
+      'white-space: nowrap', 'user-select: none',
+      'box-shadow: 0 1px 3px rgba(184,144,50,0.22)',
+      '-webkit-font-smoothing: antialiased',
+    ].join(';');
+    // Airglow logo (matches the gmail-calendar "Create meeting" button in site/mocks).
+    // Built via createElementNS rather than innerHTML so sites with Trusted Types
+    // policies (e.g. LinkedIn) don't strip it.
+    const SVG = 'http://www.w3.org/2000/svg';
+    const logo = document.createElementNS(SVG, 'svg');
+    logo.setAttribute('xmlns', SVG);
+    logo.setAttribute('viewBox', '245 250 520 520');
+    logo.setAttribute('width', '20');
+    logo.setAttribute('height', '20');
+    logo.style.cssText = 'flex-shrink: 0; display: block;';
+    const g = document.createElementNS(SVG, 'g');
+    g.setAttribute('transform', 'translate(52, 18) scale(0.98)');
+    const paths: [string, string, string?][] = [
+      ['#1c1917', 'M416.6 246.2 L200.8 753.5 L707.6 753.5 L490.8 246.2 Z'],
+      ['#F8BB5B', 'M416.6 246.2 L210.4 731 L313 649.9 L326.7 649.9 L446.9 551.2 L539.7 639.1 L560.2 640.1 L698 731 L490.8 246.2 Z M392.1 543.3 L510.4 543.3 L450.8 382.1 Z', 'evenodd'],
+      ['#FB864A', 'M714.632 416.635C701.3 446.692 670.155 464.771 637.443 461.441C604.73 458.111 577.867 434.126 570.866 401.999C563.864 369.872 578.312 336.885 606.672 320.245C635.032 303.605 670.876 307.085 695.506 328.87C709.65 341.38 718.632 358.707 720.703 377.476C720.758 377.977 720.809 378.478 720.854 378.98C722.016 391.856 719.875 404.817 714.632 416.635Z'],
+      ['#F99E3D', 'M200.8 753.5 L318.8 753.5 L355 678.2 L393.1 697.8 L448.8 634.2 L473.3 659.6 L468.4 634.2 L475.2 627.4 L446.9 570.7 L334.5 667.5 Z'],
+      ['#F99E3D', 'M595.4 753.5 L707.6 753.5 L556.3 669.4 Z'],
+    ];
+    for (const [fill, d, fillRule] of paths) {
+      const p = document.createElementNS(SVG, 'path');
+      p.setAttribute('fill', fill);
+      p.setAttribute('d', d);
+      if (fillRule) p.setAttribute('fill-rule', fillRule);
+      g.appendChild(p);
+    }
+    logo.appendChild(g);
+    const label = document.createElement('span');
+    label.textContent = 'Airglow is using this tab';
+    label.style.cssText = 'all: initial; color: inherit; font: inherit; letter-spacing: inherit;';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.style.cssText = [
+      'all: initial',
+      'display: flex', 'align-items: center', 'justify-content: center',
+      'width: 28px', 'height: 28px', 'border-radius: 14px',
+      'background: transparent',
+      'cursor: pointer', 'margin-left: 4px',
+    ].join(';');
+    // SVG × — perfectly centered (Unicode ×/✕ glyphs sit above the optical
+    // center inside their em box, which flex-centering can't fix).
+    const cross = document.createElementNS(SVG, 'svg');
+    cross.setAttribute('xmlns', SVG);
+    cross.setAttribute('viewBox', '0 0 14 14');
+    cross.setAttribute('width', '14');
+    cross.setAttribute('height', '14');
+    cross.style.cssText = 'display: block;';
+    for (const [x1, y1, x2, y2] of [[2, 2, 12, 12], [12, 2, 2, 12]] as const) {
+      const line = document.createElementNS(SVG, 'line');
+      line.setAttribute('x1', String(x1));
+      line.setAttribute('y1', String(y1));
+      line.setAttribute('x2', String(x2));
+      line.setAttribute('y2', String(y2));
+      line.setAttribute('stroke', '#6b5318');
+      line.setAttribute('stroke-width', '2');
+      line.setAttribute('stroke-linecap', 'round');
+      cross.appendChild(line);
+    }
+    close.appendChild(cross);
+    close.addEventListener('mouseenter', () => { close.style.background = 'rgba(184,144,50,0.18)'; });
+    close.addEventListener('mouseleave', () => { close.style.background = 'transparent'; });
+    close.addEventListener('click', () => {
+      try { window.sessionStorage.setItem('__airglow_using_tab_dismissed', '1'); } catch {}
+      el.remove();
+    });
+    el.appendChild(logo);
+    el.appendChild(label);
+    el.appendChild(close);
+    document.body.appendChild(el);
+  }
+
+  async function ensureAgentBanner(tabId: number) {
+    try {
+      const fontUrl = chrome.runtime.getURL('fonts/inter-variable.woff2');
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: bannerScript,
+        args: [fontUrl],
+      });
+    } catch { /* unscriptable page (chrome://, NTP, etc.) — skip silently */ }
+  }
+
+  // Paint the banner after an agent-driven navigation completes. Idea: when the
+  // agent navigates/reloads/opens a tab, the *next* onCompleted on that tab's
+  // top frame is the one we caused — inject the banner there, then remove the
+  // listener. 30s leak guard in case the page never loads (we don't want a
+  // long-lived listener firing for a future user-initiated nav).
+  function paintBannerOnNextLoad(tabId: number) {
+    const listener = (details: chrome.webNavigation.WebNavigationFramedCallbackDetails) => {
+      if (details.tabId !== tabId || details.frameId !== 0) return;
+      chrome.webNavigation.onCompleted.removeListener(listener);
+      clearTimeout(timer);
+      ensureAgentBanner(tabId);
+    };
+    const timer = setTimeout(() => chrome.webNavigation.onCompleted.removeListener(listener), 30000);
+    chrome.webNavigation.onCompleted.addListener(listener);
   }
 
   // ───── DOM read/write via chrome.scripting (no CDP needed) ─────
