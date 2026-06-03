@@ -37,25 +37,12 @@ claude
 ```
 airglow-sdk/
 ├── airglow-apps/      # Your agent should develop apps here, see airglow-apps/README.md
-├── extension/         # Chrome extension — built output, load this with "Load unpacked"
-├── extension-source/  # Chrome extension source (WXT + React + Tailwind); rebuilds extension/
+├── extension/         # Chrome extension
+├── extension-source/  # Chrome extension source code
 └── cli/               # CLI to run Airglow apps locally
 ```
 
 Developer guide [`airglow-apps/README.md`](airglow-apps/README.md)
-
-## Building the extension
-
-End users don't need this — `extension/` is the built bundle they load. Edit `extension-source/` only if you're modifying the extension itself (dashboard, background worker, content scripts).
-
-```bash
-cd extension-source
-pnpm install
-pnpm dev                                 # WXT dev server with hot reload
-bash scripts/export-extension.sh         # rebuild ../extension/ for commit
-```
-
-See [`extension-source/README.md`](extension-source/README.md) for the full workflow, including the optional pre-push hook that refuses pushes with a stale `extension/`.
 
 ----
 
