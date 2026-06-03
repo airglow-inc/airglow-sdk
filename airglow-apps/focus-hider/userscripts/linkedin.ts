@@ -1,10 +1,78 @@
 // Focus Hider — LinkedIn
-// Feed page: hides posts, composer, sort bar, right sidebar (news, ads, puzzles).
-// Profile pages: hides right sidebar and "More profiles for you", "Explore Premium", etc.
+// Full-block mode (default): replaces the entire site with a focus screen.
+// Feed-only mode: hides posts, composer, right rail, distracting sidebars.
 // @ts-ignore — airglow SDK injected at runtime
 declare const airglow: any; // eslint-disable-line
 
 ;(function () {
+
+const FULL_BLOCK_KEY = 'focus_hider_linkedin_full_block';
+const FULL_OVERLAY_ID = 'airglow-focus-hider-li-full';
+
+const FULL_BLOCK_CSS = `
+html.airglow-li-blocked, html.airglow-li-blocked body {
+  overflow: hidden !important;
+}
+#${FULL_OVERLAY_ID} {
+  position: fixed; inset: 0; z-index: 2147483645;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  background: #1a1a2e; color: #e2e4eb;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  opacity: 0; transition: opacity 0.3s ease-out;
+}
+#${FULL_OVERLAY_ID}.visible { opacity: 1; }
+#${FULL_OVERLAY_ID} .afb-clock { margin-bottom: 36px; }
+#${FULL_OVERLAY_ID} .afb-title {
+  font-size: 32px; font-weight: 600; letter-spacing: -0.02em;
+  margin: 0 0 12px; color: #f0f0f0;
+}
+#${FULL_OVERLAY_ID} .afb-sub {
+  font-size: 18px; line-height: 1.5; color: #9ca3af; margin: 0;
+  max-width: 480px; text-align: center; padding: 0 24px;
+}
+`;
+
+function buildFullOverlay(): HTMLElement {
+  const el = document.createElement('div');
+  el.id = FULL_OVERLAY_ID;
+  el.innerHTML = `
+    <div class="afb-clock">${CLOCK_SVG}</div>
+    <h1 class="afb-title">Time to do great things</h1>
+    <p class="afb-sub">Your feed is hidden — stay focused on what matters.</p>
+  `;
+  return el;
+}
+
+function ensureFullBlockStyle() {
+  const ID = 'airglow-focus-hider-li-full-style';
+  if (document.getElementById(ID)) return;
+  const style = document.createElement('style');
+  style.id = ID;
+  style.textContent = FULL_BLOCK_CSS;
+  (document.head || document.documentElement).appendChild(style);
+}
+
+function showFullBlock() {
+  ensureFullBlockStyle();
+  document.documentElement.classList.add('airglow-li-blocked');
+  if (document.getElementById(FULL_OVERLAY_ID)) return;
+  const overlay = buildFullOverlay();
+  (document.body || document.documentElement).appendChild(overlay);
+  requestAnimationFrame(() => {
+    overlay.classList.add('visible');
+    if (!clockRaf) clockRaf = requestAnimationFrame(tickClock);
+  });
+  // The overlay may be appended before <body> exists; re-parent to body once it does.
+  if (!document.body) {
+    const reparent = new MutationObserver(() => {
+      if (document.body && overlay.parentElement !== document.body) {
+        document.body.appendChild(overlay);
+        reparent.disconnect();
+      }
+    });
+    reparent.observe(document.documentElement, { childList: true, subtree: true });
+  }
+}
 
 const STYLE_ID = 'airglow-focus-hider-li';
 
@@ -257,58 +325,72 @@ function hideDistractingSections(root: ParentNode = document) {
   }
 }
 
-// Inject global styles (messaging overlay + notification badges) on all pages
-if (!document.getElementById(GLOBAL_STYLE_ID)) {
-  const gs = document.createElement('style');
-  gs.id = GLOBAL_STYLE_ID;
-  gs.textContent = GLOBAL_CSS;
-  (document.head || document.documentElement).appendChild(gs);
-}
+async function init() {
+  let siteEnabled = true;
+  let fullBlock = true; // default to full-site block
 
-updateFeedStyle();
-hideDistractingSections();
-hideMessagingOverlay();
-
-const observer = new MutationObserver(() => {
-  hideDistractingSections();
-  hideMessagingOverlay();
-  injectBanner();
-});
-
-if (document.documentElement) {
-  observer.observe(document.documentElement, { childList: true, subtree: true });
-} else {
-  const earlyObserver = new MutationObserver(() => {
-    if (document.documentElement) {
-      earlyObserver.disconnect();
-      observer.observe(document.documentElement, { childList: true, subtree: true });
-    }
-  });
-  earlyObserver.observe(document, { childList: true });
-}
-
-let lastUrl = location.href;
-const urlPoller = setInterval(() => {
-  if (location.href !== lastUrl) {
-    lastUrl = location.href;
-    updateFeedStyle();
-    hideDistractingSections();
-    hideMessagingOverlay();
-  }
-}, 500);
-
-airglow.storage.get('focus_hider_sites').then((val: string | undefined) => {
-  if (!val) return;
   try {
-    const sites = JSON.parse(val);
-    if (sites.linkedin === false) {
-      document.getElementById(STYLE_ID)?.remove();
-      document.getElementById(GLOBAL_STYLE_ID)?.remove();
-      removeBanner();
-      observer.disconnect();
-      clearInterval(urlPoller);
+    const sitesVal = await airglow.storage.get('focus_hider_sites');
+    if (sitesVal) {
+      const sites = JSON.parse(sitesVal);
+      if (sites.linkedin === false) siteEnabled = false;
     }
   } catch {}
-});
+
+  try {
+    const v = await airglow.storage.get(FULL_BLOCK_KEY);
+    if (v === 'false' || v === false) fullBlock = false;
+  } catch {}
+
+  if (!siteEnabled) return;
+
+  if (fullBlock) {
+    showFullBlock();
+    return;
+  }
+
+  // ── Feed-only mode (legacy behaviour) ──
+
+  if (!document.getElementById(GLOBAL_STYLE_ID)) {
+    const gs = document.createElement('style');
+    gs.id = GLOBAL_STYLE_ID;
+    gs.textContent = GLOBAL_CSS;
+    (document.head || document.documentElement).appendChild(gs);
+  }
+
+  updateFeedStyle();
+  hideDistractingSections();
+  hideMessagingOverlay();
+
+  const observer = new MutationObserver(() => {
+    hideDistractingSections();
+    hideMessagingOverlay();
+    injectBanner();
+  });
+
+  if (document.documentElement) {
+    observer.observe(document.documentElement, { childList: true, subtree: true });
+  } else {
+    const earlyObserver = new MutationObserver(() => {
+      if (document.documentElement) {
+        earlyObserver.disconnect();
+        observer.observe(document.documentElement, { childList: true, subtree: true });
+      }
+    });
+    earlyObserver.observe(document, { childList: true });
+  }
+
+  let lastUrl = location.href;
+  setInterval(() => {
+    if (location.href !== lastUrl) {
+      lastUrl = location.href;
+      updateFeedStyle();
+      hideDistractingSections();
+      hideMessagingOverlay();
+    }
+  }, 500);
+}
+
+init();
 
 })();

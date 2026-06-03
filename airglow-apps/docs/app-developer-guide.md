@@ -13,7 +13,10 @@ All four use the `airglow.*` SDK ([`sdk-reference.md`](sdk-reference.md)); there
 
 ## Running the dev server
 
-Run `pnpm airglow dev` from the workspace root. It serves manifests, bundles userscripts and UI on demand, runs RPC calls, and installs the native-host debug bridge — all on `http://127.0.0.1:3001`. Keep it running while you work; the extension reloads matching tabs when userscripts change. The command is idempotent — re-running it when a server is already up exits 0. See [`../../cli/README.md`](../../cli/README.md) for flags and endpoint list.
+Run `pnpm airglow dev` from the workspace root. Serves manifests, bundles userscripts
+and UI, runs RPC calls, and installs the native-host debug bridge — all on
+`http://127.0.0.1:3222`. The extension reloads matching tabs when userscripts change.
+See [`../../cli/README.md`](../../cli/README.md) for flags and endpoints.
 
 ---
 

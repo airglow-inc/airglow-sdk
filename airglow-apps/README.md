@@ -3,16 +3,14 @@
 Apps are developed and hosted in this folder.
 
 > [!NOTE]
-> It is expected that you make apps using a coding agent. The project is structured this way, including `AGENTS.md`
+> Airglow apps should be built by your coding agent — it installs deps and starts the dev
+> server on its own. You shouldn't need to run these manually.
 
 To run Airglow apps, install dependencies and start a dev server.
 ```bash
-pnpm install         # install dependencies
-pnpm airglow dev     # start the dev server on localhost:3001
+pnpm install
+pnpm airglow dev     # localhost:3222
 ```
-
-> [!NOTE]
-> The agent is supposed to install dependencies and start the dev server on its own.
 
 ## Workspace layout
 
@@ -34,10 +32,9 @@ Each app is a folder with fixed structure:
 └── startup.ts      # (Optional) Startup script
 ```
 
-Apps are loaded into Chrome extension at runtime via local Airglow dev server (`pnpm airglow dev`).  
-For apps to work in browser, `pnpm airglow dev` must be running.
-
-A folder is identified as an app by its `manifest.json`.
+A folder is identified as an app by its `manifest.json`. Apps are served to the
+extension by the dev server (`pnpm airglow dev`), which must be running for apps
+to work in the browser.
 
 ## App Structure
 
@@ -45,14 +42,12 @@ Apps are developed in TypeScript. Each app has 5 main parts.
 
 - **Manifest** (`manifest.json`) - App metadata and permissions.
 - **Userscripts** (`userscripts/`) - Code that runs on web pages. Can read website data.
-- **UI** (`ui/`) - Custom dashboard. Supports React + Tailwind. 
+- **UI** (`ui/`) - Custom dashboard. Supports React + Tailwind.
 - **Server functions** (`server/`) - Server side functions that run locally.
 - **Startup** (`startup.ts`) - App startup script.
 
-Airglow apps are similar in structure to websites, having frontend (UI) and backend (Server functions).
-In fact, you can host a local website using Airglow.
-
-Apps use Airglow SDK ([`docs/sdk-reference.md`](docs/sdk-reference.md)) for storage and internal communication.  
-Apps are isolated from each other and have no direct access to Chrome API.
+Apps use the Airglow SDK ([`docs/sdk-reference.md`](docs/sdk-reference.md)) for storage
+and internal communication. Apps are isolated from each other and have no direct access
+to the Chrome API.
 
 Technical documentation: [`docs/app-developer-guide.md`](docs/app-developer-guide.md).

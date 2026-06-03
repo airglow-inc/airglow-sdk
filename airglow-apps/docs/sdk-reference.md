@@ -41,7 +41,7 @@ await airglow.storage.list()           // → string[]
 
 ## airglow.log
 
-Structured logging. The most recent 1000 entries are kept (older ones are dropped) and queryable via `localhost:3101/logs` (see [`browser-debugging.md`](browser-debugging.md)). Uncaught errors and unhandled promise rejections are auto-captured.
+Structured logging. The most recent 1000 entries are kept (older ones are dropped) and queryable via `localhost:3277/logs` (see [`browser-debugging.md`](browser-debugging.md)). Uncaught errors and unhandled promise rejections are auto-captured.
 
 ```ts
 airglow.log.info('Tagged 25 articles', { count: 25 })

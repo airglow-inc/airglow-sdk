@@ -5,6 +5,7 @@ declare const airglow: any;
 
 const SCHEDULE_KEY = 'focus_hider_schedule';
 const SITES_KEY = 'focus_hider_sites';
+const LINKEDIN_FULL_BLOCK_KEY = 'focus_hider_linkedin_full_block';
 
 interface Schedule {
   allowStart: number;
@@ -20,7 +21,7 @@ const SITES = [
   { key: 'youtube', name: 'YouTube', desc: 'Hides feed, shorts, suggestions', icon: Youtube },
   { key: 'instagram', name: 'Instagram', desc: 'Hides feed, stories, reels', icon: Instagram },
   { key: 'x', name: 'X (Twitter)', desc: 'Hides timeline, sidebar, trends', icon: Twitter },
-  { key: 'linkedin', name: 'LinkedIn', desc: 'Hides feed, sidebar, notifications', icon: Linkedin },
+  { key: 'linkedin', name: 'LinkedIn', desc: 'Blocks entire site or just the feed', icon: Linkedin },
   { key: 'messaging', name: 'WhatsApp & Telegram', desc: 'Hides chat list, search only', icon: MessageCircle },
   { key: 'gmail', name: 'Gmail', desc: 'Time-based blocking with schedule', icon: Mail },
 ] as const;
@@ -60,22 +61,31 @@ function Toggle({ on, onToggle, testId }: { on: boolean; onToggle: () => void; t
 export default function App() {
   const [schedule, setSchedule] = useState<Schedule>(DEFAULT_SCHEDULE);
   const [sites, setSites] = useState<SiteFlags>(DEFAULT_SITES);
+  const [linkedinFullBlock, setLinkedinFullBlock] = useState<boolean>(true);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     Promise.all([
       airglow.storage.get(SCHEDULE_KEY),
       airglow.storage.get(SITES_KEY),
-    ]).then(([schedVal, sitesVal]: [string | undefined, string | undefined]) => {
+      airglow.storage.get(LINKEDIN_FULL_BLOCK_KEY),
+    ]).then(([schedVal, sitesVal, liFullVal]: [string | undefined, string | undefined, string | undefined]) => {
       if (schedVal) {
         try { setSchedule({ ...DEFAULT_SCHEDULE, ...JSON.parse(schedVal) }); } catch {}
       }
       if (sitesVal) {
         try { setSites({ ...DEFAULT_SITES, ...JSON.parse(sitesVal) }); } catch {}
       }
+      if (liFullVal === 'false') setLinkedinFullBlock(false);
       setMounted(true);
     });
   }, []);
+
+  function toggleLinkedinFullBlock() {
+    const next = !linkedinFullBlock;
+    setLinkedinFullBlock(next);
+    airglow.storage.set(LINKEDIN_FULL_BLOCK_KEY, String(next));
+  }
 
   function saveSchedule(updates: Partial<Schedule>) {
     const next = { ...schedule, ...updates };
@@ -117,7 +127,7 @@ export default function App() {
               <div key={site.key}>
                 <div
                   className="flex items-center gap-3 px-5 py-4"
-                  style={{ borderBottom: isLast && !(site.key === 'gmail' && enabled) ? 'none' : '1px solid var(--border-tertiary)' }}
+                  style={{ borderBottom: isLast && !((site.key === 'gmail' && enabled) || (site.key === 'linkedin' && enabled)) ? 'none' : '1px solid var(--border-tertiary)' }}
                 >
                   <Icon size={20} style={{ color: enabled ? 'var(--clay)' : 'var(--fg-tertiary)' }} />
                   <div className="flex-1 min-w-0">
@@ -126,6 +136,21 @@ export default function App() {
                   </div>
                   <Toggle on={enabled} onToggle={() => toggleSite(site.key)} testId={`toggle-${site.key}`} />
                 </div>
+
+                {/* LinkedIn full-block sub-toggle */}
+                {site.key === 'linkedin' && enabled && (
+                  <div className="px-5 pb-4 pt-1" style={{ borderBottom: isLast ? 'none' : '1px solid var(--border-tertiary)' }}>
+                    <div className="flex items-center justify-between">
+                      <div className="flex-1 min-w-0 pr-3">
+                        <div className="text-sm font-medium" style={{ color: 'var(--fg-secondary)' }}>Block entire site</div>
+                        <div className="text-xs" style={{ color: 'var(--fg-tertiary)' }}>
+                          {linkedinFullBlock ? 'All LinkedIn pages show a focus screen' : 'Only the feed is hidden'}
+                        </div>
+                      </div>
+                      <Toggle on={linkedinFullBlock} onToggle={toggleLinkedinFullBlock} testId="toggle-linkedin-full" />
+                    </div>
+                  </div>
+                )}
 
                 {/* Gmail schedule section */}
                 {site.key === 'gmail' && enabled && (

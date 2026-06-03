@@ -100,7 +100,7 @@ overlay.innerHTML = `
       Gmail is paused
     </h1>
     <p id="fh-schedule-text" style="font-size: 18px; line-height: 1.5; color: var(--fh-subtitle); margin: 0; transition: color 0.3s;">
-      Available from <span style="color: var(--fh-accent); font-weight: 600; transition: color 0.3s;">2:00 AM</span> to <span style="color: var(--fh-accent); font-weight: 600; transition: color 0.3s;">11:00 AM</span>
+      Your feed is hidden — stay focused on what matters.
     </p>
     <div id="fh-time-display" style="font-family: 'JetBrains Mono', monospace; font-size: 48px; font-weight: 300; color: var(--fh-accent); margin-top: 32px; letter-spacing: 2px; transition: color 0.3s;"></div>
   </div>
@@ -164,12 +164,6 @@ function drawBlockedArc(allowStart: number, allowEnd: number) {
   }
 }
 
-function formatHour(h: number): string {
-  const period = h >= 12 ? 'PM' : 'AM';
-  const display = h === 0 ? 12 : h > 12 ? h - 12 : h;
-  return `${display}:00 ${period}`;
-}
-
 function isBlocked(allowStart: number, allowEnd: number): boolean {
   const hour = new Date().getHours();
   if (allowStart < allowEnd) {
@@ -219,12 +213,6 @@ async function init() {
   } catch {}
 
   if (!isBlocked(allowStart, allowEnd)) return;
-
-  // Update schedule text
-  const scheduleText = overlay.querySelector('#fh-schedule-text');
-  if (scheduleText) {
-    scheduleText.innerHTML = `Available from <span style="color: var(--fh-accent); font-weight: 600; transition: color 0.3s;">${formatHour(allowStart)}</span> to <span style="color: var(--fh-accent); font-weight: 600; transition: color 0.3s;">${formatHour(allowEnd)}</span>`;
-  }
 
   // Apply theme and show overlay
   applyTheme(isDark);

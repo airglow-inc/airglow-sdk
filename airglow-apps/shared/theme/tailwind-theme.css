@@ -4,6 +4,7 @@
    the dashboard bundle would pick up classes from every template app. */
 @import "./tokens.css";
 @source "./components";
+@source "../../local";
 
 @theme {
   --color-stone-50: var(--gray-050);

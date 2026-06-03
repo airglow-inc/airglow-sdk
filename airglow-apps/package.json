@@ -9,6 +9,7 @@
     "dev": "node ../cli/bin/airglow.js dev",
     "chrome": "node scripts/chrome.mjs",
     "chrome:fresh": "node scripts/chrome.mjs --fresh",
+    "dom": "node scripts/dom.mjs",
     "composio": "tsx scripts/composio-tools.ts"
   },
   "dependencies": {

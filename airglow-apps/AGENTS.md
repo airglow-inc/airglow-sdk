@@ -16,7 +16,7 @@ Before any other work in this workspace, you **must**:
 
 @docs/app-developer-guide.md — manifest, each app part, runtime contract
 @docs/sdk-reference.md — the `airglow.*` SDK
-@docs/browser-debugging.md — dev browser, logs, CDP
+@docs/browser-debugging.md — logs, `pnpm dom` for driving the browser
 
 ## Development structure
 
@@ -28,7 +28,7 @@ Before any other work in this workspace, you **must**:
 
 ## Best practices
 
-- **Test end-to-end against a real browser.** Treat untested code as not done. `pnpm chrome` launches an instrumented Chrome with CDP on `:9222`; drive it via `docs/browser-debugging.md`. If you can't test some part, notify the user at the end of your response.
+- **Test end-to-end against a real browser.** Treat untested code as not done. Drive the user's browser with `pnpm dom` — see `docs/browser-debugging.md`. If you can't test some part, notify the user at the end of your response.
 
 - **Verify the underlying API before wiring it in.** Call it directly first — via script, `curl`, or CLI — to confirm the request and response shape. If it lives behind a server function, `curl` the RPC next. Only then exercise the full app in the browser.
 
@@ -36,7 +36,7 @@ Before any other work in this workspace, you **must**:
 
 - **Use the shared theme.** `shared/theme/tokens.css` defines the color palette and typography that you can start with.
 
-- **Make React UIs CDP-testable.** Put `data-testid` on every interactive element. `button.click()` works (React picks it up via root delegation), but `input.value = x` does NOT update React state — expose a `window.__test` object for inputs and selects:
+- **Make React UIs test-driveable.** Put `data-testid` on every interactive element. `button.click()` works (React picks it up via root delegation), but `input.value = x` does NOT update React state — expose a `window.__test` object for inputs and selects, and call it with `pnpm dom eval --main` (the `--main` flag reaches page globals; see `docs/browser-debugging.md`):
   ```tsx
   useEffect(() => {
     (window as any).__test = {
@@ -54,10 +54,10 @@ Before any other work in this workspace, you **must**:
 
 ## Verify before handoff
 
-- **Confirm the dev server is running.** Run `curl -sf http://127.0.0.1:3001/api/healthz` and verify it returns `{"ok":true,"service":"airglow-dev",...}`. 
+- **Confirm the dev server is running.** Run `curl -sf http://127.0.0.1:3222/api/healthz` and verify it returns `{"ok":true,"service":"airglow-dev",...}`. 
   - If it doesn't respond, restart it with `pnpm airglow dev` in the background — the user expects the app to be loadable in the browser the moment you hand off. 
   - If server is still down, **immediately notify the user, do not report success**.
-- **Confirm the manifests endpoint works.** Run `curl -sf http://127.0.0.1:3001/api/apps/manifests` and verify your app appears in the response. If it doesn't, **its a failure**.
+- **Confirm the manifests endpoint works.** Run `curl -sf http://127.0.0.1:3222/api/apps/manifests` and verify your app appears in the response. If it doesn't, **it's a failure**.
 - `manifest.json` is valid; `id` matches the directory; every referenced file exists.
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No API keys or tokens are hardcoded in `userscripts/` or `ui/`.

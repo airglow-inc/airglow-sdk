@@ -2,24 +2,28 @@
 
 Browser debugging is the last stage of testing — only get here after verifying external APIs directly. Then:
 
-1. Launch Chrome yourself.
-2. Reload the affected page after editing app code.
-3. Read logs to see what happened.
-4. Drive the browser via CDP to verify behavior interactively.
+1. Reload the affected page after editing app code.
+2. Read logs to see what happened.
+3. Drive the browser with `pnpm dom` (read/modify DOM, eval, screenshot, tabs).
 
-## Starting the dev browser
+The user's Chrome (with the Airglow extension loaded) is what `pnpm dom` drives — through
+the trace host. No CDP needed.
 
-```bash
-pnpm chrome
-```
+## Ports
 
-Launches Chrome with the Airglow extension pre-loaded, an isolated profile, and CDP exposed on `:9222`. The extension also exposes `localhost:3101` via a native messaging host (installed on `pnpm airglow dev` startup), available as soon as the extension connects.
+| Port | Default for | Notes |
+|---|---|---|
+| `3222` | the **dev server** (`pnpm airglow dev`) — manifests, RPC, bundles | change with `--port N`, then set the matching port in the extension dashboard |
+| `3277` | the **trace host** — the extension's debug bridge (logs, reload, network capture) | if busy, the host auto-falls-back to a random port |
 
-The user does not normally start the dev browser — the agent does.
+Live port mappings (one JSON record per trace host) live at `~/.airglow/hosts/`. With
+multiple Chromes running, look at a record's `userDataDir` to see which browser it
+belongs to.
 
 ## Reloading after code changes
 
-After editing app source in this workspace, reload the affected page (`Page.reload` via CDP). The dev server reloads matching tabs automatically when userscripts change, and the page reload picks up everything else.
+After editing app source, reload the affected page with `pnpm dom reload --tab N`.
+The dev server reloads matching tabs automatically when userscripts change.
 
 ## Reading logs
 
@@ -28,13 +32,11 @@ Two log streams, depending on where things break:
 **Browser-side** (userscripts, UI, startup, extension) — kept in `chrome.storage.local`, last 1000 entries. SDK auto-captures uncaught errors and unhandled rejections; apps also write via `airglow.log.info/warn/error`.
 
 ```bash
-curl -s localhost:3101/logs | jq                            # last 50
-curl -s 'localhost:3101/logs?level=error' | jq              # errors only
-curl -s 'localhost:3101/logs?source=<app-id>' | jq          # per-app
-curl -s 'localhost:3101/logs?level=error&n=10' | jq         # last 10 errors
+curl -s localhost:3277/logs | jq                            # last 50
+curl -s 'localhost:3277/logs?level=error' | jq              # errors only
+curl -s 'localhost:3277/logs?source=<app-id>' | jq          # per-app
+curl -s 'localhost:3277/logs?level=error&n=10' | jq         # last 10 errors
 ```
-
-Or open the dashboard UI: `chrome-extension://<EXTENSION_ID>/dashboard.html?page=logs`.
 
 **Dev-server-side** (bundle errors, RPC failures, startup) — mirrored to `.airglow/dev.log` in the workspace, truncated each run.
 
@@ -47,58 +49,66 @@ tail -n 100 .airglow/dev.log                                # last 100 lines
 Server functions are exposed by the dev server as RPC endpoints. Hit them directly to isolate problems from the browser-side flow:
 
 ```bash
-curl -s -X POST http://127.0.0.1:3001/api/apps/<app-id>/rpc/<function-name> \
+curl -s -X POST http://127.0.0.1:3222/api/apps/<app-id>/rpc/<function-name> \
   -H 'Content-Type: application/json' \
   -d '{"key":"value"}' | jq
 ```
 
 The JSON body becomes the function's `body` argument; the return value is what comes back.
 
-## Driving the browser via CDP
+## Driving the browser (`pnpm dom`)
 
-List open tabs and grab their WebSocket URLs:
-
-```bash
-curl -s http://localhost:9222/json | node -e "
-  JSON.parse(require('fs').readFileSync('/dev/stdin','utf8'))
-    .forEach(t => console.log(t.url, '\n  ws:', t.webSocketDebuggerUrl))"
-```
-
-Connect to a tab and drive it (navigate, run JS, screenshot):
+`pnpm dom` reads/edits the DOM and controls tabs through the trace host. The port
+auto-resolves from `~/.airglow/hosts/`; pass `--port N` to pick a specific browser
+(see [Ports](#ports)).
 
 ```bash
-node -e "
-const ws = new WebSocket('ws://localhost:9222/devtools/page/<ID>');
-let id = 1;
-const send = (method, params={}) => new Promise(resolve => {
-  const i = id++; ws.send(JSON.stringify({id:i,method,params}));
-  ws.addEventListener('message', function h(evt) {
-    const m=JSON.parse(evt.data); if(m.id===i){ws.removeEventListener('message',h);resolve(m.result)}
-  });
-});
-ws.addEventListener('open', async () => {
-  await send('Page.navigate', {url:'https://example.com'});
-  await new Promise(r=>setTimeout(r,1500));
-  const r = await send('Runtime.evaluate', {expression:'document.title'});
-  console.log(r.result.value);
-  const ss = await send('Page.captureScreenshot', {format:'png'});
-  require('fs').writeFileSync('/tmp/ss.png', Buffer.from(ss.data,'base64'));
-  ws.close();
-});"
+pnpm dom port                                     # resolved trace-host port
+pnpm dom tabs                                      # list open tabs (id, url)
+pnpm dom frames --tab 12                           # list a tab's frames (frameId, url)
+pnpm dom html   --tab 12 [--selector '#root']      # outerHTML (whole document by default)
+pnpm dom eval   --tab 12 'document.title'          # run JS (see Worlds below)
+pnpm dom set    --tab 12 --selector '#s' 'done'    # set innerHTML (--outer for outerHTML)
+pnpm dom shot   --tab 12 [--out f.jpg]             # screenshot — JPEG q90 (brings the tab's window to front)
+pnpm dom open   https://example.com [--background]  # open a tab (in the debug window)
+pnpm dom nav    --tab 12 https://example.com        # navigate a tab
+pnpm dom reload --tab 12                            # reload a tab
+pnpm dom close  --tab 12                            # close a tab
 ```
 
-Key methods: `Page.navigate`, `Page.reload`, `Page.captureScreenshot`, `Runtime.evaluate`.
+Every tab-targeted command requires `--tab N`. Get the id from `pnpm dom tabs`. `open`ed
+tabs land in a dedicated, unfocused **debug window** so the agent's tabs stay out of the
+user's working set (reused across `open`s, recreated if closed).
 
-## Testing React UIs
+### Worlds — `eval` default vs `--main`
 
-App UIs run inside a sandboxed iframe inside `app-shell.html`. To interact, connect to the **iframe's** WebSocket target (its URL contains `127.0.0.1:3001`), not the outer `app-shell` page.
+`eval` runs in a CSP-exempt USER_SCRIPT world by default: arbitrary JS works even on
+strict-CSP sites (GitHub, Gmail), reading/writing the shared DOM — but it has its own
+`window`, so **page globals are not visible** (`window.__test`, framework objects, the
+page's own variables). Add `--main` to run in the page's **MAIN** world: page globals
+ARE visible, but the page's CSP applies (eval can be blocked on hardened sites).
+Multiple statements per call are fine: `eval 'a().click(); b().click()'`.
 
-What works:
+### Frames & app UIs
 
-- `button.click()` — React picks it up via root delegation
-- DOM reads, screenshots
-- `airglow.rpc(...)` via `Runtime.evaluate`
+`html`/`eval`/`set` default to a tab's top frame; `--frame <url-substr>` targets a
+child frame (use `frames` to list them). **Exception — app UIs:** they render in an
+iframe inside `app-shell.html`, which is a `chrome-extension://` page, and extensions
+**cannot script their own pages** (no host permission covers that scheme), so `--frame`
+can't reach the iframe. Instead, **open the app UI directly** as a top-level tab:
 
-What doesn't:
+```bash
+pnpm dom open "http://127.0.0.1:3222/api/apps/<app-id>/ui?app=<app-id>"
+pnpm dom eval --tab N --main 'window.__test.run()'   # drive React via its test hook
+```
 
-- `select.value = 'x'` / `input.value = 'x'` — React tracks state internally and ignores native value changes. Drive these via a `window.__test` object exposed by the component (see `CLAUDE.md`).
+Driving React: `button.click()` works (root delegation); `input.value = 'x'` does NOT
+update React state — expose a `window.__test` object in the component and call it with
+`--main` (see `CLAUDE.md`).
+
+## Last resort: CDP via `pnpm chrome`
+
+If `pnpm dom` genuinely can't cover what you need (e.g. scripting an extension page,
+a CDP method `dom` doesn't expose), `pnpm chrome` launches a dedicated Chrome with the
+extension pre-loaded and CDP on `:9222`. **Ask the user before using this** — it's a
+separate browser instance and they may not want a second Chrome window opening on them.

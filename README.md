@@ -4,12 +4,15 @@ Airglow allows your coding agent to make custom apps on top of any website you'r
 
 Airglow is a general purpose tool. You can create apps to add new features, automate workflows, modify interfaces, make custom dashboards.
 
-Some examples:
-- **Add functionality:** Run background research on a LinkedIn user
-- **Change interfaces:** Hide Youtube Shorts
-- **Automate workflows:** Create a marketing campaign in Instagram from Spreadsheets data
+Some example apps:
 
-See examples at [airglow.dev](https://airglow.dev)
+| Use case | App |
+| -- | -- |
+| **Adding features** | Button to run background research on a LinkedIn user |
+| **Changing interfaces** | Hide Youtube Shorts |
+| **Automating workflows** | Button to create a marketing campaign in Instagram from Spreadsheets data |
+
+See more examples at [airglow.dev](https://airglow.dev)
 
 ## Quickstart
 

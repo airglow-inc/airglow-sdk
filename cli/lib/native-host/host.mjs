@@ -2,16 +2,21 @@
 // Airglow extension debug bridge — Chrome native messaging host.
 //
 // Chrome spawns this process when the extension calls
-// chrome.runtime.connectNative('com.airglow.spy'). The process opens an HTTP
-// server on localhost:3101 so anything outside Chrome (curl, the agent) can
+// chrome.runtime.connectNative('com.airglow.trace'). The process opens an HTTP
+// server on localhost:3277 so anything outside Chrome (curl, the agent) can
 // talk to the running extension.
 //
 // Primary endpoints (always available):
 //   GET  /logs        — extension log ring buffer (filterable by level, source)
 //   POST /reload      — chrome.runtime.reload() the extension
 //   GET  /status      — liveness + buffered-capture count
+//   GET  /tabs        — list open tabs
+//   GET  /frames      — list a tab's frames (for ?frame= targeting)
+//   GET  /html        — read a tab's outerHTML (via chrome.scripting, no CDP)
+//   POST /eval        — run JS (USER_SCRIPT world; main:true for page MAIN world)
+//   POST /sethtml     — set inner/outerHTML of an element
 //
-// Network-spy endpoints (dormant — only useful when reverse-engineering a
+// Network-trace endpoints (dormant — only useful when reverse-engineering a
 // website's API; require an explicit POST /attach to activate, otherwise
 // zero overhead):
 //   POST /attach      — start CDP + fetch/XHR interception on a tab
@@ -26,8 +31,12 @@
 // both directions, over stdio between Chrome and this process.
 
 import http from 'node:http';
+import { writeHostRecord, removeHostRecord, parentUserDataDir } from './registry.mjs';
 
-const HTTP_PORT = 3101;
+// Default 3277, overridable via AIRGLOW_TRACE_PORT. If the chosen port is busy
+// the server falls back to a random one (see startServer) and the actual port
+// is published to the registry so callers can still find us.
+const DEFAULT_HTTP_PORT = Number(process.env.AIRGLOW_TRACE_PORT) || 3277;
 const CDP_PORT = 9222;
 const CAPTURE_BUFFER_LIMIT = 2000;
 const BODY_TRUNCATE = 20000; // max chars stored per body field
@@ -321,7 +330,7 @@ const server = http.createServer(async (req, res) => {
 
     // GET /status
     if (req.method === 'GET' && url.pathname === '/status') {
-      return json(res, 200, { ok: true, service: 'airglow-spy', buffered: captures.length });
+      return json(res, 200, { ok: true, service: 'airglow-trace', buffered: captures.length });
     }
 
     // POST /reload — reload extension
@@ -410,18 +419,119 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // ───── DOM bridge (via chrome.scripting in the extension, no CDP) ─────
+
+    // GET /tabs — list open tabs (id, url, title, active, windowId)
+    if (req.method === 'GET' && url.pathname === '/tabs') {
+      const reply = await sendToExtension({ type: 'tabs' }, { expectReply: true, timeoutMs: 5000 });
+      if (reply?.error) return json(res, 500, { error: reply.error });
+      return json(res, 200, reply);
+    }
+
+    // GET /frames?tabId=N — list frames in a tab (frameId, url) for `frame` targeting
+    if (req.method === 'GET' && url.pathname === '/frames') {
+      const tabId = Number(url.searchParams.get('tabId'));
+      if (!tabId) return json(res, 400, { error: 'tabId required' });
+      const reply = await sendToExtension({ type: 'frames', tabId }, { expectReply: true, timeoutMs: 5000 });
+      if (reply?.error) return json(res, 500, { error: reply.error });
+      return json(res, 200, reply);
+    }
+
+    // GET /html?tabId=N&selector=CSS&frame=URLSUBSTR — outerHTML (default: whole document, top frame)
+    if (req.method === 'GET' && url.pathname === '/html') {
+      const tabId = Number(url.searchParams.get('tabId'));
+      if (!tabId) return json(res, 400, { error: 'tabId required' });
+      const selector = url.searchParams.get('selector');
+      const frame = url.searchParams.get('frame');
+      const reply = await sendToExtension({ type: 'getHtml', tabId, selector, frame }, { expectReply: true, timeoutMs: 10000 });
+      if (reply?.error) return json(res, 500, { error: reply.error });
+      return json(res, 200, reply);
+    }
+
+    // POST /eval — run JS. Default world is CSP-exempt USER_SCRIPT; main=true runs
+    // in the page MAIN world (sees page globals). Body: {tabId, code, frame?, main?}
+    if (req.method === 'POST' && url.pathname === '/eval') {
+      const { tabId, code, frame, main } = JSON.parse(await readBody(req));
+      if (!tabId || !code) return json(res, 400, { error: 'tabId and code required' });
+      const reply = await sendToExtension({ type: 'eval', tabId, code, frame, main: !!main }, { expectReply: true, timeoutMs: 15000 });
+      if (reply?.error) return json(res, 500, { error: reply.error });
+      return json(res, 200, reply);
+    }
+
+    // POST /sethtml — set inner/outerHTML. Body: {tabId, selector, html, outer?, frame?}
+    if (req.method === 'POST' && url.pathname === '/sethtml') {
+      const { tabId, selector, html, outer, frame } = JSON.parse(await readBody(req));
+      if (!tabId || html == null) return json(res, 400, { error: 'tabId and html required' });
+      const reply = await sendToExtension({ type: 'setHtml', tabId, selector: selector ?? null, html, outer: !!outer, frame }, { expectReply: true, timeoutMs: 10000 });
+      if (reply?.error) return json(res, 500, { error: reply.error });
+      return json(res, 200, reply);
+    }
+
+    // Tab control (chrome.tabs, no CDP):
+    //   POST /open     {url, active?}   — open a new tab
+    //   POST /navigate {tabId, url}     — point an existing tab at a URL
+    //   POST /reloadtab{tabId}          — reload a tab
+    //   POST /close    {tabId}          — close a tab
+    //   POST /capture  {tabId}          — screenshot the tab (PNG data URL)
+    const forward = {
+      '/open': 'newTab', '/navigate': 'navigate', '/reloadtab': 'reloadTab', '/close': 'closeTab',
+      '/capture': 'capture',
+    };
+    if (req.method === 'POST' && forward[url.pathname]) {
+      const body = JSON.parse(await readBody(req));
+      const reply = await sendToExtension({ type: forward[url.pathname], ...body }, { expectReply: true, timeoutMs: 10000 });
+      if (reply?.error) return json(res, 500, { error: reply.error });
+      return json(res, 200, reply);
+    }
+
     json(res, 404, { error: 'not found' });
   } catch (e) {
     json(res, 500, { error: String(e && e.message || e) });
   }
 });
 
-server.on('error', (e) => { log('http server error: ' + e.message); });
-server.listen(HTTP_PORT, '127.0.0.1', () => {
-  log(`http listening on 127.0.0.1:${HTTP_PORT}`);
-  writeMessage({ type: 'ready', httpPort: HTTP_PORT });
+server.on('error', (e) => {
+  if (e.code === 'EADDRINUSE' && triedDefaultPort) {
+    log(`port ${DEFAULT_HTTP_PORT} busy — falling back to a random port`);
+    triedDefaultPort = false;
+    server.listen(0, '127.0.0.1'); // 0 = OS-assigned free port
+  } else {
+    log('http server error: ' + e.message);
+  }
 });
 
+server.on('listening', () => {
+  const port = server.address().port;
+  log(`http listening on 127.0.0.1:${port}`);
+  registerSelf(port);
+  writeMessage({ type: 'ready', httpPort: port });
+});
+
+let triedDefaultPort = true;
+server.listen(DEFAULT_HTTP_PORT, '127.0.0.1');
+
+// ───── Discovery registry ─────
+// Publish where we're listening so external tools find us even on a fallback
+// port; remove the record on exit (the reader also prunes dead pids).
+function registerSelf(port) {
+  try {
+    writeHostRecord({
+      pid: process.pid,
+      ppid: process.ppid,
+      port,
+      service: 'airglow-trace',
+      default: port === DEFAULT_HTTP_PORT,
+      userDataDir: parentUserDataDir(process.ppid),
+      startedAt: Date.now(),
+    });
+  } catch (e) { log('registry write failed: ' + e.message); }
+}
+
+process.on('exit', () => removeHostRecord(process.pid));
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
+  process.on(sig, () => process.exit(0)); // routes through the exit hook → unlink
+}
+
 function log(msg) {
-  process.stderr.write(`[airglow-spy] ${msg}\n`);
+  process.stderr.write(`[airglow-trace] ${msg}\n`);
 }

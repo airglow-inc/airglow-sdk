@@ -16,7 +16,7 @@ Commands:
 Run from inside the workspace (cd airglow-apps).
 
 Options:
-  --port N           Bind port (default 3001)
+  --port N           Bind port (default 3222)
   --apps-dir D       Apps workspace directory (default cwd)
   --help, -h         Show this message
 ```
@@ -37,7 +37,7 @@ cli/
 
 ## Endpoints
 
-### Dev server (default `:3001`)
+### Dev server (default `:3222`)
 
 | Endpoint | Purpose |
 |---|---|
@@ -49,6 +49,6 @@ cli/
 | `GET /api/apps/<id>/settings` | `CLIENT_*` env values from `.env`, used as dev-fallback secrets when the user hasn't set them in the dashboard. |
 | `POST /api/apps/<id>/rpc/<fn>` | Invoke `server/<fn>.ts` default export with the JSON body as payload. |
 
-### Native-host debug bridge (default `:3101`)
+### Native-host debug bridge (default `:3277`)
 
-Extension log tail, reload trigger, and network-spy for reverse-engineering site APIs. See [`lib/native-host/README.md`](lib/native-host/README.md) for the full endpoint list.
+Extension log tail, reload trigger, and network-trace for reverse-engineering site APIs. See [`lib/native-host/README.md`](lib/native-host/README.md) for the full endpoint list.

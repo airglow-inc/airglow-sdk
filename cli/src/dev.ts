@@ -6,9 +6,11 @@ import { execSync } from 'child_process';
 import { createHash } from 'crypto';
 // @ts-ignore — .mjs side-module
 import { installNativeHost } from '../lib/native-host/install.mjs';
+// @ts-ignore — .mjs side-module
+import { readHostRecords, REGISTRY_DIR } from '../lib/native-host/registry.mjs';
 import { buildSdkCode } from '../lib/airglow-sdk';
 
-const DEFAULT_PORT = 3001;
+const DEFAULT_PORT = 3222;
 const SERVER_START = Date.now(); // unique per server restart
 const CLI_VERSION = (() => {
   try { return JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8')).version; }
@@ -519,19 +521,19 @@ async function probeRunning(port: number): Promise<{ matched: boolean; sameWorks
   }
 }
 
-// Probe the native-host port (3101). Returns:
-//   'ours'     — our spy host is responding (extension connected, all good)
-//   'foreign'  — something is bound to the port but isn't the spy host
+// Probe the native-host port (3277). Returns:
+//   'ours'     — our trace host is responding (extension connected, all good)
+//   'foreign'  — something is bound to the port but isn't the trace host
 //   'free'     — nothing on the port (Chrome may not be running yet; not a problem)
-async function probeSpyPort(): Promise<'ours' | 'foreign' | 'free'> {
+async function probeTracePort(): Promise<'ours' | 'foreign' | 'free'> {
   try {
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), 500);
-    const res = await fetch('http://127.0.0.1:3101/status', { signal: ac.signal });
+    const res = await fetch('http://127.0.0.1:3277/status', { signal: ac.signal });
     clearTimeout(timer);
     if (!res.ok) return 'foreign';
     const data: any = await res.json();
-    return data?.service === 'airglow-spy' ? 'ours' : 'foreign';
+    return data?.service === 'airglow-trace' ? 'ours' : 'foreign';
   } catch (e: any) {
     if (e?.cause?.code === 'ECONNREFUSED') return 'free';
     return 'foreign';
@@ -669,9 +671,15 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
     console.log(`\n  airglow dev server running on http://127.0.0.1:${port}\n`);
     console.log(`  \x1b[1mSet dev port to ${port} in the extension dashboard.\x1b[0m\n`);
     if (logPath) console.log(`  Logs: ${logPath}\n`);
-    if (await probeSpyPort() === 'foreign') {
-      console.log(`  \x1b[1;31mWarning — port 3101 is in use by another process.\x1b[0m`);
-      console.log(`  The extension's logs endpoint and CDP network capture won't work until it's freed.\n`);
+    if (await probeTracePort() === 'foreign') {
+      const fallback = readHostRecords().find((r: any) => r.service === 'airglow-trace' && !r.default);
+      if (fallback) {
+        console.log(`  Note — port 3277 is busy; the trace host fell back to :${fallback.port}.`);
+        console.log(`  Port mappings live in ${REGISTRY_DIR}/.\n`);
+      } else {
+        console.log(`  \x1b[1;31mWarning — port 3277 is in use by another process.\x1b[0m`);
+        console.log(`  The extension's logs endpoint and network capture won't work until it's freed (or set AIRGLOW_TRACE_PORT).\n`);
+      }
     }
     if (manifests.length === 0) {
       console.log('  No apps found. Create one with: airglow new <id>\n');
