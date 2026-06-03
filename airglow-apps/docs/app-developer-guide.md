@@ -106,6 +106,7 @@ createRoot(document.getElementById('root')!).render(<App />);
 
 ```css
 /* ui/globals.css */
+@import "tailwindcss";
 @import "../../shared/theme/tailwind-theme.css";
 ```
 

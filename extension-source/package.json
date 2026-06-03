@@ -1,0 +1,30 @@
+{
+  "name": "airglow-extension",
+  "description": "Airglow Chrome extension — dynamic tool injection platform",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "wxt",
+    "build": "wxt build",
+    "zip": "cd .output && rm -f airglow-ext-prod.zip && zip -r airglow-ext-prod.zip chrome-mv3/",
+    "chrome": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev",
+    "chrome:fresh": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev --fresh"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.2.4",
+    "@types/chrome": "^0.1.36",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.1",
+    "react": "^19.2.5",
+    "react-dom": "^19.2.5",
+    "tailwindcss": "^4.2.4",
+    "typescript": "^5.6.3",
+    "wxt": "^0.20.6"
+  },
+  "dependencies": {
+    "lucide-react": "^0.460.0",
+    "posthog-js-lite": "^4.6.32"
+  }
+}

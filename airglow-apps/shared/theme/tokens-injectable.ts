@@ -1,9 +1,9 @@
 /**
  * Injectable CSS tokens for userscripts.
  *
- * This is the `:root` variables + dark mode overrides from tokens.css,
- * without the base reset (html, body, a, ::selection) that would clobber
- * the host page. Also includes the Google Fonts @import.
+ * This is the `:root` variables from tokens.css, without the base reset
+ * (html, body, a, ::selection) that would clobber the host page. Also includes
+ * the Google Fonts @import.
  *
  * Keep in sync with tokens.css — this is the userscript-safe subset.
  */
@@ -100,22 +100,5 @@ export default `
   --duration-normal: 150ms;
   --duration-slow: 300ms;
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg-primary: var(--gray-950);
-    --bg-secondary: var(--gray-900);
-    --bg-tertiary: var(--gray-850);
-    --bg-white: var(--gray-850);
-    --fg-primary: var(--gray-050);
-    --fg-secondary: var(--gray-400);
-    --fg-tertiary: var(--gray-500);
-    --border-primary: var(--gray-600);
-    --border-secondary: var(--gray-700);
-    --border-tertiary: var(--gray-750);
-    --error: var(--error-light);
-    --shadow-card: 0 0 0 1px var(--border-tertiary), 0 1px 3px rgba(0, 0, 0, 0.2);
-  }
 }
 `;

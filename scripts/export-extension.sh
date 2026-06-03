@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Builds extension-source/ with WXT and refreshes the committed extension/
+# directory (the ready-to-load MV3 build users get from `git pull`).
+#
+# extension/manifest.json is the file Chrome loads. Everything in extension/
+# is generated — never edit by hand.
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/export-extension.sh
+
+Builds extension-source/ and copies the MV3 output into extension/.
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) echo "Unknown argument: $1" >&2; usage >&2; exit 2 ;;
+esac
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/.." && pwd)"
+source_dir="$repo_root/extension-source"
+build_dir="$source_dir/.output/chrome-mv3"
+target_dir="$repo_root/extension"
+
+require_file() {
+  if [ ! -f "$1" ]; then echo "Missing required file: $1" >&2; exit 1; fi
+}
+require_dir() {
+  if [ ! -d "$1" ]; then echo "Missing required directory: $1" >&2; exit 1; fi
+}
+
+require_dir "$source_dir"
+require_dir "$repo_root/.git"
+
+if ! command -v rsync >/dev/null 2>&1; then
+  echo "rsync is required" >&2
+  exit 1
+fi
+
+echo "==> Building extension-source"
+(cd "$source_dir" && pnpm run build)
+
+require_dir "$build_dir"
+require_file "$build_dir/manifest.json"
+require_file "$build_dir/background.js"
+require_file "$build_dir/content-scripts/edge-button.js"
+
+echo "==> Refreshing $target_dir"
+mkdir -p "$target_dir"
+# README.md in extension/ is hand-written install instructions for end users —
+# preserve it. Everything else is replaced.
+rsync -a --delete \
+  --exclude '.DS_Store' \
+  --exclude 'README.md' \
+  "$build_dir/" "$target_dir/"
+
+require_file "$target_dir/manifest.json"
+require_file "$target_dir/background.js"
+require_file "$target_dir/content-scripts/edge-button.js"
+python3 -m json.tool "$target_dir/manifest.json" >/dev/null
+
+# Hash the exported contents and stamp it into manifest.json as
+# `airglow_build_hash`. Chrome caches the manifest at extension load time, so
+# getManifest().airglow_build_hash returns the loaded-version identity. The
+# dev server compares this against the on-disk manifest to detect "you pulled
+# but didn't reload". Computed BEFORE the field is written so re-exports of
+# identical content produce a stable hash.
+BUILD_HASH="$(cd "$target_dir" && find . -type f -not -name .DS_Store -not -name README.md -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
+python3 -c "
+import json, sys
+path = sys.argv[1]
+with open(path) as f: m = json.load(f)
+m['airglow_build_hash'] = sys.argv[2]
+with open(path, 'w') as f: json.dump(m, f, separators=(',', ':'))
+" "$target_dir/manifest.json" "$BUILD_HASH"
+
+if [ -d "$target_dir/chrome-mv3" ]; then
+  echo "Unexpected nested build directory: $target_dir/chrome-mv3" >&2
+  exit 1
+fi
+if [ -d "$target_dir/entrypoints" ] || [ -f "$target_dir/package.json" ]; then
+  echo "Source files leaked into ready build directory" >&2
+  exit 1
+fi
+
+echo "==> Export complete"
+echo "Ready extension build: $target_dir"
+echo "Build hash: $BUILD_HASH"

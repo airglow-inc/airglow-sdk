@@ -1,0 +1,36 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500&display=swap');
+
+/* source("../..") pins Tailwind content scanning to extension-source/. The
+   shared theme intentionally does not import tailwindcss so each consumer
+   chooses its own scope — without this pin, scanning would walk up into
+   airglow-apps/ and the dashboard bundle would pick up every utility class
+   used by any app. */
+@import "tailwindcss" source("../..");
+@import "../../../airglow-apps/shared/theme/tailwind-theme.css";
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+code {
+  padding: 0.2em 0.4em;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--fg-primary) 8%, transparent);
+}
+
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: var(--gray-300);
+  border-radius: 2px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--gray-400);
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:active {
+  background: var(--gray-600);
+}

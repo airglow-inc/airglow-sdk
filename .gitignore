@@ -1,2 +1,9 @@
 node_modules/
 CLAUDE.local.md
+
+# Extension source build artifacts & local env
+extension-source/.output/
+extension-source/.wxt/
+extension-source/.airglow/
+extension-source/.env
+extension-source/.env.local

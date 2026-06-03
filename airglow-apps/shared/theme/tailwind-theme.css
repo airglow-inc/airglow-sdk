@@ -1,5 +1,8 @@
+/* Consumers must `@import "tailwindcss"` themselves (with their own source()
+   scope if needed) before importing this file. Keeping Tailwind out of this
+   file lets each consumer pin its own content-scanning scope; without that,
+   the dashboard bundle would pick up classes from every template app. */
 @import "./tokens.css";
-@import "tailwindcss";
 @source "./components";
 
 @theme {

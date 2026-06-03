@@ -56,7 +56,8 @@ function App() {
 createRoot(document.getElementById('root')!).render(<App />);
 `);
 
-  writeFileSync(join(appDir, 'ui', 'globals.css'), `@import "../../shared/theme/tailwind-theme.css";
+  writeFileSync(join(appDir, 'ui', 'globals.css'), `@import "tailwindcss";
+@import "../../shared/theme/tailwind-theme.css";
 `);
 
   console.log(`Created ${appId}/`);
