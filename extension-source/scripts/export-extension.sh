@@ -22,8 +22,8 @@ case "${1:-}" in
 esac
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
-source_dir="$repo_root/extension-source"
+source_dir="$(cd "$script_dir/.." && pwd)"
+repo_root="$(cd "$source_dir/.." && pwd)"
 build_dir="$source_dir/.output/chrome-mv3"
 target_dir="$repo_root/extension"
 

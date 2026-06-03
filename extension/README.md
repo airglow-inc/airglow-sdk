@@ -2,6 +2,8 @@
 
 Extension to run Airglow apps in your browser.
 
+> Built output — generated from [`../extension-source/`](../extension-source/) by `extension-source/scripts/export-extension.sh`. Don't edit files in this directory by hand; changes will be overwritten on the next export.
+
 ## Install
 
 1. Open `chrome://extensions` in browser.

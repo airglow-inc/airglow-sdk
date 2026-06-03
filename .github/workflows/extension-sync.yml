@@ -1,22 +1,20 @@
 name: Extension build sync
 
 # Fails the PR when the committed extension/ directory doesn't match what
-# extension-source/ currently produces. Run scripts/export-extension.sh and
-# commit the result to fix.
+# extension-source/ currently produces. Run extension-source/scripts/export-extension.sh
+# and commit the result to fix.
 
 on:
   pull_request:
     paths:
       - 'extension-source/**'
       - 'extension/**'
-      - 'scripts/export-extension.sh'
       - '.github/workflows/extension-sync.yml'
   push:
     branches: [main]
     paths:
       - 'extension-source/**'
       - 'extension/**'
-      - 'scripts/export-extension.sh'
 
 jobs:
   verify:
@@ -39,12 +37,12 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Rebuild extension/ from extension-source/
-        run: bash scripts/export-extension.sh
+        run: bash extension-source/scripts/export-extension.sh
 
       - name: Verify extension/ is in sync
         run: |
           if ! git diff --exit-code -- extension/; then
             echo ""
-            echo "::error::extension/ is stale. Run 'bash scripts/export-extension.sh' locally and commit the result."
+            echo "::error::extension/ is stale. Run 'bash extension-source/scripts/export-extension.sh' locally and commit the result."
             exit 1
           fi

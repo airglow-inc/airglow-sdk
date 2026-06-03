@@ -2,10 +2,11 @@
 set -euo pipefail
 
 # Installs git hooks into .git/hooks/. Per-machine, opt-in.
-# Run once after cloning: bash scripts/install-hooks.sh
+# Run once after cloning: bash extension-source/scripts/install-hooks.sh
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-repo_root="$(cd "$script_dir/.." && pwd)"
+source_dir="$(cd "$script_dir/.." && pwd)"
+repo_root="$(cd "$source_dir/.." && pwd)"
 hooks_dir="$repo_root/.git/hooks"
 
 if [ ! -d "$hooks_dir" ]; then
@@ -23,11 +24,11 @@ repo_root="$(git rev-parse --show-toplevel)"
 [ -d "$repo_root/extension-source" ] || exit 0
 
 echo "[pre-push] checking extension/ is in sync with extension-source/..."
-bash "$repo_root/scripts/export-extension.sh" >/dev/null
+bash "$repo_root/extension-source/scripts/export-extension.sh" >/dev/null
 
 if ! git -C "$repo_root" diff --quiet -- extension/; then
   echo "" >&2
-  echo "ERROR: extension/ was stale. The hook ran scripts/export-extension.sh" >&2
+  echo "ERROR: extension/ was stale. The hook ran extension-source/scripts/export-extension.sh" >&2
   echo "and the rebuild produced different output. Commit the new extension/ and re-push." >&2
   echo "" >&2
   git -C "$repo_root" diff --stat -- extension/ >&2
