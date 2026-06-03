@@ -16,25 +16,29 @@ fi
 
 cat > "$hooks_dir/pre-push" <<'HOOK'
 #!/usr/bin/env bash
-# Refuses the push when extension/ is stale relative to extension-source/.
-# Runs the export, checks for resulting diff, leaves the rebuilt extension/
-# in the working tree if stale so you can commit and re-push.
+# Refuses the push when extension/manifest.json's airglow_build_hash doesn't
+# match the source hash computed from extension-source/. Mirrors the CI check
+# in .github/workflows/extension-sync.yml exactly — no rebuild, no toolchain
+# dependency, no risk of build-time non-determinism tripping the diff.
 set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 [ -d "$repo_root/extension-source" ] || exit 0
+[ -f "$repo_root/extension/manifest.json" ] || exit 0
 
-echo "[pre-push] checking extension/ is in sync with extension-source/..."
-bash "$repo_root/extension-source/scripts/export-extension.sh" >/dev/null
+expected="$(cd "$repo_root" && git ls-files extension-source/ | LC_ALL=C sort | xargs -I {} git hash-object {} | shasum -a 256 | awk '{print $1}')"
+stamped="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get('airglow_build_hash',''))" "$repo_root/extension/manifest.json" 2>/dev/null || echo "")"
 
-if ! git -C "$repo_root" diff --quiet -- extension/; then
+if [ "$expected" != "$stamped" ]; then
   echo "" >&2
-  echo "ERROR: extension/ was stale. The hook ran extension-source/scripts/export-extension.sh" >&2
-  echo "and the rebuild produced different output. Commit the new extension/ and re-push." >&2
+  echo "ERROR: extension/ is stale relative to extension-source/." >&2
+  echo "  source hash: $expected" >&2
+  echo "  stamped:     ${stamped:-<missing>}" >&2
   echo "" >&2
-  git -C "$repo_root" diff --stat -- extension/ >&2
+  echo "Run: bash extension-source/scripts/export-extension.sh" >&2
+  echo "Then: git add extension/ && git commit && re-push" >&2
   exit 1
 fi
-echo "[pre-push] extension/ ✓"
+echo "[pre-push] extension/ ✓ (source hash $expected)"
 HOOK
 
 chmod +x "$hooks_dir/pre-push"
