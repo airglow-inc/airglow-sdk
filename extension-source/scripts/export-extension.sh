@@ -71,7 +71,7 @@ python3 -m json.tool "$target_dir/manifest.json" >/dev/null
 # but didn't reload"; CI compares it to catch "edited source but forgot to
 # rebuild" — both use the same field. Source-based (not output-based) so the
 # hash is stable across OS/toolchain differences in the build output.
-BUILD_HASH="$(cd "$repo_root" && git ls-files extension-source/ | sort | xargs -I {} git hash-object {} | shasum -a 256 | awk '{print $1}')"
+BUILD_HASH="$(cd "$repo_root" && git ls-files extension-source/ | LC_ALL=C sort | xargs -I {} git hash-object {} | shasum -a 256 | awk '{print $1}')"
 python3 -c "
 import json, sys
 path = sys.argv[1]

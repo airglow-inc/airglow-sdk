@@ -25,7 +25,7 @@ jobs:
 
       - name: Verify extension/ matches extension-source/
         run: |
-          expected=$(git ls-files extension-source/ | sort | xargs -I {} git hash-object {} | shasum -a 256 | awk '{print $1}')
+          expected=$(git ls-files extension-source/ | LC_ALL=C sort | xargs -I {} git hash-object {} | shasum -a 256 | awk '{print $1}')
           stamped=$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['airglow_build_hash'])")
           if [ "$expected" != "$stamped" ]; then
             echo "::error::extension/ is stale (source hash $expected, stamped $stamped). Run 'bash extension-source/scripts/export-extension.sh' and commit."
