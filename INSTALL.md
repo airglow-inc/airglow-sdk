@@ -3,7 +3,7 @@
 #### Install dependencies and start dev server
 - Say to user that you are starting the installation, which should take few minutes.
 - Read `airglow-sdk/README.md`, `airglow-sdk/airglow-apps/AGENTS.md`
-- **Install dependencies, start dev server:** run `pnpm install` and `pnpm airglow dev` from `airglow-sdk/airglow-apps`.
+- **Install dependencies, start dev server:** open `airglow-sdk/airglow-apps`, run `pnpm install` and `pnpm airglow dev`.
  - If computer is missing `pnpm` or some necessary dev tool like node, install it.
 
 #### Install extension

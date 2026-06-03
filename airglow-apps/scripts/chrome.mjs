@@ -19,6 +19,10 @@
  *                    Use this to sign in to Google in the dev profile without
  *                    the "browser may not be secure" block; quit Chrome when
  *                    done and re-run `pnpm chrome` to resume with CDP.
+ *   --ask-email      After load, clear the dev-seeded user email so the
+ *                    email-required gate fires on the next app open. Use to
+ *                    test the email-onboarding flow without a prod build.
+ *                    Incompatible with --no-cdp.
  *
  * Theme + chrome.log also live under <cwd>/.airglow/.
  *
@@ -46,9 +50,10 @@ const extDirArg = args.find(a => !a.startsWith('--'));
 const extDir = resolve(extDirArg || DEFAULT_EXTENSION_DIR);
 const fresh = args.includes('--fresh');
 const noCdp = args.includes('--no-cdp');
+const askEmail = args.includes('--ask-email');
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--user-data-dir=<dir>] [extension-dir]
+  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--user-data-dir=<dir>] [extension-dir]
 
 Launches Chrome with the Airglow extension loaded and CDP enabled.
 
@@ -60,6 +65,11 @@ Flags:
                       extension. Use to sign in to Google in the dev profile
                       (Google blocks sign-in when CDP is on); quit Chrome
                       when done and re-run \`pnpm chrome\` to resume with CDP.
+  --ask-email         Skip the dev-build email auto-seed so the email-required
+                      gate fires on the next app open. Use to test the
+                      email-onboarding flow without a prod build.
+                      With CDP: written automatically. With --no-cdp: prints
+                      a one-liner to paste into the SW DevTools console.
   --user-data-dir=<dir>  Override the profile directory.
   --help, -h          Show this message.
 
@@ -182,6 +192,11 @@ chrome.stderr.on('data', d => { process.stderr.write(d); logStream.write(d); });
 if (noCdp) {
   console.log('Launched Chrome without CDP. Extension not loaded.');
   console.log('Use this profile to sign in to Google, then quit Chrome and re-run `pnpm chrome`.');
+  if (askEmail) {
+    console.log('\n--ask-email: after manually loading the extension, open its service worker DevTools (chrome://extensions → "Inspect views: service worker") and paste:');
+    console.log("  chrome.storage.local.set({__airglow_skip_dev_seed: true}); chrome.storage.local.remove('__airglow_user_email');");
+    console.log('Then reload the extension. The email gate will fire on the next app open.\n');
+  }
   chrome.on('exit', code => process.exit(code ?? 0));
   process.on('SIGINT', () => chrome.kill());
   process.on('SIGTERM', () => chrome.kill());
@@ -208,22 +223,54 @@ pipeIn.on('data', chunk => {
   }
 });
 
-function cdpSend(method, params = {}) {
+function cdpSend(method, params = {}, sessionId) {
   return new Promise((resolve, reject) => {
     const id = ++msgId;
     pending.set(id, msg => {
       if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`));
       else resolve(msg.result);
     });
-    pipeOut.write(JSON.stringify({ id, method, params }) + '\0');
+    const out = { id, method, params };
+    if (sessionId) out.sessionId = sessionId;
+    pipeOut.write(JSON.stringify(out) + '\0');
   });
 }
 
+let loadedExtId = null;
 try {
   const result = await cdpSend('Extensions.loadUnpacked', { path: extDir });
+  loadedExtId = result.id;
   console.log(`Extension loaded: ${result.id}`);
 } catch (err) {
   console.error(`Failed to load extension: ${err.message}`);
+}
+
+if (askEmail && loadedExtId) {
+  try {
+    // Find the extension's service worker target (poll briefly — it may not be
+    // registered the instant Extensions.loadUnpacked resolves).
+    let swTarget = null;
+    for (let i = 0; i < 30 && !swTarget; i++) {
+      const { targetInfos } = await cdpSend('Target.getTargets');
+      swTarget = targetInfos.find(t => t.type === 'service_worker' && t.url.includes(loadedExtId));
+      if (!swTarget) await new Promise(r => setTimeout(r, 100));
+    }
+    if (!swTarget) throw new Error('service worker target not found');
+    const { sessionId } = await cdpSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true });
+    // Give the SW a moment to run its boot-time auto-seed before we clear it.
+    // We also write __airglow_skip_dev_seed so future SW reboots don't re-seed.
+    await new Promise(r => setTimeout(r, 300));
+    await cdpSend('Runtime.evaluate', {
+      expression: `(async () => {
+        await chrome.storage.local.set({ __airglow_skip_dev_seed: true });
+        await chrome.storage.local.remove('__airglow_user_email');
+      })()`,
+      awaitPromise: true,
+    }, sessionId);
+    console.log('Disabled dev-email auto-seed and cleared current email (--ask-email)');
+  } catch (err) {
+    console.error(`--ask-email: failed: ${err.message}`);
+  }
 }
 
 try {

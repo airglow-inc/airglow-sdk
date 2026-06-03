@@ -157,9 +157,12 @@ export default defineBackground(() => {
   // Seed email state on boot and keep it in sync with chrome.storage changes.
   // In dev builds, runtimeConfig.devUserEmail auto-seeds the email so apps
   // don't trip the email-required gate during local development.
-  chrome.storage.local.get(USER_EMAIL_KEY, async (result) => {
+  // `__airglow_skip_dev_seed` opts a profile out of that — used by
+  // `pnpm chrome --ask-email` to test the email-onboarding flow.
+  chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed'], async (result) => {
     let stored = normalizeUserEmail(result[USER_EMAIL_KEY]);
-    if (!stored && runtimeConfig.devUserEmail) {
+    const skipDevSeed = result['__airglow_skip_dev_seed'] === true;
+    if (!stored && runtimeConfig.devUserEmail && !skipDevSeed) {
       const dev = normalizeUserEmail(runtimeConfig.devUserEmail);
       if (dev) {
         await chrome.storage.local.set({ [USER_EMAIL_KEY]: dev });
