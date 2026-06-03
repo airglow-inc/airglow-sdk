@@ -1,8 +1,8 @@
 name: Extension build sync
 
-# Fails the PR when the committed extension/ directory doesn't match what
-# extension-source/ currently produces. Run extension-source/scripts/export-extension.sh
-# and commit the result to fix.
+# Fails when extension-source/ has changed since extension/ was last built.
+# Uses the source-hash stamped in extension/manifest.json (airglow_build_hash)
+# — no full rebuild required, so the check is independent of OS/toolchain.
 
 on:
   pull_request:
@@ -23,27 +23,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.24.0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-          cache-dependency-path: extension-source/pnpm-lock.yaml
-
-      - name: Install extension-source deps
-        working-directory: extension-source
-        run: pnpm install --frozen-lockfile
-
-      - name: Rebuild extension/ from extension-source/
-        run: bash extension-source/scripts/export-extension.sh
-
-      - name: Verify extension/ is in sync
+      - name: Verify extension/ matches extension-source/
         run: |
-          if ! git diff --exit-code -- extension/; then
-            echo ""
-            echo "::error::extension/ is stale. Run 'bash extension-source/scripts/export-extension.sh' locally and commit the result."
+          expected=$(cd extension-source && find . -type f \
+            -not -path './.output/*' \
+            -not -path './.wxt/*' \
+            -not -path './.airglow/*' \
+            -not -path './node_modules/*' \
+            -not -name '.env' \
+            -not -name '.env.local' \
+            -not -name '.DS_Store' \
+            -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')
+          stamped=$(python3 -c "import json; print(json.load(open('extension/manifest.json'))['airglow_build_hash'])")
+          if [ "$expected" != "$stamped" ]; then
+            echo "::error::extension/ is stale (source hash $expected, stamped $stamped). Run 'bash extension-source/scripts/export-extension.sh' and commit."
             exit 1
           fi
+          echo "extension/ is in sync (source hash $expected)"

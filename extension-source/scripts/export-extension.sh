@@ -64,13 +64,22 @@ require_file "$target_dir/background.js"
 require_file "$target_dir/content-scripts/edge-button.js"
 python3 -m json.tool "$target_dir/manifest.json" >/dev/null
 
-# Hash the exported contents and stamp it into manifest.json as
+# Hash extension-source/ content and stamp it into manifest.json as
 # `airglow_build_hash`. Chrome caches the manifest at extension load time, so
 # getManifest().airglow_build_hash returns the loaded-version identity. The
 # dev server compares this against the on-disk manifest to detect "you pulled
-# but didn't reload". Computed BEFORE the field is written so re-exports of
-# identical content produce a stable hash.
-BUILD_HASH="$(cd "$target_dir" && find . -type f -not -name .DS_Store -not -name README.md -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
+# but didn't reload"; CI compares it to catch "edited source but forgot to
+# rebuild" — both use the same field. Source-based (not output-based) so the
+# hash is stable across OS/toolchain differences in the build output.
+BUILD_HASH="$(cd "$source_dir" && find . -type f \
+  -not -path './.output/*' \
+  -not -path './.wxt/*' \
+  -not -path './.airglow/*' \
+  -not -path './node_modules/*' \
+  -not -name '.env' \
+  -not -name '.env.local' \
+  -not -name '.DS_Store' \
+  -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{print $1}')"
 python3 -c "
 import json, sys
 path = sys.argv[1]

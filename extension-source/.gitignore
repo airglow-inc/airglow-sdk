@@ -1,1 +1,9 @@
-.chrome-for-testing
+# Build artifacts and per-machine state. Mirrored here (in addition to the
+# repo-root .gitignore) so Tailwind's content scanner — which reads .gitignore
+# at the source root — skips them. Without this, locally-generated browser
+# profile HTML under .airglow/ gets scanned, inflating the dashboard CSS.
+.output/
+.wxt/
+.airglow/
+.env
+.env.local
