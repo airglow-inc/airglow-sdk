@@ -818,11 +818,10 @@ Airglow — for those who create
             >
               <div className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
                 <Mail size={20} style={{ color: 'var(--clay)' }} />
-                Enter your email to continue
+                Enter your email
               </div>
               <p className="text-base mt-2 mb-4" style={{ color: 'var(--fg-secondary)' }}>
-                Airglow needs an email on first launch so apps can identify this browser.
-                It is stored locally in this extension.
+                Airglow asks for an email to identify its users. We will never send any spam.
               </p>
               <div className="flex flex-col gap-3">
                 <input

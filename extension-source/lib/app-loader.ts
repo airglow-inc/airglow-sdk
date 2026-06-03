@@ -15,6 +15,11 @@ export interface AppManifest {
   description: string;
   tags?: string[];
   visibility?: AppVisibility;
+  // First-encounter default. When false, the extension adds the app to its
+  // __disabled_apps set the first time it sees the id, so the app ships
+  // disabled. Once seen, the user's dashboard toggle is authoritative and
+  // this field is ignored.
+  defaultEnabled?: boolean;
   startup?: string;
   userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
   secrets?: Record<string, { scope: string; label?: string }>;

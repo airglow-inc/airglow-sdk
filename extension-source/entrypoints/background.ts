@@ -1,7 +1,7 @@
 import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
-import { loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets } from '../lib/app-loader';
+import { loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackInstalled } from '../lib/analytics';
 import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
@@ -65,6 +65,48 @@ export default defineBackground(() => {
       chrome.storage.local.get('__disabled_apps', (result) => {
         resolve(new Set((result['__disabled_apps'] || []) as string[]));
       });
+    });
+  }
+
+  // __seen_apps records every app id we've ever loaded, so the
+  // manifest.defaultEnabled hint is applied exactly once per id. After first
+  // encounter, the user's __disabled_apps toggle is authoritative — the
+  // manifest field is ignored, so toggling a defaultEnabled:false app on in
+  // the dashboard sticks across dev-server restarts.
+  const SEEN_APPS_KEY = '__seen_apps';
+
+  // Migration path: when SEEN_APPS_KEY is missing (pre-feature install) but
+  // __app_manifests already has entries, seed seen with those ids without
+  // changing __disabled_apps. Without this, an existing user upgrading would
+  // suddenly see all defaultEnabled:false apps flip off, overriding any
+  // previous Enable toggles they made.
+  async function applyFirstEncounterDefaults(
+    manifests: AppManifest[],
+    isMigration: boolean,
+    priorManifests: AppManifest[],
+  ): Promise<void> {
+    const stored = await chrome.storage.local.get([SEEN_APPS_KEY, '__disabled_apps']);
+    const seen = new Set<string>((stored[SEEN_APPS_KEY] || []) as string[]);
+    const disabled = new Set<string>((stored['__disabled_apps'] || []) as string[]);
+    let changed = false;
+
+    if (isMigration) {
+      for (const m of priorManifests) {
+        if (!seen.has(m.id)) { seen.add(m.id); changed = true; }
+      }
+    }
+
+    for (const m of manifests) {
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      changed = true;
+      if (m.defaultEnabled === false && !disabled.has(m.id)) disabled.add(m.id);
+    }
+
+    if (!changed) return;
+    await chrome.storage.local.set({
+      [SEEN_APPS_KEY]: Array.from(seen),
+      '__disabled_apps': Array.from(disabled),
     });
   }
 
@@ -245,6 +287,13 @@ export default defineBackground(() => {
       log('user scripts toggle enabled — forcing re-registration');
       force = true;
     }
+    // Snapshot prior state BEFORE loadAppManifests overwrites __app_manifests —
+    // applyFirstEncounterDefaults needs the previous manifest set to migrate
+    // existing installs (see SEEN_APPS_KEY comment).
+    const prior = await chrome.storage.local.get([SEEN_APPS_KEY, '__app_manifests']);
+    const isSeenMigration = prior[SEEN_APPS_KEY] === undefined;
+    const priorManifests = (prior['__app_manifests'] as AppManifest[] | undefined) || [];
+
     const { reachable, manifests: allManifests } = await loadAppManifests();
 
     await setDevServerOnline(reachable);
@@ -257,6 +306,8 @@ export default defineBackground(() => {
       lastAppHashes.clear(); // force re-registration when server comes back
       return;
     }
+
+    await applyFirstEncounterDefaults(allManifests, isSeenMigration, priorManifests);
 
     const disabled = await getDisabledApps();
     const manifests = allManifests.filter(m => !disabled.has(m.id));

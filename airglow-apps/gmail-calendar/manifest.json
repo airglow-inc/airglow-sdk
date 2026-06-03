@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Reads email conversations and uses AI to pre-fill Google Calendar events",
   "tags": ["gmail", "calendar", "meeting", "sonnet"],
+  "defaultEnabled": false,
   "host_permissions": ["*://*.google.com/*"],
   "userscripts": [
     { "file": "userscripts/gmail.ts", "matches": ["*://mail.google.com/*"] },

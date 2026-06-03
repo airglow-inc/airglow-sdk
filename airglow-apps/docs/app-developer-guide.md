@@ -55,6 +55,7 @@ See [`../../cli/README.md`](../../cli/README.md) for flags and endpoints.
 | `name`, `version`, `description` | Shown in the extension dashboard. |
 | `tags` | Optional. Displayed in dashboard. |
 | `visibility` | `"public"` (default), `"development"`, or `"hidden"`. `hidden` apps are skipped entirely. |
+| `defaultEnabled` | First-encounter default in the extension. When `false`, the extension starts the app disabled the first time it sees this `id`; after that the user's dashboard toggle is authoritative. Defaults to `true`. |
 | `startup` | Path to a startup script. Runs once per extension boot. |
 | `userscripts[]` | Each entry: `{ file, matches, allFrames?, runAt? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns). `runAt` defaults to `"document_idle"`. |
 | `host_permissions` | Chrome match patterns. Required for `airglow.fetch(..., { includeCookies: true })` on the listed origins. |
