@@ -77,7 +77,12 @@ export default defineBackground(() => {
   let userEmailSet = false;
   let userScriptsAllowed = true;
   let extensionReloadDue = false;
-  let gitPullDue = false;
+  // gitPullDue has two independent sources: the dev server (commit-accurate but
+  // requires server running) and a direct GitHub raw-manifest fetch (catches
+  // extension-source/ changes only, but works with no server). Either source
+  // raising the flag is enough to show the badge.
+  let gitPullDueServer = false;
+  let gitPullDueRemote = false;
 
   function refreshActionBadge() {
     const issues: string[] = [];
@@ -85,7 +90,7 @@ export default defineBackground(() => {
     if (!userEmailSet) issues.push('email not set');
     if (!userScriptsAllowed) issues.push('user scripts disabled');
     if (extensionReloadDue) issues.push('extension reload available');
-    if (gitPullDue) issues.push('newer SDK on origin — git pull');
+    if (gitPullDueServer || gitPullDueRemote) issues.push('newer SDK on origin — git pull');
 
     if (issues.length === 0) {
       chrome.action.setBadgeText({ text: '' });
@@ -103,9 +108,11 @@ export default defineBackground(() => {
     devServerOnline = online;
     if (!online) {
       // Server went away — clear server-derived flags so they aren't stuck on
-      // if the user happens to launch a different workspace later.
+      // if the user happens to launch a different workspace later. The
+      // remote-manifest check is independent of the dev server, so its flag
+      // (gitPullDueRemote) is preserved.
       extensionReloadDue = false;
-      gitPullDue = false;
+      gitPullDueServer = false;
     }
     refreshActionBadge();
   }
@@ -129,13 +136,53 @@ export default defineBackground(() => {
       const data: any = await res.json();
       const nextReload = !!data?.extension?.needsReload;
       const nextPull = !!data?.repo?.behindUpstream;
-      if (nextReload !== extensionReloadDue || nextPull !== gitPullDue) {
+      if (nextReload !== extensionReloadDue || nextPull !== gitPullDueServer) {
         extensionReloadDue = nextReload;
-        gitPullDue = nextPull;
+        gitPullDueServer = nextPull;
         refreshActionBadge();
       }
     } catch { /* transient — next tick retries */ }
   }
+
+  // Independent of the dev server: hit origin/main's extension/manifest.json
+  // directly and compare its airglow_build_hash to the loaded one. Wakes the SW
+  // on a chrome.alarms schedule so it keeps checking even when the user isn't
+  // actively interacting with the extension and the dev server is offline.
+  // Caveat: only detects changes to extension-source/ (since the hash is over
+  // that tree). CLI-only / docs-only commits won't trip this — the dev-server
+  // check (when running) catches those.
+  const REMOTE_MANIFEST_URL = 'https://raw.githubusercontent.com/airglow-inc/airglow-sdk/main/extension/manifest.json';
+  const REMOTE_CHECK_ALARM = 'airglow:remote-update-check';
+
+  async function refreshRemoteUpdateStatus() {
+    try {
+      const res = await fetch(REMOTE_MANIFEST_URL, { signal: AbortSignal.timeout(5000), cache: 'no-store' });
+      if (!res.ok) return;
+      const remote: any = await res.json();
+      const remoteHash = typeof remote?.airglow_build_hash === 'string' ? remote.airglow_build_hash : null;
+      if (!remoteHash) return;
+      const loadedHash = (chrome.runtime.getManifest() as { airglow_build_hash?: string }).airglow_build_hash || '';
+      const next = !!(loadedHash && remoteHash !== loadedHash);
+      if (next !== gitPullDueRemote) {
+        gitPullDueRemote = next;
+        refreshActionBadge();
+      }
+    } catch { /* network blip — try again next alarm */ }
+  }
+
+  // Register the alarm only if one isn't already scheduled — every SW boot
+  // re-runs this body, and re-creating an alarm with the same name resets its
+  // schedule, so without the guard a frequently-restarting SW would push the
+  // next fire forever.
+  chrome.alarms.get(REMOTE_CHECK_ALARM).then((existing) => {
+    if (!existing) chrome.alarms.create(REMOTE_CHECK_ALARM, { periodInMinutes: 60 });
+  });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === REMOTE_CHECK_ALARM) refreshRemoteUpdateStatus();
+  });
+  // Also run once at SW startup so the badge reflects current state without
+  // waiting for the first alarm fire (which could be up to an hour away).
+  refreshRemoteUpdateStatus();
 
   // chrome.userScripts.getScripts() throws if the user-scripts toggle is off
   // on chrome://extensions. There's no event for this toggle, so we re-check

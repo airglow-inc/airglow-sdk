@@ -18,7 +18,7 @@ export default defineConfig({
   manifest: {
     name: 'Airglow',
     description: 'Dynamic tool injection platform — AI-powered integrations on any page',
-    permissions: ['storage', 'activeTab', 'userScripts', 'declarativeNetRequest', 'scripting', 'webNavigation', 'nativeMessaging', 'identity', 'offscreen', 'clipboardRead'],
+    permissions: ['storage', 'activeTab', 'userScripts', 'declarativeNetRequest', 'scripting', 'webNavigation', 'nativeMessaging', 'identity', 'offscreen', 'clipboardRead', 'alarms'],
     host_permissions: ['<all_urls>'],
     // Pinned public key → deterministic extension ID: comikpjjijckpjkobpkkpnnhlcpmagic
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9FHeG+dnrLhRUck2ePMNCSv6cdemPh2AvKYRnGeMLCXA4cWa80uxRGp3inkhl8kTH5Q3ctLJ2GGqf9YwLEoqDPYdbQ+q7U2l6oEInTzz5ZdDnxOh47SiuyrsQSmEODRPSiScIdv9f3BD5YPtLeDxbx6qjGoQ3oqemPTthDir+b/b4V2jGhcrZrh2NYpk2jGrHqkVdq2L5sYLy0SEQoApsOOOaU22s3i8eVA0KBEQL46r07ItpfJm2373TZrWOhE/DIBGhWGSoQIJtGchW9KU8TALuTsWNV14waeDrE8PH0pnbmqoQJJGRyrZaUl1KB0K85+X7x+ue5Ns3lrC/dEnugIDAQAB',
