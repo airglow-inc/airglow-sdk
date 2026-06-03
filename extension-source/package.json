@@ -7,7 +7,7 @@
   "scripts": {
     "dev": "wxt",
     "build": "wxt build",
-    "zip": "cd .output && rm -f airglow-ext-prod.zip && zip -r airglow-ext-prod.zip chrome-mv3/",
+    "zip": "bash scripts/zip-for-store.sh",
     "chrome": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev",
     "chrome:fresh": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev --fresh"
   },
