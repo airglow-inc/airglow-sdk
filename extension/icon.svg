@@ -6,7 +6,7 @@
     </clipPath>
   </defs>
   <g clip-path="url(#roundClip)">
-  <rect width="1024" height="1024" fill="#0D3B6E"/>
+  <rect width="1024" height="1024" fill="#000000"/>
   <g transform="translate(52, 18) scale(0.98)">
     <!-- Golden A with transparent inner triangle hole -->
     <path fill="#F8BB5B" fill-rule="evenodd" d="M416.6 246.2 L210.4 731 L313 649.9 L326.7 649.9 L446.9 551.2 L539.7 639.1 L560.2 640.1 L698 731 L490.8 246.2 Z M392.1 543.3 L510.4 543.3 L450.8 382.1 Z"/>
