@@ -33,7 +33,7 @@
 import { spawn } from 'node:child_process';
 import { dirname, resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, createWriteStream, existsSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, createWriteStream, existsSync, writeFileSync, readFileSync, rmSync, copyFileSync } from 'node:fs';
 import { installNativeHost } from '../../cli/lib/native-host/install.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -44,6 +44,13 @@ const FRESH_USER_DATA_DIR = join(WORKSPACE_DIR, 'chrome-profile-fresh');
 const THEME_DIR = join(WORKSPACE_DIR, 'dev-theme');
 
 const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const SYSTEM_DEFAULT_PROFILE = join(process.env.HOME || '', 'Library/Application Support/Google/Chrome/Default');
+const PASSWORD_FILES = [
+  'Login Data',
+  'Login Data-journal',
+  'Login Data For Account',
+  'Login Data For Account-journal',
+];
 
 const args = process.argv.slice(2);
 function flagValue(name) {
@@ -58,9 +65,10 @@ const extDir = resolve(extDirArg || DEFAULT_EXTENSION_DIR);
 const fresh = args.includes('--fresh');
 const noCdp = args.includes('--no-cdp');
 const askEmail = args.includes('--ask-email');
+const noPasswords = args.includes('--no-passwords');
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--extension <dir>] [--user-data-dir=<dir>]
+  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--no-passwords] [--extension <dir>] [--user-data-dir=<dir>]
 
 Launches Chrome with the Airglow extension loaded and CDP enabled.
 
@@ -83,6 +91,13 @@ Flags:
                       email-onboarding flow without a prod build.
                       With CDP: written automatically. With --no-cdp: prints
                       a one-liner to paste into the SW DevTools console.
+  --no-passwords      Skip seeding saved passwords from the system default
+                      Chrome profile (~/Library/Application Support/Google/
+                      Chrome/Default). By default, "Login Data" SQLite files
+                      are copied into <user-data-dir>/Default on every
+                      launch so saved passwords carry over. Other profile
+                      contents are left untouched. Decryption relies on the
+                      user-wide "Chrome Safe Storage" Keychain entry.
   --user-data-dir=<dir>  Override the profile directory.
   --help, -h          Show this message.
 
@@ -129,6 +144,31 @@ if (existsSync(localStatePath)) {
 // is set, NOT the system default location.
 mkdirSync(userDataDir, { recursive: true });
 installNativeHost({ extraDirs: [join(userDataDir, 'NativeMessagingHosts')] });
+
+// Seed saved passwords from the system default Chrome profile so the dev
+// profile carries over logins. Only the "Login Data*" SQLite files are
+// touched — the rest of the dev profile is left intact. Decryption works
+// because the "Chrome Safe Storage" Keychain entry is user-wide on macOS.
+if (!noPasswords) {
+  if (!existsSync(SYSTEM_DEFAULT_PROFILE)) {
+    console.log(`Password seed skipped: ${SYSTEM_DEFAULT_PROFILE} not found.`);
+  } else {
+    const targetProfile = join(userDataDir, 'Default');
+    mkdirSync(targetProfile, { recursive: true });
+    let copied = 0;
+    for (const f of PASSWORD_FILES) {
+      const src = join(SYSTEM_DEFAULT_PROFILE, f);
+      if (!existsSync(src)) continue;
+      try {
+        copyFileSync(src, join(targetProfile, f));
+        copied++;
+      } catch (err) {
+        console.error(`Failed to copy "${f}": ${err.message} (quit the main Chrome and retry, or pass --no-passwords)`);
+      }
+    }
+    if (copied > 0) console.log(`Seeded ${copied} password file(s) from default Chrome profile.`);
+  }
+}
 
 // Generate a tiny theme extension to color the dev-Chrome chrome (frame, toolbar,
 // tabs). Visually distinguishes the dev browser from your daily Chrome. Only
