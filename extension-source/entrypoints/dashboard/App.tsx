@@ -651,14 +651,14 @@ export default function App() {
         style={{ background: 'var(--gray-150)', borderColor: 'var(--border-secondary)', boxShadow: '2px 0 8px rgba(0,0,0,0.04)' }}
       >
         {/* Logo */}
-        <div className="px-5 pt-5 pb-6">
+        <div className="px-5 pt-5 pb-6 flex justify-center">
           <a
             href={chrome.runtime.getURL('dashboard.html')}
             onClick={(e) => { e.preventDefault(); setPage('apps'); }}
             className="inline-block cursor-pointer"
             data-testid="dashboard-logo"
           >
-            <img src="/logo.svg" alt="Airglow" width={140} />
+            <img src="/logo.svg" alt="Airglow" width={170} />
           </a>
         </div>
 
@@ -849,7 +849,7 @@ export default function App() {
         </div>
 
         {/* Tagline */}
-        <div className="px-5 py-4">
+        <div className="px-5 py-4 text-center">
           <p style={{ color: 'var(--fg-tertiary)', fontSize: '12px', letterSpacing: '0.02em', fontFamily: 'var(--font-sans)', lineHeight: '1.6' }}>
 Airglow — for those who create
           </p>

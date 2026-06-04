@@ -3,7 +3,7 @@
  * Launch Chrome with the Airglow extension loaded and CDP enabled.
  *
  * Usage:
- *   node scripts/chrome.mjs [extension-dir] [--user-data-dir=<dir>] [--fresh] [--no-cdp]
+ *   node scripts/chrome.mjs [--extension <dir>] [--user-data-dir=<dir>] [--fresh] [--no-cdp]
  *
  * Defaults (all resolved against cwd, so the same script serves multiple
  * workspaces — e.g. airglow-apps and airglow/extension):
@@ -46,18 +46,31 @@ const THEME_DIR = join(WORKSPACE_DIR, 'dev-theme');
 const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 
 const args = process.argv.slice(2);
-const extDirArg = args.find(a => !a.startsWith('--'));
+function flagValue(name) {
+  const eq = args.find(a => a.startsWith(`--${name}=`));
+  if (eq) return eq.slice(name.length + 3);
+  const i = args.indexOf(`--${name}`);
+  if (i >= 0 && i + 1 < args.length && !args[i + 1].startsWith('--')) return args[i + 1];
+  return undefined;
+}
+const extDirArg = flagValue('extension') ?? args.find(a => !a.startsWith('--') && args[args.indexOf(a) - 1] !== '--extension');
 const extDir = resolve(extDirArg || DEFAULT_EXTENSION_DIR);
 const fresh = args.includes('--fresh');
 const noCdp = args.includes('--no-cdp');
 const askEmail = args.includes('--ask-email');
 
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--user-data-dir=<dir>] [extension-dir]
+  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--extension <dir>] [--user-data-dir=<dir>]
 
 Launches Chrome with the Airglow extension loaded and CDP enabled.
 
 Flags:
+  --extension <dir>   Unpacked extension dir to load. Defaults to
+                      <sdk>/extension. Use this to point at a different build
+                      (e.g. \`pnpm chrome --extension ../../airglow/extension/.output/chrome-mv3\`).
+                      Accepts --extension <dir> or --extension=<dir>. A bare
+                      positional path also works, but pnpm strips positional
+                      args unless you write \`pnpm chrome -- <dir>\`.
   --fresh             Use a separate profile dir and wipe it before launch.
                       Seeds the new profile from the regular dev profile
                       (Preferences, History, …) minus auth/session files.
