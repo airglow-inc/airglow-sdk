@@ -65,8 +65,11 @@ function getClient(): PostHog | null {
 
 async function getIdentity(): Promise<{ distinctId: string; email?: string } | null> {
   const stored = await chrome.storage.local.get([USER_ID_KEY, USER_EMAIL_KEY]);
-  const distinctId = typeof stored[USER_ID_KEY] === 'string' ? stored[USER_ID_KEY] : '';
-  if (!distinctId) return null;
+  let distinctId = typeof stored[USER_ID_KEY] === 'string' ? stored[USER_ID_KEY] : '';
+  if (!distinctId) {
+    distinctId = `ag_${crypto.randomUUID()}`;
+    await chrome.storage.local.set({ [USER_ID_KEY]: distinctId });
+  }
   return { distinctId, email: normalizeUserEmail(stored[USER_EMAIL_KEY]) };
 }
 

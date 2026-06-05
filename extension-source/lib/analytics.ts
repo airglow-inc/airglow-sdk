@@ -15,6 +15,60 @@ const INSTALLED_FLAG_KEY = '__airglow_installed_tracked';
 const IDENTIFIED_FLAG_KEY = '__airglow_identified_tracked';
 const APPS_REGISTERED_KEY = '__airglow_apps_registered';
 
+export type AnalyticsPropertyValue = string | number | boolean | null | string[];
+
+type AppAnalyticsManifest = {
+  id: string;
+  name?: string;
+  version?: string;
+  visibility?: string;
+  startup?: unknown;
+  serverFunctions?: unknown;
+  _serverFunctions?: unknown;
+  rpcExecution?: string;
+  userscripts?: unknown;
+  host_permissions?: unknown;
+  _sourceType?: string;
+};
+
+export type AppSeenSurface = 'dashboard_list' | 'dashboard_details' | 'page_edge_menu' | 'app_shell_edge_menu';
+export type AppUseAction = 'open_ui' | 'rpc' | 'llm' | 'fetch' | 'open_window' | 'open_tab' | 'capture_tab';
+export type DashboardPage = 'apps' | 'logs';
+
+function arrayCount(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function normalizeAppSourceType(value: string | undefined): string {
+  return value === 'local' || value === 'cloud' ? value : 'unknown';
+}
+
+function appAnalyticsProperties(
+  app: AppAnalyticsManifest,
+  extra: Record<string, AnalyticsPropertyValue> = {},
+): Record<string, AnalyticsPropertyValue> {
+  const serverFunctionCount = arrayCount(app.serverFunctions || app._serverFunctions);
+  const userscriptCount = arrayCount(app.userscripts);
+  const hostPermissionCount = arrayCount(app.host_permissions);
+  return {
+    app_id: app.id,
+    app_name: app.name || app.id,
+    app_source_type: normalizeAppSourceType(app._sourceType),
+    app_version: app.version || null,
+    app_visibility: app.visibility || null,
+    has_ui: true,
+    has_startup: typeof app.startup === 'string' && app.startup.trim().length > 0,
+    has_server_functions: serverFunctionCount > 0,
+    has_userscripts: userscriptCount > 0,
+    has_host_permissions: hostPermissionCount > 0,
+    server_function_count: serverFunctionCount,
+    userscript_count: userscriptCount,
+    host_permission_count: hostPermissionCount,
+    rpc_execution: app.rpcExecution || null,
+    ...extra,
+  };
+}
+
 /** Fire-and-forget; dedup'd via storage. */
 export async function trackInstalled(): Promise<void> {
   const stored = await chrome.storage.local.get(INSTALLED_FLAG_KEY);
@@ -62,4 +116,27 @@ export async function trackAppsRegistered(appIds: string[]): Promise<void> {
   posthog.capture('Apps Registered', { apps: current, count: current.length }).catch((e) => {
     logger.warn('airglow', `posthog capture 'Apps Registered' failed: ${e instanceof Error ? e.message : String(e)}`);
   });
+}
+
+export async function trackAppSeen(
+  app: AppAnalyticsManifest,
+  surface: AppSeenSurface,
+  extra: Record<string, AnalyticsPropertyValue> = {},
+): Promise<void> {
+  await posthog.capture('App Seen', appAnalyticsProperties(app, { surface, ...extra }));
+}
+
+export async function trackAppUsed(
+  app: AppAnalyticsManifest,
+  action: AppUseAction,
+  extra: Record<string, AnalyticsPropertyValue> = {},
+): Promise<void> {
+  await posthog.capture('App Used', appAnalyticsProperties(app, { action, ...extra }));
+}
+
+export async function trackDashboardOpened(
+  page: DashboardPage,
+  extra: Record<string, AnalyticsPropertyValue> = {},
+): Promise<void> {
+  await posthog.capture('Dashboard Opened', { page, ...extra });
 }

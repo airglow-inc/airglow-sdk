@@ -195,6 +195,8 @@ export default function App() {
   const [appOrder, setAppOrder] = useState<Record<string, string[]>>({});
   const dragItem = useRef<{ section: string; index: number } | null>(null);
   const dragOverItem = useRef<{ section: string; index: number } | null>(null);
+  const seenDashboardApps = useRef<Set<string>>(new Set());
+  const dashboardOpenTracked = useRef(false);
 
   function sortByOrder(list: AppManifest[], section: string): AppManifest[] {
     const order = appOrder[section];
@@ -205,6 +207,27 @@ export default function App() {
       const bi = idxMap.get(b.id) ?? -1;
       return ai - bi;
     });
+  }
+
+  function trackDashboardAppsSeen(currentApps: AppManifest[]) {
+    const payload: { appId: string; sourceType: AppSourceType; section: string; position: number }[] = [];
+    const addSection = (section: string, sectionApps: AppManifest[]) => {
+      sectionApps.forEach((app, position) => {
+        const key = appIdentityKey(app);
+        if (seenDashboardApps.current.has(key)) return;
+        seenDashboardApps.current.add(key);
+        payload.push({ appId: app.id, sourceType: app._sourceType, section, position });
+      });
+    };
+
+    addSection('cloud', sortByOrder(currentApps.filter(isCloudApp), 'published'));
+    addSection('local', sortByOrder(currentApps.filter((app) => app._sourceType === 'local'), 'local'));
+    if (payload.length === 0) return;
+    chrome.runtime.sendMessage({
+      type: 'airglow:track-apps-seen',
+      surface: 'dashboard_list',
+      apps: payload,
+    }, () => { void chrome.runtime.lastError; });
   }
 
   function handleDragStart(section: string, index: number) {
@@ -393,6 +416,21 @@ export default function App() {
     chrome.storage.local.onChanged.addListener(onChange);
     return () => chrome.storage.local.onChanged.removeListener(onChange);
   }, []);
+
+  useEffect(() => {
+    if (!identityLoaded || !userEmail || page !== 'apps' || !apps?.length) return;
+    trackDashboardAppsSeen(apps);
+  }, [identityLoaded, userEmail, page, apps, appOrder]);
+
+  useEffect(() => {
+    if (!identityLoaded || dashboardOpenTracked.current) return;
+    dashboardOpenTracked.current = true;
+    chrome.runtime.sendMessage({
+      type: 'airglow:track-dashboard-opened',
+      page,
+      hasEmail: Boolean(userEmail),
+    }, () => { void chrome.runtime.lastError; });
+  }, [identityLoaded, page, userEmail]);
 
   // Poll the dev server's update-status endpoint while the server is online so
   // the "Reload Airglow" banner appears without the user having to refresh the

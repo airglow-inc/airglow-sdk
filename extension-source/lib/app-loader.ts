@@ -44,7 +44,7 @@ function getCloudSource(): AppSource {
 }
 
 const APP_SOURCES_KEY = '__app_sources';
-const APP_MANIFESTS_KEY = '__app_manifests';
+export const APP_MANIFESTS_KEY = '__app_manifests';
 export const APP_INVENTORY_MANIFESTS_KEY = '__app_inventory_manifests';
 // Per-app userscript source cache. Keyed by appId; hash-gated so we only
 // re-fetch when the manifest's _hash actually changes. Lets the extension
