@@ -982,6 +982,11 @@ export default defineBackground(() => {
       const match = matchRedirect(url.hostname);
       if (match) {
         const appId = match.target.replace('airglow://', '');
+        findAnalyticsApp(appId).then((app) => {
+          if (app) trackUsedApp(app, 'open_ui', { surface: 'page_redirect' });
+        }).catch((e) =>
+          logger.warn('airglow', `track redirect app open failed: ${e instanceof Error ? e.message : String(e)}`)
+        );
         chrome.tabs.update(details.tabId, {
           url: chrome.runtime.getURL(`app-shell.html?app=${appId}&site=${match.domain}`),
         });
@@ -1131,12 +1136,12 @@ export default defineBackground(() => {
     });
   }
 
-  function trackUsedApp(
+  async function trackUsedApp(
     app: SourcedManifest,
     action: AppUseAction,
     extra: Record<string, AnalyticsPropertyValue> = {},
-  ) {
-    trackAppUsed(app, action, extra).catch((e) =>
+  ): Promise<void> {
+    await trackAppUsed(app, action, extra).catch((e) =>
       logger.warn('airglow', `trackAppUsed failed: ${e instanceof Error ? e.message : String(e)}`)
     );
   }
@@ -1207,7 +1212,7 @@ export default defineBackground(() => {
         const extra: Record<string, AnalyticsPropertyValue> = {
           surface: typeof msg.surface === 'string' ? msg.surface : 'extension',
         };
-        trackUsedApp(app, normalizeUseAction(msg.action), extra);
+        await trackUsedApp(app, normalizeUseAction(msg.action), extra);
         sendResponse({ ok: true });
       })().catch((e) => {
         logger.warn('airglow', `track app used failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1227,8 +1232,19 @@ export default defineBackground(() => {
     }
 
     if (msg?.type === 'airglow:open-app') {
-      chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${msg.appId}`) });
-      return;
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${appId}`) });
+      (async () => {
+        if (appId) {
+          const app = await findAnalyticsApp(appId);
+          if (app) await trackUsedApp(app, 'open_ui', { surface: 'edge_menu' });
+        }
+        sendResponse({ ok: true });
+      })().catch((e) => {
+        logger.warn('airglow', `track edge app open failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track edge app open failed' });
+      });
+      return true;
     }
 
     // ── Dashboard actions ──

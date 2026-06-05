@@ -132,7 +132,6 @@ function mountApp(appId: string, source: AppSource) {
   let runtimeCrashVisible = false;
   let pendingSandboxPayload: { sdk: string; code: string } | null = null;
   let sandboxNonce = '';
-  let appUiOpenTracked = false;
 
   // Set tab title from cached manifests populated by the background loader.
   chrome.storage.local.get(APP_MANIFESTS_KEY).then((result) => {
@@ -162,18 +161,6 @@ function mountApp(appId: string, source: AppSource) {
     sandboxParams.set('nonce', sandboxNonce);
     if (cacheBust) sandboxParams.set('_airglow_reload', String(Date.now()));
     return chrome.runtime.getURL(`app-ui-sandbox.html?${sandboxParams.toString()}`);
-  }
-
-  function trackUiOpened() {
-    if (appUiOpenTracked) return;
-    appUiOpenTracked = true;
-    chrome.runtime.sendMessage({
-      type: 'airglow:track-app-used',
-      appId,
-      sourceType: source.type,
-      action: 'open_ui',
-      surface: 'app_shell',
-    }, () => { void chrome.runtime.lastError; });
   }
 
   function sleep(ms: number): Promise<void> {
@@ -380,7 +367,6 @@ function mountApp(appId: string, source: AppSource) {
     loadAttempt = 0;
     clearLoadTimer();
     document.getElementById('loading')?.remove();
-    trackUiOpened();
     // Cloud-app sandbox handshake: hand off the SDK + bundle now that the
     // iframe is ready to receive postMessage. The sandbox validates the nonce
     // and evals via `new Function()` — no `?app=` URL trust, just the nonce.

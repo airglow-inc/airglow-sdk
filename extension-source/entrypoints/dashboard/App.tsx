@@ -572,6 +572,16 @@ export default function App() {
     return chrome.runtime.getURL(`app-shell.html?app=${appId}`);
   }
 
+  function trackAppUiOpen(app: Pick<AppManifest, 'id' | '_sourceType'>, surface: string = 'dashboard') {
+    chrome.runtime.sendMessage({
+      type: 'airglow:track-app-used',
+      appId: app.id,
+      sourceType: app._sourceType,
+      action: 'open_ui',
+      surface,
+    }, () => { void chrome.runtime.lastError; });
+  }
+
   // ── Secrets modal ──
 
   function openSecrets() {
@@ -731,7 +741,15 @@ export default function App() {
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <div className="text-lg font-semibold mb-1 flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
-              <a href={appUrl(app.id)} target="_blank" className="no-underline" style={{ color: 'inherit' }}>{app.name}</a>
+              <a
+                href={appUrl(app.id)}
+                target="_blank"
+                className="no-underline"
+                style={{ color: 'inherit' }}
+                onClick={() => trackAppUiOpen(app, 'dashboard_card')}
+              >
+                {app.name}
+              </a>
               {secrets && Object.keys(secrets).length > 0 && (
                 <Tooltip content={
                   <span>
@@ -772,7 +790,13 @@ export default function App() {
                 </Tooltip>
               )}
             </div>
-            <a href={appUrl(app.id)} target="_blank" className="block text-base leading-relaxed no-underline" style={{ color: 'var(--fg-secondary)' }}>
+            <a
+              href={appUrl(app.id)}
+              target="_blank"
+              className="block text-base leading-relaxed no-underline"
+              style={{ color: 'var(--fg-secondary)' }}
+              onClick={() => trackAppUiOpen(app, 'dashboard_card')}
+            >
               {app.description}
             </a>
           </div>
@@ -907,6 +931,7 @@ export default function App() {
                 style={{ color: 'var(--fg-secondary)', borderBottom: i < published.length - 1 ? '1px solid var(--border-tertiary)' : 'none' }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-secondary)'; }}
+                onClick={() => trackAppUiOpen(app, 'dashboard_sidebar')}
               >
                 {app.name}
               </a>
@@ -934,6 +959,7 @@ export default function App() {
                   style={{ color: 'var(--olive)', borderBottom: i < local.length - 1 ? '1px solid color-mix(in srgb, var(--olive) 15%, var(--border-tertiary))' : 'none' }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--olive) 12%, var(--bg-tertiary))'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+                  onClick={() => trackAppUiOpen(app, 'dashboard_sidebar')}
                 >
                   {app.name}
                 </a>
