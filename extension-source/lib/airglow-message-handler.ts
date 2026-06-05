@@ -701,7 +701,7 @@ function dispatchAirglowMessage(
       }
       chrome.storage.local.set({ [USER_EMAIL_KEY]: email }, () => {
         sendResponse({ ok: true, email });
-        trackIdentified().catch((e) =>
+        trackIdentified(email).catch((e) =>
           logger.warn('airglow', `trackIdentified failed: ${e instanceof Error ? e.message : String(e)}`)
         );
       });

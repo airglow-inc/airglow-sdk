@@ -10,9 +10,11 @@
 
 import * as posthog from './posthog';
 import { logger } from './logger';
+import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 
 const INSTALLED_FLAG_KEY = '__airglow_installed_tracked';
 const IDENTIFIED_FLAG_KEY = '__airglow_identified_tracked';
+const IDENTIFIED_EMAIL_KEY = '__airglow_identified_tracked_email';
 const APPS_REGISTERED_KEY = '__airglow_apps_registered';
 
 export type AnalyticsPropertyValue = string | number | boolean | null | string[];
@@ -79,13 +81,22 @@ export async function trackInstalled(): Promise<void> {
   });
 }
 
-/** Fire-and-forget; dedup'd via storage. Refreshes person traits with email. */
-export async function trackIdentified(): Promise<void> {
-  const stored = await chrome.storage.local.get(IDENTIFIED_FLAG_KEY);
-  if (stored[IDENTIFIED_FLAG_KEY]) return;
-  await chrome.storage.local.set({ [IDENTIFIED_FLAG_KEY]: Date.now() });
-  posthog.identify().catch((e) => {
+/** Refreshes person traits and emits `User Identified` once per email value. */
+export async function trackIdentified(emailValue?: unknown): Promise<void> {
+  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, IDENTIFIED_EMAIL_KEY]);
+  const email = normalizeUserEmail(emailValue) || normalizeUserEmail(stored[USER_EMAIL_KEY]);
+  if (!email) return;
+
+  try {
+    await posthog.identify();
+  } catch (e) {
     logger.warn('airglow', `posthog identify failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  if (normalizeUserEmail(stored[IDENTIFIED_EMAIL_KEY]) === email) return;
+  await chrome.storage.local.set({
+    [IDENTIFIED_FLAG_KEY]: Date.now(),
+    [IDENTIFIED_EMAIL_KEY]: email,
   });
   posthog.capture('User Identified').catch((e) => {
     logger.warn('airglow', `posthog capture 'User Identified' failed: ${e instanceof Error ? e.message : String(e)}`);
