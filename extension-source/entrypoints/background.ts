@@ -114,7 +114,6 @@ export default defineBackground(() => {
   // Dev-server offline is intentionally excluded — it's not user-actionable and the
   // dashboard surfaces it instead. (dashboard still reads + subscribes to the flag.)
   const DEV_SERVER_ONLINE_KEY = '__dev_server_online';
-  let userEmailSet = false;
   let userScriptsAllowed = true;
   let extensionReloadDue = false;
   // gitPullDue has two independent sources: the dev server (commit-accurate but
@@ -126,7 +125,6 @@ export default defineBackground(() => {
 
   function refreshActionBadge() {
     const issues: string[] = [];
-    if (!userEmailSet) issues.push('email not set');
     if (!userScriptsAllowed) issues.push('user scripts disabled');
     if (extensionReloadDue) issues.push('extension reload available');
     if (gitPullDueServer || gitPullDueRemote) issues.push('newer SDK on origin — git pull');
@@ -277,17 +275,8 @@ export default defineBackground(() => {
       const dev = normalizeUserEmail(runtimeConfig.devUserEmail);
       if (dev) {
         await chrome.storage.local.set({ [USER_EMAIL_KEY]: dev });
-        stored = dev;
         log(`dev auto-set user email: ${dev}`);
       }
-    }
-    userEmailSet = !!stored;
-    refreshActionBadge();
-  });
-  chrome.storage.local.onChanged.addListener((changes) => {
-    if (USER_EMAIL_KEY in changes) {
-      userEmailSet = !!normalizeUserEmail(changes[USER_EMAIL_KEY].newValue);
-      refreshActionBadge();
     }
   });
 

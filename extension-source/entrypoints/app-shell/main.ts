@@ -6,7 +6,7 @@
 // from the extension package without an extra network hop.
 import '../../lib/airglow-base.css';
 import { createPersistentButton } from '../../lib/edge-button';
-import { normalizeUserEmail, requiresUserEmail, sha256Email, USER_EMAIL_KEY } from '../../lib/airglow-identity';
+import { normalizeUserEmail, sha256Email, USER_EMAIL_KEY } from '../../lib/airglow-identity';
 import { runtimeConfig } from '../../lib/runtime-config';
 import { logger } from '../../lib/logger';
 
@@ -319,32 +319,16 @@ function mountApp(appId: string, source: AppSource) {
     }
     if (!data?._airglow) return;
 
-    void (async () => {
-      if (requiresUserEmail(data.type)) {
-        await ensureUserEmail();
-      }
-
-      const msg = { ...data, _appId: appId };
-      chrome.runtime.sendMessage(msg, (response: any) => {
-        const payload = chrome.runtime.lastError
-          ? {
-              error: chrome.runtime.lastError.message || 'Chrome runtime message failed',
-              code: 'CHROME_RUNTIME_ERROR',
-            }
-          : response || {};
-        sourceWindow?.postMessage(
-          { _airglow_response: true, _callId: data._callId, ...payload },
-          '*',
-        );
-      });
-    })().catch((error) => {
+    const msg = { ...data, _appId: appId };
+    chrome.runtime.sendMessage(msg, (response: any) => {
+      const payload = chrome.runtime.lastError
+        ? {
+            error: chrome.runtime.lastError.message || 'Chrome runtime message failed',
+            code: 'CHROME_RUNTIME_ERROR',
+          }
+        : response || {};
       sourceWindow?.postMessage(
-        {
-          _airglow_response: true,
-          _callId: data._callId,
-          error: error?.message || String(error),
-          code: error?.code || 'EMAIL_REQUIRED',
-        },
+        { _airglow_response: true, _callId: data._callId, ...payload },
         '*',
       );
     });

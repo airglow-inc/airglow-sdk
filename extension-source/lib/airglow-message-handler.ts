@@ -5,12 +5,7 @@
 
 import type { SourcedManifest } from './app-loader';
 import { logger } from './logger';
-import {
-  USER_EMAIL_KEY,
-  buildEmailRequiredResponse,
-  normalizeUserEmail,
-  requiresUserEmail,
-} from './airglow-identity';
+import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 import { trackIdentified } from './analytics';
 
 const STORAGE_PREFIX = 'airglow:app:';
@@ -216,20 +211,9 @@ export function handleAirglowMessage(
 
   const storageKey = (key: string) => `${STORAGE_PREFIX}${appId}:${key}`;
 
-  if (requiresUserEmail(msg.type)) {
-    chrome.storage.local.get(USER_EMAIL_KEY, (result) => {
-      const email = normalizeUserEmail(result[USER_EMAIL_KEY]);
-      if (!email) {
-        sendResponse(buildEmailRequiredResponse(chrome.runtime.getURL('dashboard.html')));
-        return;
-      }
-      const handled = dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse);
-      if (!handled) sendResponse({ error: `unknown message type: ${msg.type}`, code: 'UNKNOWN_MESSAGE_TYPE' });
-    });
-    return true;
-  }
-
-  return dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse);
+  const handled = dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse);
+  if (!handled) sendResponse({ error: `unknown message type: ${msg.type}`, code: 'UNKNOWN_MESSAGE_TYPE' });
+  return true;
 }
 
 function dispatchAirglowMessage(

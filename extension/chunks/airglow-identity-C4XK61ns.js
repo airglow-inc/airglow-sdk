@@ -1,0 +1,1 @@
+var e=`__airglow_user_email`,t=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;function n(e){if(typeof e!=`string`)return;let n=e.trim().toLowerCase();return t.test(n)?n:void 0}async function r(e){let t=n(e);if(!t)return;let r=new TextEncoder().encode(t),i=await crypto.subtle.digest(`SHA-256`,r);return Array.from(new Uint8Array(i)).map(e=>e.toString(16).padStart(2,`0`)).join(``)}export{n,r,e as t};
