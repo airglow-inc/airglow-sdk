@@ -363,6 +363,51 @@ function dispatchAirglowMessage(
       return true;
     }
 
+    case 'airglow:llm:anthropic:messages': {
+      const baseUrl = appSourceMap.get(appId);
+      if (!baseUrl) {
+        console.error(`[airglow] LLM request failed: no source registered for app '${appId}'`);
+        sendResponse({
+          error: `No source registered for app '${appId}'. Is an app source reachable?`,
+          code: 'LLM_SOURCE_NOT_REGISTERED',
+        });
+        return true;
+      }
+      getAirglowRpcIdentity()
+        .then((identity) => fetch(`${baseUrl}/api/llm/anthropic/messages`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Airglow-App-Id': appId,
+            'X-Airglow-User-Id': identity.userId,
+            'X-Airglow-User-Secret': identity.userSecret,
+            ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
+          },
+          body: JSON.stringify(msg.payload),
+        }))
+        .then(async (res) => {
+          const text = await res.text();
+          let result;
+          try { result = JSON.parse(text); } catch { result = text; }
+          if (!res.ok) {
+            const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+            sendResponse({
+              error: typeof envelope.error === 'string'
+                ? envelope.error
+                : `LLM request failed with HTTP ${res.status}`,
+              code: typeof envelope.code === 'string' ? envelope.code : 'LLM_HTTP_ERROR',
+              status: res.status,
+              requestId: typeof envelope.requestId === 'string' ? envelope.requestId : undefined,
+              details: result,
+            });
+            return;
+          }
+          sendResponse({ result });
+        })
+        .catch((e) => sendResponse({ error: e.message, code: 'LLM_NETWORK_ERROR' }));
+      return true;
+    }
+
     case 'airglow:identity:getRedirectURL': {
       sendResponse({ url: chrome.identity.getRedirectURL() });
       return true;

@@ -55,7 +55,7 @@ A clean tool output is **not** a signal that the change worked. If either stream
   }, []);
   ```
 
-- **Use Composio for third-party APIs.** Only call `@composio/core` from `server/*.ts` — its API key is server-only. Before calling an unfamiliar tool, look up its parameter schema:
+- **Use Composio (v3) for third-party APIs.** Only call `@composio/core` from `server/*.ts` — its API key is server-only. Before calling an unfamiliar tool, look up its parameter schema:
   ```bash
   pnpm composio <toolkit>                # list tools
   pnpm composio <toolkit> <TOOL_SLUG>    # parameter schema for one tool

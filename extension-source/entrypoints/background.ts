@@ -111,11 +111,9 @@ export default defineBackground(() => {
   }
 
   // Reflect attention-required state via the toolbar badge.
-  // Three conditions raise the badge: dev server offline, user email not set,
-  // or the chrome.userScripts API is not allowed (toggle off on chrome://extensions).
-  // (dashboard reads + subscribes to the dev-server flag to render its offline state.)
+  // Dev-server offline is intentionally excluded — it's not user-actionable and the
+  // dashboard surfaces it instead. (dashboard still reads + subscribes to the flag.)
   const DEV_SERVER_ONLINE_KEY = '__dev_server_online';
-  let devServerOnline = true;
   let userEmailSet = false;
   let userScriptsAllowed = true;
   let extensionReloadDue = false;
@@ -128,7 +126,6 @@ export default defineBackground(() => {
 
   function refreshActionBadge() {
     const issues: string[] = [];
-    if (!devServerOnline) issues.push('dev server offline');
     if (!userEmailSet) issues.push('email not set');
     if (!userScriptsAllowed) issues.push('user scripts disabled');
     if (extensionReloadDue) issues.push('extension reload available');
@@ -147,7 +144,6 @@ export default defineBackground(() => {
 
   async function setDevServerOnline(online: boolean) {
     await chrome.storage.local.set({ [DEV_SERVER_ONLINE_KEY]: online });
-    devServerOnline = online;
     if (!online) {
       // Server went away — clear server-derived flags so they aren't stuck on
       // if the user happens to launch a different workspace later. The
@@ -1038,7 +1034,9 @@ export default defineBackground(() => {
   });
 
   // ── Per-tab error tracking (in-memory, for edge button indicators) ──
-  const tabErrors = new Map<number, Set<string>>(); // tabId → set of appIds with errors
+  // tabId → appId → latest error/warn ts. Compared against __logs_last_seen_ts
+  // so the indicator clears once the user reads the logs page.
+  const tabErrors = new Map<number, Map<string, number>>();
 
   // Track errors only after the message handler validates and persists the log.
   // This prevents the indicator from showing when the log was rejected (stale secret, etc.).
@@ -1046,8 +1044,9 @@ export default defineBackground(() => {
     if (level !== 'error' && level !== 'warn') return;
     const tabId = sender?.tab?.id;
     if (!tabId) return;
-    if (!tabErrors.has(tabId)) tabErrors.set(tabId, new Set());
-    tabErrors.get(tabId)!.add(appId);
+    let m = tabErrors.get(tabId);
+    if (!m) { m = new Map(); tabErrors.set(tabId, m); }
+    m.set(appId, Date.now());
   });
 
   // Clean up when tabs close
@@ -1126,14 +1125,19 @@ export default defineBackground(() => {
       const senderTabId = _sender?.tab?.id;
       const errorsOnTab = senderTabId ? tabErrors.get(senderTabId) : undefined;
       const allManifests = getAppManifests();
-      getDisabledApps().then((disabled) => {
+      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(([disabled, lastSeenRes]) => {
+        const lastSeen = (lastSeenRes['__logs_last_seen_ts'] as number | undefined) ?? 0;
+        const hasError = (id: string) => {
+          const ts = errorsOnTab?.get(id);
+          return ts !== undefined && ts > lastSeen;
+        };
         const matching: { id: string; name: string; disabled: boolean; hasError?: boolean }[] = [];
         const seen = new Set<string>();
 
         // If appId is specified (app-shell), return just that app
         if (appId) {
           const m = allManifests.find(m => m.id === appId);
-          if (m) matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: errorsOnTab?.has(m.id) });
+          if (m) matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
           sendResponse({ apps: matching });
           return;
         }
@@ -1147,7 +1151,7 @@ export default defineBackground(() => {
             })
           )) {
             seen.add(m.id);
-            matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: errorsOnTab?.has(m.id) });
+            matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
           }
         }
 
@@ -1162,7 +1166,7 @@ export default defineBackground(() => {
                 const m = allManifests.find(m => m.id === rule.appId);
                 if (m) {
                   seen.add(m.id);
-                  matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: errorsOnTab?.has(m.id) });
+                  matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
                 }
                 break;
               }
@@ -1184,7 +1188,7 @@ export default defineBackground(() => {
                     const m = allManifests.find(m => m.id === rAppId);
                     if (m) {
                       seen.add(m.id);
-                      matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: errorsOnTab?.has(m.id) });
+                      matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
                     }
                     break;
                   }
@@ -1251,6 +1255,7 @@ export default defineBackground(() => {
     }
 
     if (msg?.type === 'airglow:logs:clear') {
+      tabErrors.clear();
       logger.clear().then(() => sendResponse({ ok: true }));
       return true;
     }

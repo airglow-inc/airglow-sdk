@@ -64,6 +64,24 @@ Transport failures and HTTP 4xx/5xx responses reject with `AirglowError` (`code`
 
 ---
 
+## airglow.llm.anthropic.messages(payload)
+
+Calls Anthropic's Messages API through the Airglow LLM gateway. The gateway centralises authentication, rate limiting, and billing — no app-side `ANTHROPIC_API_KEY` needed.
+
+```ts
+const res = await airglow.llm.anthropic.messages({
+  model: 'claude-sonnet-4-6',
+  max_tokens: 1024,
+  messages: [{ role: 'user', content: 'Hello' }],
+});
+```
+
+`payload` is the [Anthropic Messages API request body](https://docs.claude.com/en/api/messages), passed through unchanged. The gateway returns the response unchanged. Per-user rate limits and request size caps apply server-side; failures reject with `AirglowError` (`code`, `status`, `requestId`).
+
+The gateway is only present on the cloud app source (`api.airglow.dev`). Apps loaded from `pnpm airglow dev` (localhost) will 404 — for local development, fall back to a server function that calls Anthropic directly with your own key.
+
+---
+
 ## airglow.platform
 
 Privileged extension capabilities. Registrations persist across service-worker restarts and are typically called from `startup.ts`.

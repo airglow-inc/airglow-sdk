@@ -1,19 +1,4 @@
-import { Composio } from '@composio/core';
-
-let _client: InstanceType<typeof Composio> | null = null;
-
-function getClient(): InstanceType<typeof Composio> {
-  if (!_client) {
-    const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) throw new Error('COMPOSIO_API_KEY is not set');
-    _client = new Composio({ apiKey });
-  }
-  return _client;
-}
-
-function userIdForEmail(email: string): string {
-  return `airglow-gmail-${email.trim().toLowerCase()}`;
-}
+import { getClient, hasActiveConnection, initiateOAuth, userIdForEmail } from './_composio';
 
 export default async function calendarEvents(body: {
   userEmail?: string;
@@ -24,30 +9,11 @@ export default async function calendarEvents(body: {
   if (!userEmail) return { ok: false, error: 'userEmail is required' };
   if (!year || !month) return { ok: false, error: 'year and month are required' };
 
-  const c = getClient();
   const userId = userIdForEmail(userEmail);
 
-  // Check Google Calendar connection (may be separate from Gmail)
-  const accounts = await c.connectedAccounts.list({
-    userIds: [userId],
-    toolkitSlugs: ['googlecalendar'],
-  });
-  const active = (accounts.items ?? []).find((a: any) => a.status === 'ACTIVE');
-
-  if (!active) {
+  if (!(await hasActiveConnection(userEmail, 'googlecalendar'))) {
     try {
-      const req = await c.toolkits.authorize(userId, 'googlecalendar');
-      let authUrl = req.redirectUrl ?? null;
-      // Follow Composio redirect and append login_hint to pre-select account
-      if (authUrl && userEmail) {
-        try {
-          const res = await fetch(authUrl, { redirect: 'manual' });
-          const location = res.headers.get('location');
-          if (location?.includes('accounts.google.com')) {
-            authUrl = `${location}&login_hint=${encodeURIComponent(userEmail)}`;
-          }
-        } catch {}
-      }
+      const { authUrl } = await initiateOAuth(userEmail, 'googlecalendar');
       return { ok: false, needsAuth: true, authUrl };
     } catch (e) {
       return { ok: false, error: `Calendar OAuth init failed: ${String(e)}` };
@@ -68,7 +34,7 @@ export default async function calendarEvents(body: {
   gridEnd.setHours(23, 59, 59, 999);
 
   try {
-    const result = await c.tools.execute('GOOGLECALENDAR_EVENTS_LIST', {
+    const result = await getClient().tools.execute('GOOGLECALENDAR_EVENTS_LIST', {
       userId,
       arguments: {
         calendar_id: 'primary',

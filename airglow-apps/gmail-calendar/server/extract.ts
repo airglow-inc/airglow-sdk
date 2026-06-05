@@ -1,27 +1,9 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { Composio } from '@composio/core';
-
-// --- Composio helpers (self-contained, no platform imports) ---
-
-function userIdForEmail(email: string): string {
-  return `airglow-gmail-${email.trim().toLowerCase()}`;
-}
-
-let _client: InstanceType<typeof Composio> | null = null;
-
-function getClient(): InstanceType<typeof Composio> {
-  if (!_client) {
-    const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) throw new Error('COMPOSIO_API_KEY is not set');
-    _client = new Composio({ apiKey });
-  }
-  return _client;
-}
+import { getClient, hasActiveConnection, initiateOAuth, userIdForEmail } from './_composio';
 
 async function getConnectionEmail(userId: string): Promise<string | undefined> {
   try {
-    const c = getClient();
-    const result = await c.tools.execute('GMAIL_GET_PROFILE', {
+    const result = await getClient().tools.execute('GMAIL_GET_PROFILE', {
       userId,
       arguments: { user_id: 'me' },
       dangerouslySkipVersionCheck: true,
@@ -38,14 +20,8 @@ async function getGmailConnectionInfoForEmail(
 ): Promise<{ connected: boolean; email?: string }> {
   if (!email) return { connected: false };
   try {
-    const c = getClient();
+    if (!(await hasActiveConnection(email, 'gmail'))) return { connected: false };
     const userId = userIdForEmail(email);
-    const accounts = await c.connectedAccounts.list({
-      userIds: [userId],
-      toolkitSlugs: ['gmail'],
-    });
-    const active = (accounts.items ?? []).find((a: any) => a.status === 'ACTIVE');
-    if (!active) return { connected: false };
     const confirmedEmail = await getConnectionEmail(userId);
     if (confirmedEmail && confirmedEmail.toLowerCase() !== email.toLowerCase()) {
       return { connected: false, email: confirmedEmail };
@@ -56,19 +32,8 @@ async function getGmailConnectionInfoForEmail(
   }
 }
 
-async function initiateGmailOAuthForEmail(email: string): Promise<{
-  redirectUrl: string | null;
-  connectionId: string;
-}> {
-  const c = getClient();
-  const userId = userIdForEmail(email);
-  const req = await c.toolkits.authorize(userId, 'gmail');
-  return { redirectUrl: req.redirectUrl ?? null, connectionId: req.id };
-}
-
 async function fetchGmailMessageByIdForEmail(email: string, messageId: string): Promise<any> {
-  const c = getClient();
-  return c.tools.execute('GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID', {
+  return getClient().tools.execute('GMAIL_FETCH_MESSAGE_BY_MESSAGE_ID', {
     userId: userIdForEmail(email),
     arguments: { message_id: messageId, user_id: 'me' },
     dangerouslySkipVersionCheck: true,
@@ -109,25 +74,12 @@ export default async function extract(body: { messageId?: string; userEmail?: st
   // Check Composio connection
   const conn = await getGmailConnectionInfoForEmail(userEmail);
   if (!conn.connected) {
-    let authUrl: string | null = null;
     try {
-      const oauth = await initiateGmailOAuthForEmail(userEmail);
-      authUrl = oauth.redirectUrl;
-      // Composio returns a short URL that 302s to Google OAuth.
-      // Follow the redirect and append login_hint to pre-select the correct account.
-      if (authUrl && userEmail) {
-        try {
-          const res = await fetch(authUrl, { redirect: 'manual' });
-          const location = res.headers.get('location');
-          if (location?.includes('accounts.google.com')) {
-            authUrl = `${location}&login_hint=${encodeURIComponent(userEmail)}`;
-          }
-        } catch {}
-      }
+      const { authUrl } = await initiateOAuth(userEmail, 'gmail');
+      return { ok: false, needsAuth: true, userEmail, authUrl };
     } catch (e) {
       return { ok: false, error: `Composio OAuth init failed: ${String(e)}` };
     }
-    return { ok: false, needsAuth: true, userEmail, authUrl };
   }
 
   // Fetch email via Composio

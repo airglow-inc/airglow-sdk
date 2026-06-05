@@ -1,6 +1,6 @@
 /**
  * Airglow SDK — injected into app contexts before app code runs.
- * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.platform.
+ * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, airglow.platform.
  *
  * Auto-detects environment:
  * - Userscripts/extension pages: uses chrome.runtime.sendMessage
@@ -231,6 +231,15 @@ export function buildSdkCode(appId: string): string {
     },
   };
 
+  const llm = {
+    anthropic: {
+      async messages(payload) {
+        const res = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload });
+        return res?.result;
+      },
+    },
+  };
+
   async function captureTab() {
     const res = await sendMsg({ type: 'airglow:captureTab' });
     if (res?.error) throw new Error(res.error);
@@ -255,6 +264,7 @@ export function buildSdkCode(appId: string): string {
     storage,
     log,
     rpc,
+    llm,
     platform,
     identity,
     captureTab,

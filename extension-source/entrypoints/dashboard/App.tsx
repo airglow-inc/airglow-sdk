@@ -672,7 +672,7 @@ export default function App() {
               style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-tertiary)' }}
               onClick={() => setPage('apps')}
             >
-              Public Apps
+              Official Apps
             </div>
 
             {error && (
@@ -689,7 +689,7 @@ export default function App() {
 
             {published.length === 0 && apps !== null && !error && (
               <div className="px-1 py-3 text-sm" style={{ color: 'var(--fg-tertiary)' }}>
-                No public apps available
+                No official apps available
               </div>
             )}
 
@@ -1140,7 +1140,7 @@ Airglow — for those who create
           {/* Apps column */}
           <div>
             <h2 className="text-2xl font-bold tracking-tight mb-4" style={{ color: 'var(--fg-primary)' }}>
-              Public Apps
+              Official Apps
             </h2>
             {apps === null && (
               <div className="text-base py-8 text-center" style={{ color: 'var(--fg-tertiary)' }}>
@@ -1149,7 +1149,7 @@ Airglow — for those who create
             )}
             {published.length === 0 && apps !== null ? (
               <div className="text-base py-8 text-center rounded-[var(--radius-md)]" style={{ color: 'var(--fg-tertiary)', border: '1px dashed var(--border-secondary)' }}>
-                No public apps available
+                No official apps available
               </div>
             ) : (
               <div className="flex flex-col gap-4">

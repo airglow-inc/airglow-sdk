@@ -36,7 +36,7 @@ export default function LogsPage() {
   // Snapshotted at mount so "New" pills don't disappear as user reads.
   // null = not loaded yet (don't flash pills on every row before storage resolves).
   const [seenCutoff, setSeenCutoff] = useState<number | null>(null);
-  const markedRef = useRef(false);
+  const lastWrittenSeenRef = useRef(0);
 
   function loadLogs() {
     chrome.runtime.sendMessage({ type: 'airglow:logs:get' }, (res) => {
@@ -53,13 +53,19 @@ export default function LogsPage() {
     return () => clearInterval(tick);
   }, []);
 
-  // Mark as seen once after the first batch of entries arrives.
+  // Keep storage-backed lastSeen in sync with the newest entry the user has on
+  // screen, so the edge-button error indicator clears as soon as they read the
+  // logs (and stays cleared as new entries arrive while the page is open).
+  // `seenCutoff` is independent — it's a mount-time snapshot, so "New" pills
+  // persist for entries that already existed when the user opened the page.
   useEffect(() => {
-    if (markedRef.current || seenCutoff === null || entries.length === 0) return;
-    markedRef.current = true;
+    if (entries.length === 0) return;
     const maxTs = entries.reduce((m, e) => (e.ts > m ? e.ts : m), 0);
-    if (maxTs > seenCutoff) chrome.storage.local.set({ [LAST_SEEN_KEY]: maxTs });
-  }, [entries, seenCutoff]);
+    if (maxTs > lastWrittenSeenRef.current) {
+      lastWrittenSeenRef.current = maxTs;
+      chrome.storage.local.set({ [LAST_SEEN_KEY]: maxTs });
+    }
+  }, [entries]);
 
   useEffect(() => {
     const id = setInterval(loadLogs, 3000);

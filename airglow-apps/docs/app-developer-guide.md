@@ -178,7 +178,9 @@ App `.env` overrides workspace `.env`.
 
 ## Composio integrations
 
-Composio calls third-party APIs (Gmail, Notion, Sheets, Calendar, …) from server functions. Its API key is server-only — only call `@composio/core` from `server/*.ts`.
+Composio (`@composio/core` v3, ^0.10) calls third-party APIs (Gmail, Notion, Sheets, Calendar, …) from server functions. Its API key is server-only — only call `@composio/core` from `server/*.ts`.
+
+**v3 terminology**: `tools` (the callable verbs, e.g. `GMAIL_FETCH_MESSAGE`), `toolkits` (groupings, e.g. `gmail`), `auth_configs` (OAuth client config per toolkit), `connected_accounts` (per-user OAuth tokens). `entity ID` → `user_id`, `integration` → `auth_config`.
 
 Discover tools and their parameter schemas:
 
@@ -187,43 +189,79 @@ pnpm composio <toolkit>                # list tools (gmail, notion, googlesheets
 pnpm composio <toolkit> <TOOL_SLUG>    # parameter schema for one tool
 ```
 
-Call a tool from a server function:
+### Calling a tool (no OAuth)
+
+Public/no-auth tools (e.g. Hacker News, web search):
 
 ```ts
-// server/get-grades.ts
 import { Composio } from '@composio/core';
 
-const USER_ID = 'default';
+const c = new Composio({ apiKey: process.env.COMPOSIO_API_KEY });
+const result = await c.tools.execute('HACKERNEWS_GET_USER', {
+  userId: 'default',
+  arguments: { user_id: 'pg' },
+  dangerouslySkipVersionCheck: true,
+});
+```
 
-let client: Composio | null = null;
-function getClient() {
-  if (!client) {
-    const apiKey = process.env.COMPOSIO_API_KEY;
-    if (!apiKey) throw new Error('COMPOSIO_API_KEY is not set');
-    client = new Composio({ apiKey });
-  }
-  return client;
+- `userId` — Composio's per-user auth context. Constant string is fine for tools that don't need OAuth.
+- `arguments` — tool parameter object; shape from `pnpm composio <toolkit> <TOOL_SLUG>`.
+- `dangerouslySkipVersionCheck: true` — required; bypasses tool-version pinning.
+
+### Calling a tool that requires user OAuth (Gmail, Calendar, Sheets, …)
+
+Two-step flow: (1) ensure a `connected_account` exists for `(user_id, toolkit)`, (2) execute the tool. Pre-step 1: an `auth_config` for the toolkit. Auto-create it once with Composio-managed OAuth.
+
+```ts
+import { Composio } from '@composio/core';
+
+const c = new Composio({ apiKey: process.env.COMPOSIO_API_KEY });
+const authConfigCache = new Map<string, string>();
+
+async function getOrCreateAuthConfigId(toolkitSlug: string): Promise<string> {
+  if (authConfigCache.has(toolkitSlug)) return authConfigCache.get(toolkitSlug)!;
+  const list = await c.authConfigs.list({ toolkit: toolkitSlug });
+  const existing = (list.items ?? []).find((cfg: any) =>
+    cfg?.toolkit?.slug === toolkitSlug || cfg?.toolkit === toolkitSlug,
+  );
+  const id = existing?.id ?? (await c.authConfigs.create(toolkitSlug.toUpperCase(), {
+    type: 'use_composio_managed_auth',
+    name: `Auto: ${toolkitSlug}`,
+  })).id;
+  authConfigCache.set(toolkitSlug, id);
+  return id;
 }
 
-export default async function() {
-  const result = await getClient().tools.execute('GOOGLESHEETS_BATCH_GET', {
-    userId: USER_ID,
-    arguments: {
-      spreadsheet_id: '<id>',
-      ranges: ["'Results'!A1:H100"],
-    },
+export default async function fetchSheet(body: { userEmail: string; spreadsheetId: string }) {
+  const userId = `myapp-${body.userEmail.toLowerCase()}`;
+
+  // 1. Check connection. If missing, return a redirect URL for the user.
+  const accounts = await c.connectedAccounts.list({ userIds: [userId], toolkitSlugs: ['googlesheets'] });
+  const connected = (accounts.items ?? []).some((a: any) => a.status === 'ACTIVE');
+  if (!connected) {
+    const authConfigId = await getOrCreateAuthConfigId('googlesheets');
+    const req = await c.connectedAccounts.link(userId, authConfigId);
+    return { ok: false, needsAuth: true, authUrl: req.redirectUrl };
+  }
+
+  // 2. Execute the tool.
+  const result = await c.tools.execute('GOOGLESHEETS_BATCH_GET', {
+    userId,
+    arguments: { spreadsheet_id: body.spreadsheetId, ranges: ["'Sheet1'!A1:H100"] },
     dangerouslySkipVersionCheck: true,
   });
-
   const data = (result as any)?.data || result;
-  return data?.valueRanges ?? [];
+  return { ok: true, valueRanges: data?.valueRanges ?? [] };
 }
 ```
 
-- `userId` — Composio's per-user auth context. Use one constant per app (e.g. `'default'`) unless you actually need multi-tenant auth.
-- `arguments` — the tool's parameter object. Get the exact shape from `pnpm composio <toolkit> <TOOL_SLUG>`.
-- `dangerouslySkipVersionCheck: true` — required; bypasses the SDK's strict version pinning.
+- The userscript handles `{ needsAuth: true, authUrl }` by opening `authUrl` with `airglow.openWindow` so the user completes OAuth.
+- `auth_configs` persist server-side under your `COMPOSIO_API_KEY`. After first run for a toolkit, subsequent `authConfigs.list()` returns the existing one — no duplicate creation.
+- `use_composio_managed_auth` uses Composio's own OAuth app (small Composio branding on the consent screen). For your own branding, create a `use_custom_auth` config with your OAuth client credentials.
 - Result shape varies per toolkit. Unwrap as `result.data` (sometimes nested under `response_data`).
+- `userId` namespacing: pick one canonical scheme per app (e.g. `myapp-<email>`) so auth state survives reconnects. Avoid raw emails — Composio treats `user_id` as opaque.
+
+See `gmail-calendar/server/_composio.ts` for the helper used by gmail-calendar's two server functions.
 
 ---
 

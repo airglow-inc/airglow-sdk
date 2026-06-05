@@ -80,8 +80,8 @@ importers:
         specifier: ^0.88.0
         version: 0.88.0(zod@4.4.3)
       '@composio/core':
-        specifier: ^0.6.10
-        version: 0.6.11(zod@4.4.3)
+        specifier: ^0.10.0
+        version: 0.10.0(zod@4.4.3)
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
@@ -111,6 +111,15 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  howto-helper:
+    dependencies:
+      lucide-react:
+        specifier: ^1.11.0
+        version: 1.16.0(react@19.2.6)
+      marked:
+        specifier: ^18.0.2
+        version: 18.0.3
+
   local/ads-helper: {}
 
   local/bookkeeping:
@@ -119,20 +128,24 @@ importers:
         specifier: ^0.8.0
         version: 0.8.1(zod@4.4.3)
 
-  local/google-ads:
+  local/gmail-editor:
     dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.52.0
-        version: 0.52.0
-      lucide-react:
-        specifier: ^0.469.0
-        version: 0.469.0(react@19.2.6)
       react:
         specifier: ^19.0.0
         version: 19.2.6
       react-dom:
         specifier: ^19.0.0
         version: 19.2.6(react@19.2.6)
+    devDependencies:
+      '@types/react':
+        specifier: ^19.0.0
+        version: 19.0.0
+      '@types/react-dom':
+        specifier: ^19.0.0
+        version: 19.0.0
+      typescript:
+        specifier: ^5.6.3
+        version: 5.9.3
 
   local/wallet-notion:
     dependencies:
@@ -174,23 +187,10 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
-  page-navigator:
-    dependencies:
-      lucide-react:
-        specifier: ^1.11.0
-        version: 1.16.0(react@19.2.6)
-      marked:
-        specifier: ^18.0.2
-        version: 18.0.3
-
 packages:
 
   '@anthropic-ai/sdk@0.39.0':
     resolution: {integrity: sha512-eMyDIPRZbt1CCLErRCi3exlAvNkBtRe+kW5vvJyef93PmNr/clstYgHhtvmkxN82nlKgzyGPCyGxrm0JQ1ZIdg==}
-
-  '@anthropic-ai/sdk@0.52.0':
-    resolution: {integrity: sha512-d4c+fg+xy9e46c8+YnrrgIQR45CZlAi7PwdzIfDXDM6ACxEZli1/fxhURsq30ZpMZy6LvSkr41jGq5aF5TD7rQ==}
-    hasBin: true
 
   '@anthropic-ai/sdk@0.88.0':
     resolution: {integrity: sha512-QQOtB5U9ZBJQj6y1ICmDZl14LWa4JCiJRoihI+0yuZ4OjbONrakP0yLwPv4DJFb3VYCtQM31bTOpCBMs2zghPw==}
@@ -210,6 +210,14 @@ packages:
 
   '@composio/client@0.1.0-alpha.68':
     resolution: {integrity: sha512-hym21PsIELzlF0Fc9RASr3PfGR1alpGE8IlbRJU3ED6UllMZz7VzREsKUZfojG4yHjZMBlVXG5QGMBzuPEue3Q==}
+
+  '@composio/client@0.1.0-alpha.72':
+    resolution: {integrity: sha512-2WYXgdlMvhoaJCsaSfyMAYGQ2tS5l2Fqdh2cMRqNi8NybIoOkFZy2ApBJJOoQwqfpUr41VymMW6FtiNQm7JavQ==}
+
+  '@composio/core@0.10.0':
+    resolution: {integrity: sha512-dG2BKF4NRiE8HHDzWLLgjMMo3FU4NJ6SxR961EpdLWWEKhkl+yP/mZlIN7p/4WnCR/fuDBKH1Qh+7kBdcHmEHA==}
+    peerDependencies:
+      zod: ^3.25 || ^4
 
   '@composio/core@0.6.11':
     resolution: {integrity: sha512-0uNA1DhHF0l3d51GVRw4CA8oYgqsps+aGMW6J4jA6Ut53HfBHwHJ4JAa9HU/2Psho8tCoprM6NR5DxWGD50H+A==}
@@ -813,11 +821,6 @@ packages:
     peerDependencies:
       react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0-rc
 
-  lucide-react@0.469.0:
-    resolution: {integrity: sha512-28vvUnnKQ/dBwiCQtwJw7QauYnE7yd2Cyp4tTTJpvglX4EMpbflcdBgrgToX2j71B3YvugK/NH3BGUk+E/p/Fw==}
-    peerDependencies:
-      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
-
   lucide-react@1.16.0:
     resolution: {integrity: sha512-dYwyPzb4MEKpGUmNYk3WKWPnMrHs3FKM+q94kAnJrcDIqqn1hq2xY8scaS2ovsOCM5D51ey2gaRG3PBb1vgoYQ==}
     peerDependencies:
@@ -984,8 +987,6 @@ snapshots:
     transitivePeerDependencies:
       - encoding
 
-  '@anthropic-ai/sdk@0.52.0': {}
-
   '@anthropic-ai/sdk@0.88.0(zod@4.4.3)':
     dependencies:
       json-schema-to-ts: 3.1.1
@@ -997,6 +998,22 @@ snapshots:
   '@composio/client@0.1.0-alpha.66': {}
 
   '@composio/client@0.1.0-alpha.68': {}
+
+  '@composio/client@0.1.0-alpha.72': {}
+
+  '@composio/core@0.10.0(zod@4.4.3)':
+    dependencies:
+      '@composio/client': 0.1.0-alpha.72
+      '@composio/json-schema-to-zod': 0.1.20(zod@4.4.3)
+      '@types/json-schema': 7.0.15
+      chalk: 4.1.2
+      openai: 6.38.0(zod@4.4.3)
+      pusher-js: 8.5.0
+      semver: 7.8.0
+      zod: 4.4.3
+      zod-to-json-schema: 3.25.2(zod@4.4.3)
+    transitivePeerDependencies:
+      - ws
 
   '@composio/core@0.6.11(zod@4.4.3)':
     dependencies:
@@ -1501,10 +1518,6 @@ snapshots:
       lightningcss-win32-x64-msvc: 1.32.0
 
   lucide-react@0.460.0(react@19.2.6):
-    dependencies:
-      react: 19.2.6
-
-  lucide-react@0.469.0(react@19.2.6):
     dependencies:
       react: 19.2.6
 

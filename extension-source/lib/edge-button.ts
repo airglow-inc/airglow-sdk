@@ -311,6 +311,11 @@ export function createEdgeButton() {
       iconEl.style.boxShadow = hasError ? '0 0 0 2px #e53e3e' : '';
     },
   });
+  // Clear the outline as soon as the user reads /logs — the next hover would
+  // recompute it anyway, but doing it live avoids stale red on idle tabs.
+  chrome.storage.onChanged.addListener((changes) => {
+    if ('__logs_last_seen_ts' in changes) iconEl.style.boxShadow = '';
+  });
   const { el: popupEl, show: showPopup, hide: hidePopup } = popup;
 
   let hovering = false;
@@ -448,6 +453,12 @@ export function createPersistentButton() {
       persistentIconEl.style.outline = hasError ? '2px solid #e53e3e' : '';
       persistentIconEl.style.outlineOffset = hasError ? '1px' : '';
     },
+  });
+  chrome.storage.onChanged.addListener((changes) => {
+    if ('__logs_last_seen_ts' in changes) {
+      persistentIconEl.style.outline = '';
+      persistentIconEl.style.outlineOffset = '';
+    }
   });
   const { el: popupEl, show: showPopup, hide: hidePopup } = popup;
 
