@@ -30,7 +30,7 @@ export default defineConfig({
       256: 'icon-256.png',
     },
     sandbox: {
-      pages: ['startup-sandbox.html'],
+      pages: ['startup-sandbox.html', 'app-ui-sandbox.html'],
     },
     content_security_policy: {
       sandbox: [

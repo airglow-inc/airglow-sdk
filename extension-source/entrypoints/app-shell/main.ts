@@ -1,18 +1,25 @@
 // App shell — hosts app UI in a sandboxed iframe.
 // The shell has chrome.* access and bridges SDK calls from the sandbox via postMessage.
+//
+// Two UI delivery paths:
+//   - Local apps: iframe loads ${devServer}/api/apps/${id}/ui directly (same-
+//     origin trust, dev server serves the page).
+//   - Cloud apps: iframe loads chrome-extension://.../app-ui-sandbox.html
+//     with a nonce, app-shell fetches the UI bundle as text, posts it in.
+//     Keeps the cloud bundle in an extension-CSP sandbox we control.
 
-// Shared fonts + reset + form-control inheritance. Imported here (not via a
-// <link> in index.html) so WXT bundles it into the page and serves the fonts
-// from the extension package without an extra network hop.
 import '../../lib/airglow-base.css';
 import { logger } from '../../lib/logger';
+import { buildSdkCode } from '../../lib/airglow-sdk';
 
 const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
 const DEV_SERVER_ONLINE_KEY = '__dev_server_online';
 const UI_LOAD_TIMEOUT_MS = 12000;
+const UI_BUNDLE_FETCH_TIMEOUT_MS = 8000;
 const AUTO_RETRY_DELAYS_MS = [1000, 3000];
-type AppSource = { url: string; type: string };
+const UI_BUNDLE_RETRY_DELAYS_MS = [500, 1500];
+type AppSource = { url: string; type: 'local' | 'cloud' };
 
 const params = new URLSearchParams(window.location.search);
 const appId = params.get('app');
@@ -85,33 +92,36 @@ function renderOfflineMessage(appId: string) {
  * Retries a few times since background discovery may not have completed yet.
  */
 async function loadApp(appId: string) {
-  // Fast path: if the background already knows the dev server is offline,
-  // skip the 12s iframe load wait and surface the offline message immediately.
-  // Userscripts come from cache; the UI page does not (multi-asset bundle).
-  const onlineCheck = await chrome.storage.local.get(DEV_SERVER_ONLINE_KEY);
-  if (onlineCheck[DEV_SERVER_ONLINE_KEY] === false) {
+  // Fast path: if the dev server is offline AND this app is local-only, skip
+  // the 12s iframe load wait. Cloud apps don't need the dev server, so the
+  // offline message only applies when no source can serve the app.
+  const onlineCheck = await chrome.storage.local.get([DEV_SERVER_ONLINE_KEY, APP_SOURCES_KEY]);
+  const sourceMap = (onlineCheck[APP_SOURCES_KEY] || {}) as Record<string, AppSource>;
+  const knownSource = sourceMap[appId];
+  if (onlineCheck[DEV_SERVER_ONLINE_KEY] === false && (!knownSource || knownSource.type === 'local')) {
     renderOfflineMessage(appId);
+    return;
+  }
+
+  if (knownSource?.url) {
+    mountApp(appId, knownSource);
     return;
   }
 
   const maxAttempts = 5;
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    if (attempt > 0) await new Promise(r => setTimeout(r, 1000));
     const result = await chrome.storage.local.get(APP_SOURCES_KEY);
-    const sourceMap = (result[APP_SOURCES_KEY] || {}) as Record<string, { url: string; type: string }>;
-    const source = sourceMap[appId];
-
+    const refreshed = (result[APP_SOURCES_KEY] || {}) as Record<string, AppSource>;
+    const source = refreshed[appId];
     if (source?.url) {
       mountApp(appId, source);
       return;
     }
-
-    if (attempt < maxAttempts - 1) {
-      await new Promise(r => setTimeout(r, 1000));
-    }
   }
 
-  console.error(`[airglow] No source registered for app '${appId}' after ${maxAttempts} attempts`);
-  document.getElementById('loading')!.textContent = `App '${appId}' not found. Is the dev server running?`;
+  logger.warn('airglow', `no source registered for app '${appId}' after ${maxAttempts} attempts`);
+  document.getElementById('loading')!.textContent = `App '${appId}' not found. Is an app source reachable?`;
 }
 
 function mountApp(appId: string, source: AppSource) {
@@ -120,6 +130,8 @@ function mountApp(appId: string, source: AppSource) {
   let loadTimer: ReturnType<typeof setTimeout> | null = null;
   let loadAttempt = 0;
   let runtimeCrashVisible = false;
+  let pendingSandboxPayload: { sdk: string; code: string } | null = null;
+  let sandboxNonce = '';
 
   // Set tab title from cached manifests populated by the background loader.
   chrome.storage.local.get(APP_MANIFESTS_KEY).then((result) => {
@@ -136,6 +148,50 @@ function mountApp(appId: string, source: AppSource) {
     const uiParams = new URLSearchParams(params);
     if (cacheBust) uiParams.set('_airglow_reload', String(Date.now()));
     return `${baseUrl}/api/apps/${appId}/ui?${uiParams.toString()}`;
+  }
+  function buildUiBundleUrl(cacheBust = false) {
+    const uiParams = new URLSearchParams();
+    if (cacheBust) uiParams.set('_airglow_reload', String(Date.now()));
+    const qs = uiParams.toString();
+    return `${baseUrl}/api/apps/${appId}/ui-bundle${qs ? `?${qs}` : ''}`;
+  }
+  function buildSandboxUrl(cacheBust = false) {
+    const sandboxParams = new URLSearchParams(params);
+    sandboxParams.set('app', appId);
+    sandboxParams.set('nonce', sandboxNonce);
+    if (cacheBust) sandboxParams.set('_airglow_reload', String(Date.now()));
+    return chrome.runtime.getURL(`app-ui-sandbox.html?${sandboxParams.toString()}`);
+  }
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function shouldRetryHttpStatus(status: number): boolean {
+    return status === 408 || status === 409 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+  }
+
+  async function fetchUiBundle(url: string): Promise<Response> {
+    let lastError = '';
+    for (let attempt = 0; attempt <= UI_BUNDLE_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(UI_BUNDLE_FETCH_TIMEOUT_MS) });
+        if (!res.ok && shouldRetryHttpStatus(res.status) && attempt < UI_BUNDLE_RETRY_DELAYS_MS.length) {
+          lastError = `UI bundle request failed with HTTP ${res.status}`;
+          await sleep(UI_BUNDLE_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+        return res;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
+        if (attempt < UI_BUNDLE_RETRY_DELAYS_MS.length) {
+          await sleep(UI_BUNDLE_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+        throw new Error(`UI bundle request failed after ${UI_BUNDLE_RETRY_DELAYS_MS.length + 1} attempts: ${lastError}`);
+      }
+    }
+    throw new Error(`UI bundle request failed: ${lastError}`);
   }
   function setLoading(message: string) {
     let loading = document.getElementById('loading');
@@ -230,8 +286,42 @@ function mountApp(appId: string, source: AppSource) {
     removeCrashOverlay();
     setLoading('Loading...');
     if (!iframe) return;
+    if (source.type === 'cloud') {
+      clearLoadTimer();
+      reloadBundledIframe(cacheBust).catch((error) => {
+        showCrashOverlay(
+          `App '${appId}' failed to load`,
+          error instanceof Error ? error.message : String(error),
+        );
+      });
+      return;
+    }
+    iframe.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms');
     iframe.src = buildUiUrl(cacheBust);
     scheduleLoadTimeout();
+  }
+
+  async function reloadBundledIframe(cacheBust = false) {
+    if (!iframe) return;
+    const res = await fetchUiBundle(buildUiBundleUrl(cacheBust));
+    if (!res.ok) {
+      let detail = `${res.status}`;
+      try {
+        const body = await res.json();
+        if (body?.error) detail = typeof body.error === 'string' ? body.error : JSON.stringify(body.error);
+      } catch {}
+      throw new Error(`UI bundle request failed: ${detail}`);
+    }
+
+    sandboxNonce = crypto.randomUUID();
+    pendingSandboxPayload = {
+      sdk: buildSdkCode(appId),
+      code: await res.text(),
+    };
+
+    iframe.setAttribute('sandbox', 'allow-scripts allow-forms');
+    scheduleLoadTimeout();
+    iframe.src = buildSandboxUrl(cacheBust);
   }
 
   // Bridge all SDK calls and runtime crash notifications from sandbox iframe.
@@ -277,6 +367,18 @@ function mountApp(appId: string, source: AppSource) {
     loadAttempt = 0;
     clearLoadTimer();
     document.getElementById('loading')?.remove();
+    // Cloud-app sandbox handshake: hand off the SDK + bundle now that the
+    // iframe is ready to receive postMessage. The sandbox validates the nonce
+    // and evals via `new Function()` — no `?app=` URL trust, just the nonce.
+    if (pendingSandboxPayload && iframe?.contentWindow) {
+      iframe.contentWindow.postMessage({
+        type: 'airglow:ui:run',
+        appId,
+        nonce: sandboxNonce,
+        ...pendingSandboxPayload,
+      }, '*');
+      pendingSandboxPayload = null;
+    }
   };
   iframe.onerror = () => {
     showCrashOverlay(

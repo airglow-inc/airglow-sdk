@@ -3,22 +3,32 @@
 <head><meta charset="utf-8"></head>
 <body>
 <script>
-// Sandbox for running app startup scripts.
-// Receives { type: 'airglow:startup:run', appId, code, sdk } from parent.
-// Injects the standard airglow SDK, evals the code, reports done.
+// Sandbox for running app startup scripts. unsafe-eval allowed; no chrome.*
+// access — parent bridges only the narrow messages declared by the runner.
 
-window.addEventListener('message', async function(event) {
-  var data = event.data || {};
-  if (data.type !== 'airglow:startup:run') return;
+function errorPayload(e) {
+  return {
+    error: e && e.message ? e.message : String(e),
+    name: e && e.name ? e.name : undefined,
+    stack: e && e.stack ? e.stack : undefined,
+  };
+}
 
+async function runStartup(data) {
   try {
     new Function(data.sdk)();
-    var fn = new Function('return (async () => {\n' + data.code + '\n})();');
+    var fn = new Function('return (async () => {\n' + data.code + '\n})();\n//# sourceURL=airglow-startup://' + data.appId);
     await fn();
     window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, ok: true }, '*');
   } catch (e) {
-    window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, ok: false, error: e.message }, '*');
+    window.parent.postMessage({ type: 'airglow:startup:done', appId: data.appId, ok: false, ...errorPayload(e) }, '*');
   }
+}
+
+window.addEventListener('message', async function(event) {
+  if (event.source !== window.parent) return;
+  var data = event.data || {};
+  if (data.type === 'airglow:startup:run') await runStartup(data);
 });
 
 window.parent.postMessage({ type: 'airglow:startup:ready' }, '*');

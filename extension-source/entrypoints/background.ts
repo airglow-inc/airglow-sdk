@@ -1,7 +1,7 @@
 import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
-import { loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest } from '../lib/app-loader';
+import { APP_INVENTORY_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackInstalled } from '../lib/analytics';
 import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
@@ -59,6 +59,9 @@ export default defineBackground(() => {
   // ───── Airglow app platform ─────
   const lastAppHashes = new Map<string, string>(); // appId → _hash
   let loadGeneration = 0; // bumped on each call; stale runs abort before registering
+  // Inventory list (both copies of an app that exists in local + cloud sources).
+  // Runtime list dedupes local-wins; the dashboard wants to surface both.
+  let dashboardAppManifests: SourcedManifest[] = [];
 
   async function getDisabledApps(): Promise<Set<string>> {
     return new Promise((resolve) => {
@@ -74,6 +77,7 @@ export default defineBackground(() => {
   // manifest field is ignored, so toggling a defaultEnabled:false app on in
   // the dashboard sticks across dev-server restarts.
   const SEEN_APPS_KEY = '__seen_apps';
+  const APP_SOURCE_OVERRIDE_KEY = '__app_source_override';
 
   // Migration path: when SEEN_APPS_KEY is missing (pre-feature install) but
   // __app_manifests already has entries, seed seen with those ids without
@@ -298,24 +302,36 @@ export default defineBackground(() => {
     const isSeenMigration = prior[SEEN_APPS_KEY] === undefined;
     const priorManifests = (prior['__app_manifests'] as AppManifest[] | undefined) || [];
 
-    const { reachable, manifests: allManifests, fromCache } = await loadAppManifests();
+    // Per-appId source override: when a cloud app is shadowed by a local copy,
+    // the user can click "Use cloud version" → cloud takes the runtime slot.
+    const overridesRes = await chrome.storage.local.get(APP_SOURCE_OVERRIDE_KEY);
+    const sourceOverrides = (overridesRes[APP_SOURCE_OVERRIDE_KEY] as AppSourceOverrides | undefined) || {};
+    const { reachable, localReachable, usedCachedLocalManifests, manifests: allManifests, inventoryManifests } = await loadAppManifests(sourceOverrides);
 
-    await setDevServerOnline(reachable);
-    if (reachable) refreshUpdateStatus();
+    await setDevServerOnline(localReachable);
+    if (localReachable) refreshUpdateStatus();
 
-    // Offline + no cached manifests = nothing to register. Clean up dev secrets
-    // so they don't linger from a previous server we no longer talk to.
-    if (!reachable && allManifests.length === 0) {
+    // Local dev server going offline → clean up dev secrets so they don't
+    // linger from a previous workspace we no longer talk to. Cached-local
+    // replay still counts as offline for this purpose.
+    if (!localReachable) {
       await cleanupDevSecrets();
+    }
+
+    // Nothing from any source — clear in-memory + early-exit. The handler's
+    // own hydrate-from-storage fallback handles the SW-restart race.
+    if (!reachable) {
       lastAppHashes.clear();
+      dashboardAppManifests = [];
+      setAppManifests([]);
       return;
     }
 
-    // Offline path: register from cache so existing apps keep working across
-    // SW restarts. Skip server-state-dependent housekeeping — there's no fresh
-    // signal to act on, and clearing lastAppHashes here would force a
-    // pointless full re-register on every poll while offline.
-    if (fromCache) {
+    // Cached-local replay (dev server briefly offline, cloud may still be
+    // up): keep userscripts working across SW restarts. Skip housekeeping —
+    // no fresh signal to act on.
+    if (usedCachedLocalManifests && allManifests.length > 0) {
+      dashboardAppManifests = inventoryManifests;
       setAppManifests(allManifests);
       const disabled = await getDisabledApps();
       const manifests = allManifests.filter(m => !disabled.has(m.id));
@@ -333,6 +349,7 @@ export default defineBackground(() => {
     const manifests = allManifests.filter(m => !disabled.has(m.id));
 
     // Keep full list in message handler (for dashboard queries etc.)
+    dashboardAppManifests = inventoryManifests;
     setAppManifests(allManifests);
 
     // Detect which apps changed (by per-app _hash from dev server). lastAppHashes
@@ -914,13 +931,8 @@ export default defineBackground(() => {
     });
   }
 
-  if (runtimeConfig.enableNativeHost) {
-    setNativeHostConnected(false); // seed: dashboard shows "Disconnected" until the host replies
-    connectNativeHost();
-  } else {
-    chrome.storage.local.remove(NATIVE_HOST_CONNECTED_KEY); // hide the indicator entirely
-    log('native host disabled for this build profile');
-  }
+  setNativeHostConnected(false); // seed: dashboard shows "Disconnected" until the host replies
+  connectNativeHost();
 
 
 
@@ -1074,6 +1086,24 @@ export default defineBackground(() => {
       const appId = msg.appId;
       lastAppHashes.delete(appId);
       loadAndRegisterApps().then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:set-source-override') {
+      const appId = String(msg.appId || '');
+      const sourceType = msg.sourceType as 'local' | 'cloud' | null;
+      chrome.storage.local.get(APP_SOURCE_OVERRIDE_KEY).then(async (result) => {
+        const overrides = (result[APP_SOURCE_OVERRIDE_KEY] as AppSourceOverrides | undefined) || {};
+        if (sourceType === null) {
+          delete overrides[appId];
+        } else {
+          overrides[appId] = sourceType;
+        }
+        await chrome.storage.local.set({ [APP_SOURCE_OVERRIDE_KEY]: overrides });
+        lastAppHashes.delete(appId);
+        await loadAndRegisterApps(true, true);
+        sendResponse({ ok: true });
+      }).catch((e) => sendResponse({ error: e.message }));
       return true;
     }
 
@@ -1235,6 +1265,27 @@ export default defineBackground(() => {
 
     if (msg?.type === 'airglow:get-manifests') {
       sendResponse({ manifests: getAppManifests() });
+      return true;
+    }
+
+    // Dashboard inventory message: returns BOTH copies of an app that exists
+    // in local + cloud sources (runtime list dedupes; this list doesn't),
+    // so the dashboard can render shadowed-cloud rows with a badge.
+    // Falls back to in-memory runtime list if inventory storage is empty
+    // (first boot, or older install pre-Batch-4).
+    if (msg?.type === 'airglow:get-dashboard-manifests') {
+      if (dashboardAppManifests.length > 0) {
+        sendResponse({ manifests: dashboardAppManifests });
+        return true;
+      }
+      chrome.storage.local.get(APP_INVENTORY_MANIFESTS_KEY).then((result) => {
+        const cached = Array.isArray(result[APP_INVENTORY_MANIFESTS_KEY])
+          ? result[APP_INVENTORY_MANIFESTS_KEY]
+          : getAppManifests();
+        sendResponse({ manifests: cached });
+      }).catch(() => {
+        sendResponse({ manifests: getAppManifests() });
+      });
       return true;
     }
 

@@ -3,7 +3,7 @@
  * Provides storage, fetch, logging, RPC proxying, and platform capabilities.
  */
 
-import type { SourcedManifest } from './app-loader';
+import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
 import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 import { trackIdentified } from './analytics';
@@ -14,6 +14,11 @@ const DEV_SECRET_PREFIX = 'airglow:dev-secret:';
 const DEFAULT_POPUP_WIDTH = 520;
 const DEFAULT_POPUP_HEIGHT = 720;
 const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
+const APP_MANIFESTS_KEY = '__app_manifests';
+const REMOTE_RPC_TIMEOUT_MS = 30000;
+const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
+const LLM_TIMEOUT_MS = 60000;
+const LLM_RETRY_DELAYS_MS = [500, 1500];
 
 async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string }> {
   const stored = await chrome.storage.local.get([USER_EMAIL_KEY, AIRGLOW_USER_ID_KEY]);
@@ -28,6 +33,126 @@ async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string
   };
 }
 
+function buildIdentityHeaders(identity: { email?: string; userId: string }): Record<string, string> {
+  return {
+    'X-Airglow-User-Id': identity.userId,
+    ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function shouldRetryHttpStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+type RemoteRpcError = Error & {
+  code?: string;
+  status?: number;
+  requestId?: string;
+  details?: unknown;
+};
+
+function toRemoteRpcError(functionName: string, res: Response, result: unknown): RemoteRpcError {
+  const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+  const nestedError = envelope.error && typeof envelope.error === 'object'
+    ? envelope.error as Record<string, any>
+    : undefined;
+  const message =
+    (nestedError && typeof nestedError.message === 'string' ? nestedError.message : undefined) ||
+    (typeof envelope.error === 'string' ? envelope.error : undefined) ||
+    `RPC '${functionName}' failed with HTTP ${res.status}`;
+  const error = new Error(message) as RemoteRpcError;
+  error.code =
+    (nestedError && typeof nestedError.code === 'string' ? nestedError.code : undefined) ||
+    (typeof envelope.code === 'string' ? envelope.code : undefined) ||
+    'RPC_HTTP_ERROR';
+  error.status = res.status;
+  error.requestId =
+    (nestedError && typeof nestedError.requestId === 'string' ? nestedError.requestId : undefined) ||
+    (typeof envelope.requestId === 'string' ? envelope.requestId : undefined) ||
+    res.headers.get('x-request-id') ||
+    undefined;
+  error.details = result;
+  return error;
+}
+
+function toRemoteRpcNetworkError(functionName: string, error: unknown): RemoteRpcError {
+  if (error instanceof Error && (error as RemoteRpcError).code) return error as RemoteRpcError;
+  const message = error instanceof Error ? error.message : String(error);
+  const next = new Error(`RPC '${functionName}' network request failed: ${message}`) as RemoteRpcError;
+  next.code = 'RPC_NETWORK_ERROR';
+  next.details = error instanceof Error ? { name: error.name, message: error.message } : error;
+  return next;
+}
+
+/**
+ * Server execution: POST payload to the source's RPC endpoint with identity
+ * headers. Retries transient HTTP failures + AbortError.
+ */
+async function executeRemoteRpc(
+  appId: string,
+  source: AppSource,
+  functionName: string,
+  payload: unknown,
+): Promise<unknown> {
+  const identity = await getAirglowRpcIdentity();
+  const baseUrl = source.url.replace(/\/+$/, '');
+  const url = `${baseUrl}/api/apps/${encodeURIComponent(appId)}/rpc/${encodeURIComponent(functionName)}`;
+  const requestInit: RequestInit = {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...buildIdentityHeaders(identity),
+    },
+    body: JSON.stringify(payload),
+  };
+
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= REMOTE_RPC_RETRY_DELAYS_MS.length; attempt++) {
+    try {
+      const res = await fetchWithTimeout(url, requestInit, REMOTE_RPC_TIMEOUT_MS);
+      const text = await res.text();
+      let result;
+      try { result = JSON.parse(text); } catch { result = text; }
+      if (!res.ok) {
+        const error = toRemoteRpcError(functionName, res, result);
+        lastError = error;
+        if (shouldRetryHttpStatus(res.status) && attempt < REMOTE_RPC_RETRY_DELAYS_MS.length) {
+          await sleep(REMOTE_RPC_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+        throw error;
+      }
+      return result;
+    } catch (error) {
+      lastError = error;
+      const rawStatus = (error as RemoteRpcError)?.status;
+      const status = typeof rawStatus === 'number' ? rawStatus : null;
+      if (status !== null && !shouldRetryHttpStatus(status)) {
+        throw error;
+      }
+      if (attempt < REMOTE_RPC_RETRY_DELAYS_MS.length) {
+        await sleep(REMOTE_RPC_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+    }
+  }
+  throw toRemoteRpcNetworkError(functionName, lastError);
+}
+
 /**
  * Fetch via page context: injects a content script into a tab on the target domain.
  * Gives correct cookies (SameSite), Sec-Fetch-* headers, and origin — indistinguishable from a real page request.
@@ -38,7 +163,6 @@ async function fetchViaPage(
   const targetUrl = new URL(url);
   const targetOrigin = targetUrl.origin;
 
-  // Find an existing tab on the target domain
   const tabs = await chrome.tabs.query({ url: `${targetUrl.protocol}//${targetUrl.hostname}/*` });
   let tabId: number;
   let createdTab = false;
@@ -46,11 +170,9 @@ async function fetchViaPage(
   if (tabs.length > 0) {
     tabId = tabs[0].id!;
   } else {
-    // Create a background tab on the target domain
     const tab = await chrome.tabs.create({ url: targetOrigin, active: false });
     tabId = tab.id!;
     createdTab = true;
-    // Wait for page to load
     await new Promise<void>((resolve) => {
       const listener = (id: number, info: any) => {
         if (id === tabId && info.status === 'complete') {
@@ -97,18 +219,36 @@ async function fetchViaPage(
 }
 
 let appManifests: SourcedManifest[] = [];
-const appSourceMap = new Map<string, string>(); // appId → base URL
+const appSourceMap = new Map<string, AppSource>();
 
 export function setAppManifests(manifests: SourcedManifest[]): void {
   appManifests = manifests;
   appSourceMap.clear();
   for (const m of manifests) {
-    appSourceMap.set(m.id, m._source.url);
+    appSourceMap.set(m.id, m._source);
   }
 }
 
 export function getAppManifests(): SourcedManifest[] {
   return appManifests;
+}
+
+/**
+ * MV3 SW death race: the SW gets killed when idle. When it wakes up to handle
+ * a message, in-memory `appManifests` is empty and every dispatch fails with
+ * "unknown appId". Re-hydrate from chrome.storage on cache miss.
+ */
+async function hydrateAppManifestsFromStorage(): Promise<void> {
+  if (appManifests.length > 0) return;
+  try {
+    const result = await chrome.storage.local.get(APP_MANIFESTS_KEY);
+    const cached = result[APP_MANIFESTS_KEY];
+    if (Array.isArray(cached) && cached.length > 0) {
+      setAppManifests(cached as SourcedManifest[]);
+    }
+  } catch (error) {
+    logger.warn('airglow', `cached manifest hydration failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function isClientSetting(appId: string, key: string): boolean {
@@ -117,10 +257,6 @@ function isClientSetting(appId: string, key: string): boolean {
   return key in (manifest.secrets as Record<string, any>);
 }
 
-/**
- * Check if a URL matches a Chrome extension match pattern.
- * Pattern: <scheme>://<host>/<path>  (supports *, *.domain, path wildcards)
- */
 function matchesPattern(pattern: string, url: string): boolean {
   try {
     const u = new URL(url);
@@ -143,20 +279,15 @@ function matchesPattern(pattern: string, url: string): boolean {
   }
 }
 
-function isUrlAllowedForCookies(appId: string, url: string): boolean {
+function isUrlAllowedForFetch(appId: string, url: string): boolean {
   const manifest = appManifests.find((m) => m.id === appId);
   if (!manifest?.host_permissions?.length) return false;
   return manifest.host_permissions.some((p) => matchesPattern(p, url));
 }
 
-/** Callback invoked when a validated app log message is persisted. */
 export type OnAppLog = (appId: string, level: 'info' | 'warn' | 'error', sender: chrome.runtime.MessageSender) => void;
-
 let _onAppLog: OnAppLog | undefined;
-
-export function setOnAppLog(cb: OnAppLog): void {
-  _onAppLog = cb;
-}
+export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
 
 export function handleAirglowMessage(
   msg: any,
@@ -183,27 +314,37 @@ export function handleAirglowMessage(
     } catch {}
   }
 
-  // Validate appId exists in loaded manifests
+  const continueWithKnownApp = () => {
+    if (!appManifests.some((m) => m.id === appId)) {
+      sendResponse({ error: `unknown appId: ${appId}` });
+      return;
+    }
+
+    const senderWorldId = (_sender as any).userScriptWorldId as string | undefined;
+    if (senderWorldId) {
+      const expectedWorldId = `airglow:${appId}`;
+      if (senderWorldId !== expectedWorldId) {
+        sendResponse({ error: `appId mismatch: claimed ${appId}, world is ${senderWorldId}` });
+        return;
+      }
+    }
+
+    const storageKey = (key: string) => `${STORAGE_PREFIX}${appId}:${key}`;
+    const handled = dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse);
+    if (!handled) sendResponse({ error: `unknown message type: ${msg.type}`, code: 'UNKNOWN_MESSAGE_TYPE' });
+  };
+
   if (!appManifests.some((m) => m.id === appId)) {
-    sendResponse({ error: `unknown appId: ${appId}` });
+    hydrateAppManifestsFromStorage()
+      .then(continueWithKnownApp)
+      .catch((error) => {
+        logger.warn('airglow', `cached manifest hydration failed: ${error instanceof Error ? error.message : String(error)}`);
+        sendResponse({ error: `unknown appId: ${appId}` });
+      });
     return true;
   }
 
-  // Validate sender identity via browser-enforced worldId (userscripts)
-  // or sender URL (app-shell extension pages). No shared secret needed.
-  const senderWorldId = (_sender as any).userScriptWorldId as string | undefined;
-  if (senderWorldId) {
-    const expectedWorldId = `airglow:${appId}`;
-    if (senderWorldId !== expectedWorldId) {
-      sendResponse({ error: `appId mismatch: claimed ${appId}, world is ${senderWorldId}` });
-      return true;
-    }
-  }
-
-  const storageKey = (key: string) => `${STORAGE_PREFIX}${appId}:${key}`;
-
-  const handled = dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse);
-  if (!handled) sendResponse({ error: `unknown message type: ${msg.type}`, code: 'UNKNOWN_MESSAGE_TYPE' });
+  continueWithKnownApp();
   return true;
 }
 
@@ -256,18 +397,28 @@ function dispatchAirglowMessage(
     }
 
     case 'airglow:fetch': {
+      // host_permissions enforcement applies to ALL fetches (not just cookie
+      // ones). Without this, a cloud app could exfiltrate to any URL via
+      // the extension's privileged context (CORS-bypass, no SOP).
+      let targetUrl: URL;
+      try {
+        targetUrl = new URL(String(msg.url || ''));
+      } catch {
+        sendResponse({ error: 'invalid fetch URL', code: 'INVALID_FETCH_URL' });
+        return true;
+      }
+      if (!isUrlAllowedForFetch(appId, targetUrl.href)) {
+        sendResponse({
+          error: `app "${appId}" lacks host_permissions for ${targetUrl.hostname}`,
+          code: 'FETCH_HOST_PERMISSION_DENIED',
+        });
+        return true;
+      }
       if (msg.includeCookies) {
-        // Page-context fetch: inject into a tab on the target domain.
-        // This gives correct cookies (including SameSite) and Sec-Fetch-* headers.
-        if (!isUrlAllowedForCookies(appId, msg.url)) {
-          sendResponse({ error: `app "${appId}" lacks host_permissions for ${new URL(msg.url).hostname}` });
-          return true;
-        }
         fetchViaPage(msg.url, msg.method, msg.headers, msg.body)
           .then((result) => sendResponse(result))
           .catch((e) => sendResponse({ error: e.message }));
       } else {
-        // SW fetch: CORS-free, no cookies
         const fetchOpts: RequestInit = {
           method: msg.method || 'GET',
           headers: msg.headers,
@@ -295,89 +446,100 @@ function dispatchAirglowMessage(
     }
 
     case 'airglow:rpc': {
-      const baseUrl = appSourceMap.get(appId);
-      if (!baseUrl) {
-        console.error(`[airglow] RPC failed: no source registered for app '${appId}'`);
+      const source = appSourceMap.get(appId);
+      if (!source) {
+        logger.warn('airglow', `RPC failed: no source registered for app '${appId}'`);
         sendResponse({
-          error: `No source registered for app '${appId}'. Is the dev server running?`,
+          error: `No source registered for app '${appId}'. Is an app source reachable?`,
           code: 'RPC_SOURCE_NOT_REGISTERED',
         });
         return true;
       }
-      getAirglowRpcIdentity()
-        .then((identity) => fetch(`${baseUrl}/api/apps/${appId}/rpc/${msg.functionName}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Airglow-User-Id': identity.userId,
-            ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
-          },
-          body: JSON.stringify(msg.payload),
-        }))
-        .then(async (res) => {
-          const text = await res.text();
-          let result;
-          try { result = JSON.parse(text); } catch { result = text; }
-          if (!res.ok) {
-            const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
-            sendResponse({
-              error: typeof envelope.error === 'string'
-                ? envelope.error
-                : `RPC '${msg.functionName}' failed with HTTP ${res.status}`,
-              code: typeof envelope.code === 'string' ? envelope.code : 'RPC_HTTP_ERROR',
-              status: res.status,
-              requestId: typeof envelope.requestId === 'string' ? envelope.requestId : undefined,
-              details: result,
-            });
-            return;
-          }
-          sendResponse({ result });
-        })
-        .catch((e) => sendResponse({ error: e.message, code: 'RPC_NETWORK_ERROR' }));
+      // Server-eval against whichever source owns this app: local apps run on
+      // the dev server, cloud apps run on the cloud. No client-side execution.
+      executeRemoteRpc(appId, source, String(msg.functionName || ''), msg.payload)
+        .then((result) => sendResponse({ result }))
+        .catch((e) => {
+          sendResponse({
+            error: e instanceof Error ? e.message : String(e),
+            code: (e as any)?.code || 'RPC_NETWORK_ERROR',
+            status: (e as any)?.status,
+            requestId: (e as any)?.requestId,
+            details: (e as any)?.details,
+          });
+        });
       return true;
     }
 
     case 'airglow:llm:anthropic:messages': {
-      const baseUrl = appSourceMap.get(appId);
-      if (!baseUrl) {
-        console.error(`[airglow] LLM request failed: no source registered for app '${appId}'`);
+      const source = appSourceMap.get(appId);
+      if (!source) {
         sendResponse({
           error: `No source registered for app '${appId}'. Is an app source reachable?`,
           code: 'LLM_SOURCE_NOT_REGISTERED',
         });
         return true;
       }
-      getAirglowRpcIdentity()
-        .then((identity) => fetch(`${baseUrl}/api/llm/anthropic/messages`, {
+      const baseUrl = source.url.replace(/\/+$/, '');
+      const url = `${baseUrl}/api/llm/anthropic/messages`;
+      (async () => {
+        const identity = await getAirglowRpcIdentity();
+        const requestInit: RequestInit = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'X-Airglow-App-Id': appId,
-            'X-Airglow-User-Id': identity.userId,
-            ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
+            ...buildIdentityHeaders(identity),
           },
           body: JSON.stringify(msg.payload),
-        }))
-        .then(async (res) => {
-          const text = await res.text();
-          let result;
-          try { result = JSON.parse(text); } catch { result = text; }
-          if (!res.ok) {
-            const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
-            sendResponse({
-              error: typeof envelope.error === 'string'
-                ? envelope.error
-                : `LLM request failed with HTTP ${res.status}`,
-              code: typeof envelope.code === 'string' ? envelope.code : 'LLM_HTTP_ERROR',
-              status: res.status,
-              requestId: typeof envelope.requestId === 'string' ? envelope.requestId : undefined,
-              details: result,
-            });
+        };
+
+        let lastError: unknown;
+        for (let attempt = 0; attempt <= LLM_RETRY_DELAYS_MS.length; attempt++) {
+          try {
+            const res = await fetchWithTimeout(url, requestInit, LLM_TIMEOUT_MS);
+            const text = await res.text();
+            let result;
+            try { result = JSON.parse(text); } catch { result = text; }
+            if (!res.ok) {
+              const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+              const error = new Error(
+                typeof envelope.error === 'string'
+                  ? envelope.error
+                  : `LLM request failed with HTTP ${res.status}`,
+              ) as Error & { code?: string; status?: number; requestId?: string; details?: unknown };
+              error.code = typeof envelope.code === 'string' ? envelope.code : 'LLM_HTTP_ERROR';
+              error.status = res.status;
+              error.requestId = typeof envelope.requestId === 'string' ? envelope.requestId : undefined;
+              error.details = result;
+              lastError = error;
+              if (shouldRetryHttpStatus(res.status) && attempt < LLM_RETRY_DELAYS_MS.length) {
+                await sleep(LLM_RETRY_DELAYS_MS[attempt]);
+                continue;
+              }
+              throw error;
+            }
+            sendResponse({ result });
             return;
+          } catch (error) {
+            lastError = error;
+            const status = typeof (error as any)?.status === 'number' ? (error as any).status : null;
+            if (status !== null && !shouldRetryHttpStatus(status)) break;
+            if (attempt < LLM_RETRY_DELAYS_MS.length) {
+              await sleep(LLM_RETRY_DELAYS_MS[attempt]);
+              continue;
+            }
           }
-          sendResponse({ result });
-        })
-        .catch((e) => sendResponse({ error: e.message, code: 'LLM_NETWORK_ERROR' }));
+        }
+        const err = lastError as any;
+        sendResponse({
+          error: err instanceof Error ? err.message : String(err),
+          code: err?.code || 'LLM_NETWORK_ERROR',
+          status: err?.status,
+          requestId: err?.requestId,
+          details: err?.details,
+        });
+      })().catch((e) => sendResponse({ error: e?.message || String(e), code: 'LLM_NETWORK_ERROR' }));
       return true;
     }
 
@@ -402,8 +564,6 @@ function dispatchAirglowMessage(
       }
       chrome.storage.local.set({ [USER_EMAIL_KEY]: email }, () => {
         sendResponse({ ok: true, email });
-        // First-time identification — fire-and-forget. trackIdentified dedupes
-        // via __airglow_identified_tracked, so this can run on every set.
         trackIdentified().catch((e) =>
           logger.warn('airglow', `trackIdentified failed: ${e instanceof Error ? e.message : String(e)}`)
         );
@@ -503,14 +663,12 @@ function dispatchAirglowMessage(
     }
 
     case 'airglow:platform:registerRedirects': {
-      // Store redirect rules namespaced per app under a shared platform key.
-      // Background reads this to set up webNavigation listeners.
       const REDIRECTS_KEY = '__platform:redirects';
       chrome.storage.local.get(REDIRECTS_KEY, (result) => {
         const all: Record<string, any[]> = result[REDIRECTS_KEY] as Record<string, any[]> || {};
         all[appId] = msg.rules || [];
         chrome.storage.local.set({ [REDIRECTS_KEY]: all }, () => {
-          console.log(`[airglow/${appId}] Stored ${(msg.rules || []).length} redirect rule(s)`);
+          logger.info(appId, `stored ${(msg.rules || []).length} redirect rule(s)`);
           sendResponse({ ok: true });
         });
       });
@@ -518,14 +676,12 @@ function dispatchAirglowMessage(
     }
 
     case 'airglow:platform:allowIframes': {
-      // Store iframe-allowed domains per app. Background syncs declarativeNetRequest rules.
       const IFRAME_KEY = '__platform:iframeAllow';
       chrome.storage.local.get(IFRAME_KEY, (result) => {
         const all: Record<string, any> = result[IFRAME_KEY] as Record<string, any> || {};
         all[appId] = { domains: msg.domains || [], initiators: msg.initiators || [] };
         chrome.storage.local.set({ [IFRAME_KEY]: all }, () => {
-          console.log(`[airglow/${appId}] Stored ${(msg.domains || []).length} iframe-allow domain(s)`);
-          // Background picks up the change via storage.onChanged → syncIframeRules
+          logger.info(appId, `stored ${(msg.domains || []).length} iframe-allow domain(s)`);
           sendResponse({ ok: true });
         });
       });

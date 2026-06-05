@@ -13,7 +13,7 @@ function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { siz
 }
 import LogsPage from './LogsPage';
 import { normalizeUserEmail, USER_EMAIL_KEY } from '../../lib/airglow-identity';
-import { getOfficialAppSourceUrl } from '../../lib/app-source-config';
+import { getCloudAppSourceUrl } from '../../lib/app-source-config';
 
 const DEV_PORT_KEY = '__dev_port';
 const APP_ORDER_KEY = '__app_order';
@@ -40,7 +40,7 @@ async function getFeedbackVisitorId(): Promise<string> {
 }
 
 async function getFeedbackEndpoint(): Promise<string> {
-  const baseUrl = getOfficialAppSourceUrl();
+  const baseUrl = getCloudAppSourceUrl();
   const fallbackEndpoint = new URL('/api/feedback', `${baseUrl}/`).toString();
   let res: Response;
   try {
@@ -66,7 +66,9 @@ async function getFeedbackEndpoint(): Promise<string> {
   return new URL(endpoint, `${endpointBase}/`).toString();
 }
 
-type AppVisibility = 'public' | 'development' | 'hidden';
+type AppVisibility = 'public' | 'hidden';
+
+type AppSourceType = 'local' | 'cloud';
 
 interface AppManifest {
   id: string;
@@ -75,7 +77,7 @@ interface AppManifest {
   tags?: string[];
   secrets?: Record<string, { label?: string }>;
   visibility?: AppVisibility;
-  _sourceType: 'local' | 'public';
+  _sourceType: AppSourceType;
   // Dev-server-injected: names of `server/*.ts` RPC handlers. Non-empty list
   // means RPC calls will fail when the dev server is down — surfaced as a
   // warning chip in the dashboard.
@@ -88,15 +90,41 @@ interface SecretKey {
 }
 
 function isVisibleApp(app: AppManifest): boolean {
-  return app.id !== 'dashboard' && app.visibility !== 'hidden';
+  return app.id !== 'dashboard';
 }
 
-function isPublishedApp(app: AppManifest): boolean {
-  return app._sourceType === 'public' && (app.visibility ?? 'public') === 'public';
+function isCloudApp(app: AppManifest): boolean {
+  return app._sourceType === 'cloud';
 }
 
-function isDevelopmentApp(app: AppManifest): boolean {
-  return app._sourceType === 'public' && app.visibility === 'development';
+// Inventory keys both copies of an app that exists in local + cloud sources.
+// React keys use this so both rows render side-by-side without collision.
+function appIdentityKey(app: Pick<AppManifest, 'id' | '_sourceType'>): string {
+  return `${app._sourceType}:${app.id}`;
+}
+
+type AppSourceOverrides = Record<string, 'local' | 'cloud'>;
+
+// Which source actually owns the runtime slot for `appId`. Local wins by
+// default on collision; an override flips the winner.
+function activeSourceForApp(
+  appId: string,
+  inventory: AppManifest[] | null,
+  overrides: AppSourceOverrides,
+): 'local' | 'cloud' {
+  const override = overrides[appId];
+  if (override) return override;
+  const hasLocal = Boolean(inventory?.some((m) => m.id === appId && m._sourceType === 'local'));
+  return hasLocal ? 'local' : 'cloud';
+}
+
+// True when an other-source copy of this appId exists AND that other copy is
+// the one actually running. The row gets a "Use this version" button to flip
+// the override.
+function isShadowed(app: AppManifest, inventory: AppManifest[] | null, overrides: AppSourceOverrides): boolean {
+  const hasOther = Boolean(inventory?.some((m) => m.id === app.id && m._sourceType !== app._sourceType));
+  if (!hasOther) return false;
+  return activeSourceForApp(app.id, inventory, overrides) !== app._sourceType;
 }
 
 export default function App() {
@@ -116,6 +144,7 @@ export default function App() {
   const [error, setError] = useState(false);
   const [reloadingApp, setReloadingApp] = useState<string | null>(null);
   const [disabledApps, setDisabledApps] = useState<Set<string>>(new Set());
+  const [sourceOverrides, setSourceOverrides] = useState<AppSourceOverrides>({});
   const [devPort, setDevPort] = useState(DEFAULT_DEV_PORT);
   const [portInput, setPortInput] = useState(String(DEFAULT_DEV_PORT));
   const [localOnline, setLocalOnline] = useState<boolean | null>(null);
@@ -221,50 +250,20 @@ export default function App() {
   async function loadAll(port?: number) {
     const localUrl = `http://127.0.0.1:${port ?? devPort}`;
 
-    let manifests: AppManifest[] = [];
-    let online = false;
-    try {
-      const res = await fetch(`${localUrl}/api/apps/manifests`, { signal: AbortSignal.timeout(2000) });
-      if (!res.ok) throw new Error(`${res.status}`);
-      const raw = await res.json();
-      manifests = raw.map((m: any) => ({ ...m, _sourceType: 'local' as const }));
-      online = true;
-    } catch {
-      online = false;
-    }
+    // The background loader runs against both local + cloud sources and
+    // persists the inventory. Read the dev-server-online flag and the inventory
+    // in one round-trip instead of re-fetching manifests ourselves.
+    const [stored, manifestRes] = await Promise.all([
+      chrome.storage.local.get('__dev_server_online'),
+      chrome.runtime.sendMessage({ type: 'airglow:get-dashboard-manifests' }).catch(() => null),
+    ]);
+    const manifests: AppManifest[] = Array.isArray(manifestRes?.manifests) ? manifestRes.manifests : [];
+    const online = Boolean(stored['__dev_server_online']);
 
     setLocalOnline(online);
-    if (!online) {
-      // Dev server unreachable. Fall back to the last manifest snapshot the
-      // background loader persisted — the dashboard stays usable for
-      // toggling, secrets, and logs even when the server is down.
-      const cached: AppManifest[] = await new Promise((resolve) => {
-        chrome.storage.local.get('__app_manifests', (r) => {
-          const arr = (r['__app_manifests'] as any[] | undefined) || [];
-          resolve(arr.map((m) => ({ ...m, _sourceType: 'local' as const })));
-        });
-      });
-      if (cached.length > 0) {
-        setError(false);
-        const appsById = new Map<string, AppManifest>();
-        for (const app of cached) {
-          if (!appsById.has(app.id)) appsById.set(app.id, app);
-        }
-        setApps(Array.from(appsById.values()).filter(isVisibleApp));
-      } else {
-        setError(true);
-        setApps([]);
-      }
-    } else {
-      setError(false);
-      const appsById = new Map<string, AppManifest>();
-      for (const app of manifests) {
-        if (!appsById.has(app.id)) appsById.set(app.id, app);
-      }
-      setApps(Array.from(appsById.values()).filter(isVisibleApp));
-    }
+    setError(!online && manifests.length === 0);
+    setApps(manifests.filter(isVisibleApp));
 
-    // Load manifests with settings from background + current secrets
     loadSecretsState();
 
     if (online) {
@@ -287,7 +286,7 @@ export default function App() {
   }
 
   function loadSecretsState() {
-    chrome.runtime.sendMessage({ type: 'airglow:get-manifests' }, (res) => {
+    chrome.runtime.sendMessage({ type: 'airglow:get-dashboard-manifests' }, (res) => {
       if (res?.manifests) setFullManifests(res.manifests);
     });
     chrome.runtime.sendMessage({ type: 'airglow:secrets:get-all' }, (res) => {
@@ -341,7 +340,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
+    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
       const port = (result[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT;
       const savedEmail = normalizeUserEmail(result[USER_EMAIL_KEY]) || '';
       const nh = result['__native_host_connected'];
@@ -349,6 +348,7 @@ export default function App() {
       setDevPort(port);
       setPortInput(String(port));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
+      setSourceOverrides((result['__app_source_override'] as AppSourceOverrides | undefined) || {});
       setUserEmail(savedEmail || null);
       setEmailInput(savedEmail);
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
@@ -361,7 +361,7 @@ export default function App() {
     // to __dev_server_online — react to transitions so the dashboard updates
     // live (no manual reload needed when the server comes back).
     const onChange = (changes: Record<string, chrome.storage.StorageChange>) => {
-      if ('__dev_server_online' in changes) {
+      if ('__dev_server_online' in changes || '__app_inventory_manifests' in changes || '__app_manifests' in changes) {
         chrome.storage.local.get(DEV_PORT_KEY, (r) => {
           loadAll(((r[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT));
         });
@@ -380,6 +380,9 @@ export default function App() {
       if ('__disabled_apps' in changes) {
         const arr = (changes['__disabled_apps'].newValue as string[] | undefined) || [];
         setDisabledApps(new Set(arr));
+      }
+      if ('__app_source_override' in changes) {
+        setSourceOverrides((changes['__app_source_override'].newValue as AppSourceOverrides | undefined) || {});
       }
       // Background's 60-min remote-manifest check writes this; keep the
       // banner in sync with the toolbar badge.
@@ -487,6 +490,14 @@ export default function App() {
     });
   }
 
+  // Click "Use this version" on a shadowed row: tell background to set the
+  // override so this row's source wins runtime. Cloud → sourceType: 'cloud'.
+  // Local → sourceType: null (clears override; local is the default).
+  function setSourceOverride(app: AppManifest) {
+    const sourceType = app._sourceType === 'cloud' ? 'cloud' : null;
+    chrome.runtime.sendMessage({ type: 'airglow:set-source-override', appId: app.id, sourceType });
+  }
+
   function toggleApp(appId: string) {
     // Optimistic UI; storage listener below reconciles from the authoritative
     // disabled set once the background has written it.
@@ -510,7 +521,7 @@ export default function App() {
   // ── Secrets modal ──
 
   function openSecrets() {
-    chrome.runtime.sendMessage({ type: 'airglow:get-manifests' }, (res) => {
+    chrome.runtime.sendMessage({ type: 'airglow:get-dashboard-manifests' }, (res) => {
       const manifests: AppManifest[] = res?.manifests || [];
 
       chrome.runtime.sendMessage({ type: 'airglow:secrets:get-all' }, (secretsRes) => {
@@ -554,20 +565,31 @@ export default function App() {
     });
   }
 
-  // Compute missing secrets for an app
-  function getMissingSecrets(appId: string): string[] {
-    const manifest = fullManifests.find((m) => m.id === appId);
+  // Compute missing secrets for an app. Source-qualified lookup so a
+  // cloud+local pair of the same id don't pick each other's manifest.
+  function getMissingSecrets(app: Pick<AppManifest, 'id' | '_sourceType' | 'secrets'>): string[] {
+    const manifest = fullManifests.find((m) => m.id === app.id && m._sourceType === app._sourceType)
+      || apps?.find((m) => m.id === app.id && m._sourceType === app._sourceType)
+      || app;
     if (!manifest?.secrets) return [];
     return Object.entries(manifest.secrets)
       .filter(([k]) => !userSecrets[k] && !devSecrets[k])
       .map(([k, v]) => `${v.label || k} (${k})`);
   }
 
-  // Which apps need a specific key and it's missing?
+  // Which apps need a specific key and it's missing? Dedupe by appId since
+  // the inventory may contain two copies — only one runs, so list it once.
   function getAppsNeedingKey(key: string): string[] {
-    return fullManifests
-      .filter((m) => !disabledApps.has(m.id) && m.secrets && key in m.secrets)
-      .map((m) => `${m.name} (${m.id})`);
+    const seen = new Set<string>();
+    const result: string[] = [];
+    for (const m of fullManifests) {
+      if (disabledApps.has(m.id)) continue;
+      if (!m.secrets || !(key in m.secrets)) continue;
+      if (seen.has(m.id)) continue;
+      seen.add(m.id);
+      result.push(`${m.name} (${m.id})`);
+    }
+    return result;
   }
 
   function isKeyMissing(key: string): boolean {
@@ -582,7 +604,7 @@ export default function App() {
   });
 
   // Any enabled app has missing secrets?
-  const anyMissing = apps?.some((a) => !disabledApps.has(a.id) && getMissingSecrets(a.id).length > 0) ?? false;
+  const anyMissing = apps?.some((a) => !disabledApps.has(a.id) && getMissingSecrets(a).length > 0) ?? false;
 
   function Badge({ children, color, hoverable }: { children: React.ReactNode; color: string; hoverable?: boolean }) {
     return (
@@ -629,10 +651,14 @@ export default function App() {
 
   function AppCard({ app, showReload, section, index, list }: { app: AppManifest; showReload?: boolean; section?: string; index?: number; list?: AppManifest[] }) {
     const disabled = disabledApps.has(app.id);
-    const missing = getMissingSecrets(app.id);
-    const manifest = fullManifests.find((m) => m.id === app.id);
+    const missing = getMissingSecrets(app);
+    const manifest = fullManifests.find((m) => m.id === app.id && m._sourceType === app._sourceType);
     const secrets = manifest?.secrets || app.secrets;
     const isDraggable = section !== undefined && index !== undefined && list !== undefined;
+    const shadowed = isShadowed(app, apps, sourceOverrides);
+    // When the OTHER source is currently winning, this row is shadowed.
+    // The "Use this version" button flips the override.
+    const otherSource: 'local' | 'cloud' = app._sourceType === 'local' ? 'cloud' : 'local';
     return (
       <div
         draggable={isDraggable}
@@ -669,17 +695,22 @@ export default function App() {
                   </span>
                 </Tooltip>
               )}
+              {shadowed && (
+                <Tooltip content={<span>The {otherSource} copy with the same id is currently running. Click "Use this version" to switch.</span>}>
+                  <Badge color="var(--sky)" hoverable>Shadowed by {otherSource}</Badge>
+                </Tooltip>
+              )}
               {disabled && (
                 <Badge color="var(--error)">Disabled</Badge>
               )}
-              {!disabled && missing.length > 0 && (
+              {!disabled && !shadowed && missing.length > 0 && (
                 <Tooltip content={<span><strong>Missing secrets:</strong><br/>{missing.map(m => <span key={m}>&nbsp;&bull; {m}<br/></span>)}</span>}>
                   <Badge color="var(--error)" hoverable>
                     {missing.length} secret{missing.length > 1 ? 's' : ''} missing
                   </Badge>
                 </Tooltip>
               )}
-              {!disabled && localOnline === false && (app._serverFunctions?.length ?? 0) > 0 && (
+              {!disabled && app._sourceType === 'local' && localOnline === false && (app._serverFunctions?.length ?? 0) > 0 && (
                 <Tooltip content={<span>This app may break when Dev server is down.</span>}>
                   <Badge color="var(--error)" hoverable>
                     Server down
@@ -692,42 +723,60 @@ export default function App() {
             </a>
           </div>
           <div className="flex flex-col gap-1.5 shrink-0 ml-3">
-            <button
-              onClick={() => toggleApp(app.id)}
-              className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-              style={{
-                color: disabled ? 'var(--bg-white)' : 'var(--bg-white)',
-                borderColor: disabled ? 'var(--success)' : 'var(--clay)',
-                background: disabled ? 'var(--success)' : 'var(--clay)',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-            >
-              <Power size={15} />
-              {disabled ? 'Enable' : 'Disable'}
-            </button>
-            <button
-              onClick={() => clearStorage(app.id)}
-              className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-              style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
-            >
-              <Trash2 size={15} />
-              Clear
-            </button>
-            {showReload && (
+            {/* Shadowed rows: only a single "Use this version" button so the user
+                can flip the override. All other actions (Disable/Clear/Reload)
+                are on the active row. */}
+            {shadowed && (
               <button
-                onClick={() => reloadApp(app.id)}
-                disabled={reloadingApp === app.id}
+                onClick={() => setSourceOverride(app)}
                 className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-                style={{ color: 'var(--bg-white)', borderColor: 'var(--olive)', background: 'var(--olive)' }}
+                style={{ color: 'var(--bg-white)', borderColor: 'var(--sky)', background: 'var(--sky)' }}
                 onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
               >
-                <RefreshCw size={15} />
-                {reloadingApp === app.id ? 'Reloading...' : 'Reload'}
+                Use this version
               </button>
+            )}
+            {!shadowed && (
+              <>
+                <button
+                  onClick={() => toggleApp(app.id)}
+                  className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                  style={{
+                    color: 'var(--bg-white)',
+                    borderColor: disabled ? 'var(--success)' : 'var(--clay)',
+                    background: disabled ? 'var(--success)' : 'var(--clay)',
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
+                >
+                  <Power size={15} />
+                  {disabled ? 'Enable' : 'Disable'}
+                </button>
+                <button
+                  onClick={() => clearStorage(app.id)}
+                  className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                  style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+                >
+                  <Trash2 size={15} />
+                  Clear
+                </button>
+                {showReload && (
+                  <button
+                    onClick={() => reloadApp(app.id)}
+                    disabled={reloadingApp === app.id}
+                    className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                    style={{ color: 'var(--bg-white)', borderColor: 'var(--olive)', background: 'var(--olive)' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
+                  >
+                    <RefreshCw size={15} />
+                    {reloadingApp === app.id ? 'Reloading...' : 'Reload'}
+                  </button>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -744,8 +793,7 @@ export default function App() {
     );
   }
 
-  const published = apps?.filter(isPublishedApp) || [];
-  const development = apps?.filter(isDevelopmentApp) || [];
+  const published = apps?.filter(isCloudApp) || [];
   const local = apps?.filter((a) => a._sourceType === 'local') || [];
 
   return (
@@ -776,7 +824,7 @@ export default function App() {
               style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-tertiary)' }}
               onClick={() => setPage('apps')}
             >
-              Official Apps
+              Cloud Apps
             </div>
 
             {error && (
@@ -793,13 +841,13 @@ export default function App() {
 
             {published.length === 0 && apps !== null && !error && (
               <div className="px-1 py-3 text-sm" style={{ color: 'var(--fg-tertiary)' }}>
-                No official apps available
+                No cloud apps available
               </div>
             )}
 
             {sortByOrder(published, 'published').map((app, i) => (
               <a
-                key={app.id}
+                key={appIdentityKey(app)}
                 href={appUrl(app.id)} target="_blank"
                 className="block px-2 py-2.5 text-base cursor-pointer transition-colors font-medium no-underline"
                 style={{ color: 'var(--fg-secondary)', borderBottom: i < published.length - 1 ? '1px solid var(--border-tertiary)' : 'none' }}
@@ -810,27 +858,6 @@ export default function App() {
               </a>
             ))}
           </div>
-
-          {/* Development section */}
-          {development.length > 0 && (
-            <div className="rounded-lg p-3" style={{ background: 'color-mix(in srgb, var(--sky) 8%, var(--bg-white))', border: '1px solid color-mix(in srgb, var(--sky) 20%, var(--border-tertiary))' }}>
-              <div className="px-1 pb-2 text-2xl font-bold border-b" style={{ color: 'var(--sky)', borderColor: 'color-mix(in srgb, var(--sky) 20%, var(--border-tertiary))' }}>
-                Under development
-              </div>
-              {sortByOrder(development, 'development').map((app, i) => (
-                <a
-                  key={app.id}
-                  href={appUrl(app.id)} target="_blank"
-                  className="block px-2 py-2.5 text-base cursor-pointer transition-colors font-medium no-underline"
-                  style={{ color: 'var(--sky)', borderBottom: i < development.length - 1 ? '1px solid color-mix(in srgb, var(--sky) 15%, var(--border-tertiary))' : 'none' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--sky) 12%, var(--bg-tertiary))'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                >
-                  {app.name}
-                </a>
-              ))}
-            </div>
-          )}
 
           {/* Local section */}
           {apps !== null && (
@@ -847,7 +874,7 @@ export default function App() {
 
               {sortByOrder(local, 'local').map((app, i) => (
                 <a
-                  key={app.id}
+                  key={appIdentityKey(app)}
                   href={appUrl(app.id)} target="_blank"
                   className="block px-2 py-2.5 text-base cursor-pointer transition-colors font-medium no-underline"
                   style={{ color: 'var(--olive)', borderBottom: i < local.length - 1 ? '1px solid color-mix(in srgb, var(--olive) 15%, var(--border-tertiary))' : 'none' }}
@@ -1046,7 +1073,7 @@ Airglow — for those who create
             <div>
               <div className="text-lg font-semibold flex items-center gap-2 pr-8" style={{ color: 'var(--fg-primary)' }}>
                 <TriangleAlert size={20} style={{ color: 'var(--error)' }} />
-                Dev server is offline
+                (Local Apps) Dev server is offline
               </div>
               <div className="mt-4 text-base" style={{ color: 'var(--fg-secondary)', maxWidth: '560px' }}>
                 Only userscripts will work, UI and Server functions are disabled. Run{' '}
@@ -1244,7 +1271,7 @@ Airglow — for those who create
           {/* Apps column */}
           <div>
             <h2 className="text-2xl font-bold tracking-tight mb-4" style={{ color: 'var(--fg-primary)' }}>
-              Official Apps
+              Cloud Apps
             </h2>
             {apps === null && (
               <div className="text-base py-8 text-center" style={{ color: 'var(--fg-tertiary)' }}>
@@ -1253,28 +1280,16 @@ Airglow — for those who create
             )}
             {published.length === 0 && apps !== null ? (
               <div className="text-base py-8 text-center rounded-[var(--radius-md)]" style={{ color: 'var(--fg-tertiary)', border: '1px dashed var(--border-secondary)' }}>
-                No official apps available
+                No cloud apps available
               </div>
             ) : (
               <div className="flex flex-col gap-4">
                 {sortByOrder(published, 'published').map((app, i) => (
-                  <AppCard key={app.id} app={app} section="published" index={i} list={published} />
+                  <AppCard key={appIdentityKey(app)} app={app} section="published" index={i} list={published} />
                 ))}
               </div>
             )}
 
-            {development.length > 0 && (
-              <div className="mt-8">
-                <h3 className="text-xl font-bold tracking-tight mb-3" style={{ color: 'var(--sky)' }}>
-                  Under development
-                </h3>
-                <div className="flex flex-col gap-4">
-                  {sortByOrder(development, 'development').map((app, i) => (
-                    <AppCard key={app.id} app={app} section="development" index={i} list={development} />
-                  ))}
-                </div>
-              </div>
-            )}
           </div>
 
           {/* Local column */}
@@ -1289,7 +1304,7 @@ Airglow — for those who create
             ) : (
               <div className="flex flex-col gap-4">
                 {sortByOrder(local, 'local').map((app, i) => (
-                  <AppCard key={app.id} app={app} showReload section="local" index={i} list={local} />
+                  <AppCard key={appIdentityKey(app)} app={app} showReload section="local" index={i} list={local} />
                 ))}
               </div>
             )}

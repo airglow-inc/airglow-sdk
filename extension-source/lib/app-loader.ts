@@ -1,43 +1,30 @@
 /**
- * App loader — discovers the local dev server, loads manifests, registers userscripts.
+ * App loader — discovers app sources (local dev server + cloud),
+ * loads manifests, registers userscripts.
  */
 
 import { buildSdkCode } from './airglow-sdk';
 import { logger } from './logger';
 import { trackAppsRegistered } from './analytics';
+import { ensureAirglowOffscreenDocument, sendRuntimeMessageWhenReady } from './offscreen-runtime';
+import { getCloudAppSourceUrl } from './app-source-config';
+import {
+  buildSourceMap,
+  resolveAppInventoryManifests,
+  resolveAppManifests,
+  type AppManifest,
+  type AppSource,
+  type AppSourceOverrides,
+  type SourcedManifest,
+} from './app-resolver';
 
-export type AppVisibility = 'public' | 'development' | 'hidden';
-
-export interface AppManifest {
-  id: string;
-  name: string;
-  version: string;
-  description: string;
-  tags?: string[];
-  visibility?: AppVisibility;
-  // First-encounter default. When false, the extension adds the app to its
-  // __disabled_apps set the first time it sees the id, so the app ships
-  // disabled. Once seen, the user's dashboard toggle is authoritative and
-  // this field is ignored.
-  defaultEnabled?: boolean;
-  startup?: string;
-  userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
-  secrets?: Record<string, { scope: string; label?: string }>;
-  host_permissions?: string[];
-  // Dev-server-injected: RPC handler names found in `<app>/server/*.ts`.
-  // Surfaced in the dashboard so users know which apps depend on the server.
-  _serverFunctions?: string[];
-}
-
-export interface AppSource {
-  url: string;
-  type: 'local';
-}
-
-export type SourcedManifest = AppManifest & { _source: AppSource };
+export type { AppManifest, AppSource, AppSourceOverrides, SourcedManifest, AppVisibility } from './app-resolver';
 
 const DEV_PORT_KEY = '__dev_port';
 const DEFAULT_DEV_PORT = 3222;
+const LOCAL_SOURCE_TIMEOUT_MS = 4000;
+const CLOUD_SOURCE_TIMEOUT_MS = 8000;
+const CLOUD_SOURCE_RETRY_DELAYS_MS = [500, 1500, 3000];
 
 async function getDevPort(): Promise<number> {
   return new Promise((resolve) => {
@@ -52,18 +39,21 @@ async function getLocalSource(): Promise<AppSource> {
   return { url: `http://127.0.0.1:${port}`, type: 'local' };
 }
 
+function getCloudSource(): AppSource {
+  return { url: getCloudAppSourceUrl(), type: 'cloud' };
+}
+
 const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
+export const APP_INVENTORY_MANIFESTS_KEY = '__app_inventory_manifests';
 // Per-app userscript source cache. Keyed by appId; hash-gated so we only
 // re-fetch when the manifest's _hash actually changes. Lets the extension
-// re-register userscripts on SW restart while the dev server is offline.
-// Scope is intentionally userscripts-only — server functions (RPC) and UI
-// bundles inherently require the dev server, so caching them wouldn't help.
+// re-register userscripts on SW restart while the source is offline.
 const APP_SOURCE_CACHE_KEY = '__app_sources_cache';
 
 interface AppSourceCacheEntry {
   hash: string;
-  userscripts: Record<string, string>; // file → code
+  userscripts: Record<string, string>;
 }
 type AppSourceCache = Record<string, AppSourceCacheEntry>;
 
@@ -79,105 +69,177 @@ async function writeSourceCache(cache: AppSourceCache): Promise<void> {
   await chrome.storage.local.set({ [APP_SOURCE_CACHE_KEY]: cache });
 }
 
-function isManifestEnabled(manifest: AppManifest): boolean {
-  return manifest.visibility !== 'hidden';
+function isCloudSourceAllowed(source: AppSource): boolean {
+  if (source.type !== 'cloud') return true;
+  return source.url.startsWith('https://') || source.url.startsWith('http://127.0.0.1:');
 }
 
-/**
- * Return the local source if the dev server is reachable.
- */
-async function discoverSources(): Promise<AppSource[]> {
-  const source = await getLocalSource();
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function manifestFetchTimeoutMs(source: AppSource): number {
+  return source.type === 'cloud' ? CLOUD_SOURCE_TIMEOUT_MS : LOCAL_SOURCE_TIMEOUT_MS;
+}
+
+function sourceRetryDelaysMs(source: AppSource): number[] {
+  return source.type === 'cloud' ? CLOUD_SOURCE_RETRY_DELAYS_MS : [];
+}
+
+function shouldRetryAppSourceStatus(status: number): boolean {
+  return status === 408 || status === 409 || status === 425 || status === 429 || (status >= 500 && status <= 599);
+}
+
+async function fetchAppSource(source: AppSource, url: string, timeoutMs: number): Promise<Response> {
+  const retryDelays = sourceRetryDelaysMs(source);
+  let lastError = '';
+  for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok && shouldRetryAppSourceStatus(res.status) && attempt < retryDelays.length) {
+        lastError = `${source.type} app source ${source.url} returned ${res.status}`;
+        await sleep(retryDelays[attempt]);
+        continue;
+      }
+      return res;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+      if (attempt < retryDelays.length) {
+        await sleep(retryDelays[attempt]);
+        continue;
+      }
+      throw new Error(`${source.type} app source ${source.url} unreachable after ${retryDelays.length + 1} attempt(s): ${lastError}`);
+    }
+  }
+  throw new Error(`${source.type} app source ${source.url} unreachable: ${lastError}`);
+}
+
+async function fetchSourceManifestsOnce(source: AppSource): Promise<AppManifest[] | null> {
+  const res = await fetchAppSource(source, `${source.url}/api/apps/manifests`, manifestFetchTimeoutMs(source));
+  if (!res.ok) {
+    logger.warn('airglow', `${source.type} app source ${source.url} returned ${res.status}`);
+    return null;
+  }
+  const manifests = await res.json();
+  return Array.isArray(manifests) ? manifests : null;
+}
+
+async function fetchSourceManifests(source: AppSource): Promise<AppManifest[] | null> {
+  if (!isCloudSourceAllowed(source)) {
+    logger.warn('airglow', `cloud source rejected: ${source.url}`);
+    return null;
+  }
+
   try {
-    const res = await fetch(`${source.url}/api/apps/manifests`, {
-      signal: AbortSignal.timeout(2000),
-    });
-    if (!res.ok) return [];
-    return [source];
-  } catch {
-    return [];
+    return await fetchSourceManifestsOnce(source);
+  } catch (error) {
+    logger.warn(
+      'airglow',
+      `${source.type} app source ${source.url} unreachable: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
   }
 }
 
+async function getCachedLocalManifests(): Promise<AppManifest[]> {
+  const stored = await chrome.storage.local.get(APP_INVENTORY_MANIFESTS_KEY);
+  const cached = stored[APP_INVENTORY_MANIFESTS_KEY];
+  if (!Array.isArray(cached)) return [];
+  return cached.filter((manifest): manifest is SourcedManifest =>
+    manifest && typeof manifest === 'object' && (manifest as SourcedManifest)._sourceType === 'local',
+  );
+}
+
+function jsonEquals(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+async function setChangedStorageValues(values: Record<string, unknown>): Promise<void> {
+  const keys = Object.keys(values);
+  const current = await chrome.storage.local.get(keys);
+  const changed: Record<string, unknown> = {};
+  for (const key of keys) {
+    if (!jsonEquals(current[key], values[key])) changed[key] = values[key];
+  }
+  if (Object.keys(changed).length > 0) await chrome.storage.local.set(changed);
+}
+
 export interface LoadResult {
+  // True if any source provided manifests (live OR fall-back-cached local).
   reachable: boolean;
+  localReachable: boolean;
+  cloudReachable: boolean;
+  // True when local was unreachable and we replayed the prior cached snapshot.
+  usedCachedLocalManifests: boolean;
+  // Runtime list — deduplicated, local wins on collision.
   manifests: SourcedManifest[];
-  // True when the manifests came from chrome.storage cache because the dev
-  // server was unreachable. Callers should skip work that depends on a fresh
-  // server response (e.g. cleanupDevSecrets, applyFirstEncounterDefaults).
-  fromCache?: boolean;
+  // Inventory list — both copies kept when local + cloud share an id.
+  inventoryManifests: SourcedManifest[];
 }
 
 /**
- * Load manifests from the local dev server.
- * Stores source map in chrome.storage.local for app-shell to read.
- * Falls back to the cached manifest snapshot when the dev server is unreachable.
+ * Load manifests from local + cloud sources in parallel. Falls back to the
+ * cached local snapshot when the dev server is offline.
+ *
+ * `sourceOverrides`: per-appId opt-in to the cloud copy for shadowed apps.
+ * Set via the dashboard's "Use cloud version" button. Without it, local
+ * always wins on collision.
  */
-export async function loadAppManifests(): Promise<LoadResult> {
-  const sources = await discoverSources();
-  if (sources.length === 0) return loadCachedManifests();
+export async function loadAppManifests(sourceOverrides?: AppSourceOverrides): Promise<LoadResult> {
+  const localSource = await getLocalSource();
+  const cloudSource = getCloudSource();
+  const [localManifests, cloudManifests] = await Promise.all([
+    fetchSourceManifests(localSource),
+    fetchSourceManifests(cloudSource),
+  ]);
 
-  const manifestsById = new Map<string, SourcedManifest>();
-  const sourceMap: Record<string, AppSource> = {};
+  const inputSets: { source: AppSource; manifests: AppManifest[] }[] = [];
+  let usedCachedLocalManifests = false;
 
-  await Promise.all(
-    sources.map(async (source) => {
-      try {
-        const res = await fetch(`${source.url}/api/apps/manifests`);
-        if (!res.ok) return;
-        const manifests: AppManifest[] = await res.json();
-        for (const manifest of manifests) {
-          if (!isManifestEnabled(manifest)) continue;
-          if (manifestsById.has(manifest.id)) continue;
-          const sourcedManifest = { ...manifest, _source: source };
-          manifestsById.set(manifest.id, sourcedManifest);
-          sourceMap[manifest.id] = source;
-        }
-      } catch (error) {
-        logger.warn('airglow', `manifest fetch failed for ${source.url}: ${error}`);
-      }
-    }),
-  );
+  if (localManifests) {
+    inputSets.push({ source: localSource, manifests: localManifests });
+  } else {
+    const cached = await getCachedLocalManifests();
+    if (cached.length > 0) {
+      inputSets.push({ source: localSource, manifests: cached });
+      usedCachedLocalManifests = true;
+    }
+  }
+  if (cloudManifests) inputSets.push({ source: cloudSource, manifests: cloudManifests });
 
-  const allManifests = Array.from(manifestsById.values());
+  const allManifests = resolveAppManifests(inputSets, sourceOverrides);
+  const inventoryManifests = resolveAppInventoryManifests(inputSets);
+  const sourceMap = buildSourceMap(allManifests);
 
-  // Persist source and manifest snapshots for app-shell and message handler.
-  await chrome.storage.local.set({
+  await setChangedStorageValues({
     [APP_SOURCES_KEY]: sourceMap,
     [APP_MANIFESTS_KEY]: allManifests,
+    [APP_INVENTORY_MANIFESTS_KEY]: inventoryManifests,
   });
 
-  // Opportunistically refresh the userscript source cache for any apps whose
-  // manifest hash changed since we last cached them. This is what lets a
-  // future SW restart re-register scripts when the dev server is down.
+  // Opportunistically refresh the userscript source cache so userscripts can
+  // re-register on SW restart even when the source is unreachable.
   await refreshUserscriptSourceCache(allManifests);
 
-  return { reachable: true, manifests: allManifests };
-}
-
-async function loadCachedManifests(): Promise<LoadResult> {
-  const stored = await chrome.storage.local.get([APP_MANIFESTS_KEY, APP_SOURCES_KEY]);
-  const cachedManifests = (stored[APP_MANIFESTS_KEY] as SourcedManifest[] | undefined) || [];
-  if (cachedManifests.length === 0) return { reachable: false, manifests: [] };
-  // Cached manifests already carry _source from the last successful poll.
-  // Defensive fallback in case an older cache lacks it.
-  const fallback = await getLocalSource();
-  const manifests = cachedManifests
-    .filter(isManifestEnabled)
-    .map((m) => (m._source ? m : { ...m, _source: fallback }));
-  return { reachable: false, manifests, fromCache: true };
+  return {
+    reachable: inputSets.length > 0,
+    localReachable: Boolean(localManifests),
+    cloudReachable: Boolean(cloudManifests),
+    usedCachedLocalManifests,
+    manifests: allManifests,
+    inventoryManifests,
+  };
 }
 
 /**
- * Fetch and cache userscript source for any app whose hash changed since the
- * last cache write. Removes cache entries for apps no longer present.
+ * Cache userscript source bytes per-app, keyed by manifest _hash. Removes
+ * stale entries for apps that are no longer present.
  */
 async function refreshUserscriptSourceCache(manifests: SourcedManifest[]): Promise<void> {
   const cache = await readSourceCache();
   const currentIds = new Set(manifests.map((m) => m.id));
   let dirty = false;
 
-  // Evict entries for removed apps so the cache doesn't grow unbounded.
   for (const id of Object.keys(cache)) {
     if (!currentIds.has(id)) { delete cache[id]; dirty = true; }
   }
@@ -191,10 +253,8 @@ async function refreshUserscriptSourceCache(manifests: SourcedManifest[]): Promi
     let allOk = true;
     for (const us of manifest.userscripts || []) {
       try {
-        userscripts[us.file] = await fetchFromServer(manifest, us.file);
-      } catch (e) {
-        // Source briefly unreachable mid-poll — keep the prior cache entry rather
-        // than half-writing a new one.
+        userscripts[us.file] = await fetchUserscriptFromServer(manifest, us.file);
+      } catch {
         allOk = false;
         break;
       }
@@ -213,15 +273,13 @@ class SourceUnreachableError extends Error {
   }
 }
 
-/**
- * Fetch a userscript's source from the dev server. Throws SourceUnreachableError
- * on network failure (caller may want to fall back to cache).
- */
-async function fetchFromServer(manifest: SourcedManifest, file: string): Promise<string> {
+async function fetchUserscriptFromServer(manifest: SourcedManifest, file: string): Promise<string> {
   let res: Response;
   try {
-    res = await fetch(
+    res = await fetchAppSource(
+      manifest._source,
       `${manifest._source.url}/api/apps/${manifest.id}/userscript?file=${encodeURIComponent(file)}`,
+      manifestFetchTimeoutMs(manifest._source),
     );
   } catch (e) {
     throw new SourceUnreachableError(manifest._source.url, e);
@@ -238,12 +296,12 @@ async function fetchFromServer(manifest: SourcedManifest, file: string): Promise
 }
 
 /**
- * Fetch a userscript's source code, preferring live dev server and falling back
- * to the on-disk cache when the server is unreachable.
+ * Fetch a userscript's source, preferring live source and falling back to
+ * the on-disk cache when the source is unreachable.
  */
 async function fetchUserscriptSource(manifest: SourcedManifest, file: string): Promise<string> {
   try {
-    return await fetchFromServer(manifest, file);
+    return await fetchUserscriptFromServer(manifest, file);
   } catch (e) {
     if (e instanceof SourceUnreachableError) {
       const cache = await readSourceCache();
@@ -303,14 +361,11 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     }
   }
 
-  // Inventory snapshot: only fires when the set of app ids actually changes,
-  // so this is a no-op on the common "register pass found the same apps" path.
   trackAppsRegistered(manifests.map((m) => m.id)).catch((e) =>
     logger.warn('airglow', `trackAppsRegistered failed: ${e instanceof Error ? e.message : String(e)}`),
   );
 
   if (scripts.length > 0) {
-    // Configure each app's world separately (isolated JS globals)
     for (const worldId of worldIds) {
       await chrome.userScripts.configureWorld({
         worldId,
@@ -321,7 +376,6 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     await chrome.userScripts.register(scripts);
     logger.info('airglow', `registered ${scripts.length} userscript(s)`);
 
-    // Only reload tabs matching changed apps (or all if changedAppIds is undefined)
     if (!opts?.skipReload) {
       const reloadScripts = changedAppIds
         ? scripts.filter((s) => changedAppIds.some((id) => s.id.startsWith(id + '__')))
@@ -343,11 +397,7 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     }
   }
 
-  // Register iframe keyboard forwarder as a platform feature.
-  // chrome.userScripts can't inject into about:blank/srcdoc iframes (no matchOriginAsFallback).
-  // chrome.scripting.registerContentScripts CAN, so we register a tiny forwarder that
-  // relays modifier+key events from child frames to the top frame via postMessage.
-  // Any app userscript can listen for __airglowKeyForward messages to handle iframe shortcuts.
+  // Iframe keyboard forwarder (platform feature, see comment in original).
   const FORWARDER_ID = 'airglow-iframe-key-forwarder';
   try { await chrome.scripting.unregisterContentScripts({ ids: [FORWARDER_ID] }); } catch {}
   try {
@@ -363,48 +413,38 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     logger.warn('airglow', `iframe key forwarder registration failed: ${e.message}`);
   }
 
-  // Pre-populate client secrets from .env
   for (const manifest of manifests) {
     await loadDevSettings(manifest);
   }
 }
 
-/**
- * Run startup.ts for all apps that declare one.
- */
 export async function runStartupScripts(manifests: SourcedManifest[]): Promise<void> {
   const startupManifests = manifests.filter((m) => m.startup);
   if (startupManifests.length === 0) return;
 
   for (const manifest of startupManifests) {
     try {
-      const res = await fetch(
+      const res = await fetchAppSource(
+        manifest._source,
         `${manifest._source.url}/api/apps/${manifest.id}/userscript?file=${encodeURIComponent(manifest.startup!)}&format=esm`,
+        manifestFetchTimeoutMs(manifest._source),
       );
       if (!res.ok) {
-        console.error(`[airglow] Failed to fetch startup for ${manifest.id}: ${res.status}`);
+        logger.warn(manifest.id, `failed to fetch startup: ${res.status}`);
         continue;
       }
       const code = await res.text();
       const sdk = buildSdkCode(manifest.id);
       await runStartupDirect(manifest.id, code, sdk);
-      console.log(`[airglow] Ran startup for ${manifest.id}`);
+      logger.info(manifest.id, 'startup script ran');
     } catch (e) {
-      console.error(`[airglow] Startup failed for ${manifest.id}:`, e);
+      logger.error(manifest.id, `startup failed: ${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
 
 async function runStartupDirect(appId: string, code: string, sdk: string): Promise<void> {
-  try {
-    await (chrome.offscreen as any).createDocument({
-      url: 'startup-runner.html',
-      reasons: ['DOM_PARSER'] as any,
-      justification: 'Run app startup scripts in sandboxed iframe',
-    });
-  } catch (e: any) {
-    if (!e.message?.includes('already exists')) throw e;
-  }
+  await ensureAirglowOffscreenDocument('Run app startup scripts in sandboxed iframe');
 
   await new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -420,10 +460,15 @@ async function runStartupDirect(appId: string, code: string, sdk: string): Promi
       }
     };
     chrome.runtime.onMessage.addListener(listener);
-    chrome.runtime.sendMessage({ type: 'airglow:startup:run', appId, code, sdk });
+    sendRuntimeMessageWhenReady({ type: 'airglow:startup:run', appId, code, sdk }).catch((error) => {
+      clearTimeout(timeout);
+      chrome.runtime.onMessage.removeListener(listener);
+      reject(error);
+    });
   });
 
-  try { await (chrome.offscreen as any).closeDocument(); } catch {}
+  // Keep the shared local-execution runtime alive: app UI RPC calls reuse the
+  // same offscreen document and may already be queued behind a startup job.
 }
 
 const DEV_SECRET_PREFIX = 'airglow:dev-secret:';
@@ -437,13 +482,10 @@ async function loadDevSettings(manifest: SourcedManifest): Promise<void> {
     if (!res.ok) return;
     const settings: Record<string, string> = await res.json();
 
-    // All manifest secrets are client-scoped
     const clientKeys = new Set(Object.keys(manifest.secrets || {}));
-
     const keysToWrite = Object.keys(settings).filter((k) => clientKeys.has(k));
     if (keysToWrite.length === 0) return;
 
-    // Check which keys the user already set via dashboard
     const userKeys = keysToWrite.map((k) => `${USER_SECRET_PREFIX}${k}`);
     const existing = await chrome.storage.local.get(userKeys);
 
