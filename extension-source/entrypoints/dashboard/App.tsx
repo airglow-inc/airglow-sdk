@@ -1,5 +1,5 @@
-import { useState, useEffect, useRef } from 'react';
-import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, X } from 'lucide-react';
+import { type FormEvent, useState, useEffect, useRef } from 'react';
+import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, MessageSquare, Send, X } from 'lucide-react';
 import logoUrl from '../../lib/branding/logo.svg';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
@@ -13,11 +13,58 @@ function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { siz
 }
 import LogsPage from './LogsPage';
 import { normalizeUserEmail, USER_EMAIL_KEY } from '../../lib/airglow-identity';
+import { getOfficialAppSourceUrl } from '../../lib/app-source-config';
 
 const DEV_PORT_KEY = '__dev_port';
 const APP_ORDER_KEY = '__app_order';
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
+const FEEDBACK_VISITOR_ID_KEY = '__airglow_feedback_visitor_id';
 const DEFAULT_DEV_PORT = 3222;
+const FEEDBACK_TIMEOUT_MS = 8000;
+
+type FeedbackKind = 'general' | 'bug' | 'idea';
+type FeedbackStatus = { type: 'info' | 'success' | 'error'; text: string };
+type PublicRuntimeConfig = {
+  appServerUrl?: string;
+  enableFeedback?: boolean;
+  feedbackEndpoint?: string;
+};
+
+async function getFeedbackVisitorId(): Promise<string> {
+  const stored = await chrome.storage.local.get(FEEDBACK_VISITOR_ID_KEY);
+  const existing = typeof stored[FEEDBACK_VISITOR_ID_KEY] === 'string' ? stored[FEEDBACK_VISITOR_ID_KEY] : '';
+  if (existing) return existing;
+  const next = crypto.randomUUID();
+  await chrome.storage.local.set({ [FEEDBACK_VISITOR_ID_KEY]: next });
+  return next;
+}
+
+async function getFeedbackEndpoint(): Promise<string> {
+  const baseUrl = getOfficialAppSourceUrl();
+  const fallbackEndpoint = new URL('/api/feedback', `${baseUrl}/`).toString();
+  let res: Response;
+  try {
+    res = await fetch(`${baseUrl}/api/config`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(FEEDBACK_TIMEOUT_MS),
+    });
+  } catch {
+    return fallbackEndpoint;
+  }
+  if (!res.ok) return fallbackEndpoint;
+
+  let config: PublicRuntimeConfig;
+  try {
+    config = await res.json() as PublicRuntimeConfig;
+  } catch {
+    return fallbackEndpoint;
+  }
+  if (config.enableFeedback === false) throw new Error('Feedback is disabled.');
+
+  const endpoint = config.feedbackEndpoint || '/api/feedback';
+  const endpointBase = (config.appServerUrl || baseUrl).replace(/\/+$/, '');
+  return new URL(endpoint, `${endpointBase}/`).toString();
+}
 
 type AppVisibility = 'public' | 'development' | 'hidden';
 
@@ -79,6 +126,11 @@ export default function App() {
   const [emailInput, setEmailInput] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
   const [unseenErrorCount, setUnseenErrorCount] = useState(0);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackKind, setFeedbackKind] = useState<FeedbackKind>('general');
+  const [feedbackMessage, setFeedbackMessage] = useState('');
+  const [feedbackStatus, setFeedbackStatus] = useState<FeedbackStatus | null>(null);
+  const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
 
   // Secrets state
   const [secretsOpen, setSecretsOpen] = useState(false);
@@ -368,6 +420,58 @@ export default function App() {
       setEmailInput(trimmed);
       setEmailError(null);
     });
+  }
+
+  async function submitFeedback(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (feedbackSubmitting) return;
+
+    const message = feedbackMessage.trim();
+    if (message.length < 3) {
+      setFeedbackStatus({ type: 'error', text: 'Add at least 3 characters.' });
+      return;
+    }
+    setFeedbackSubmitting(true);
+    setFeedbackStatus({ type: 'info', text: 'Sending…' });
+    try {
+      const visitorId = await getFeedbackVisitorId();
+      const endpoint = await getFeedbackEndpoint();
+      const stored = await chrome.storage.local.get([USER_EMAIL_KEY]);
+      const userEmail = normalizeUserEmail(stored[USER_EMAIL_KEY]);
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          visitorId,
+          userEmail,
+          kind: feedbackKind,
+          message,
+          appId: 'dashboard',
+          appName: 'Airglow Dashboard',
+          sourceType: 'extension-dashboard',
+        }),
+        signal: AbortSignal.timeout(FEEDBACK_TIMEOUT_MS),
+      });
+
+      if (!res.ok) {
+        let detail = `Feedback HTTP ${res.status}`;
+        try {
+          const body = await res.json();
+          if (typeof body?.error === 'string') detail = body.error;
+        } catch {}
+        throw new Error(detail);
+      }
+
+      setFeedbackStatus({ type: 'success', text: 'Sent. Thank you.' });
+      setFeedbackMessage('');
+    } catch (error) {
+      setFeedbackStatus({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Could not send feedback.',
+      });
+    } finally {
+      setFeedbackSubmitting(false);
+    }
   }
 
   function reloadApp(appId: string) {
@@ -1194,6 +1298,124 @@ Airglow — for those who create
         )}
         </>)}
       </main>
+
+      <button
+        onClick={() => {
+          setFeedbackOpen(true);
+          setFeedbackStatus(null);
+        }}
+        className="fixed right-5 bottom-5 z-40 h-12 px-4 rounded-full text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-2"
+        style={{
+          color: 'var(--bg-white)',
+          borderColor: 'color-mix(in srgb, var(--clay) 80%, transparent)',
+          background: 'var(--clay)',
+          boxShadow: '0 14px 34px rgba(28,25,23,0.22)',
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = 'translateY(-1px)';
+          e.currentTarget.style.boxShadow = '0 18px 42px rgba(28,25,23,0.26)';
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = 'translateY(0)';
+          e.currentTarget.style.boxShadow = '0 14px 34px rgba(28,25,23,0.22)';
+        }}
+        data-testid="feedback-button"
+        aria-label="Open feedback"
+        title="Feedback"
+      >
+        <MessageSquare size={17} />
+        Feedback
+      </button>
+
+      {/* Feedback modal */}
+      {feedbackOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-end justify-end p-5"
+          style={{ background: 'rgba(28,25,23,0.18)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setFeedbackOpen(false); }}
+          data-testid="feedback-modal-backdrop"
+        >
+          <form
+            onSubmit={submitFeedback}
+            className="w-full max-w-[420px] rounded-lg p-5 border"
+            style={{
+              background: 'var(--bg-white)',
+              borderColor: 'var(--border-tertiary)',
+              boxShadow: '0 16px 40px rgba(28,25,23,.18)',
+              color: 'var(--fg-primary)',
+            }}
+            data-testid="feedback-modal"
+          >
+            <div className="flex items-start justify-between gap-3 mb-3">
+              <div>
+                <div className="text-sm mb-1" style={{ color: 'var(--fg-tertiary)' }}>Airglow feedback</div>
+                <div className="text-lg font-semibold" style={{ color: 'var(--fg-primary)' }}>What should we fix or improve?</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setFeedbackOpen(false)}
+                className="h-8 w-8 rounded-md cursor-pointer inline-flex items-center justify-center"
+                style={{ color: 'var(--fg-tertiary)', background: 'transparent', border: 0 }}
+                aria-label="Close feedback"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <select
+              value={feedbackKind}
+              onChange={(e) => setFeedbackKind(e.target.value as FeedbackKind)}
+              className="w-full h-9 px-3 mb-2 text-base rounded-sm border outline-none"
+              style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+              data-testid="feedback-kind"
+            >
+              <option value="general">General</option>
+              <option value="bug">Bug</option>
+              <option value="idea">Idea</option>
+            </select>
+            <textarea
+              required
+              minLength={3}
+              maxLength={2000}
+              value={feedbackMessage}
+              onChange={(e) => setFeedbackMessage(e.target.value)}
+              placeholder="Short note. Please don't paste secrets, prompts, or page content."
+              className="w-full min-h-[120px] p-3 text-base rounded-sm border outline-none resize-y"
+              style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+              data-testid="feedback-message"
+              autoFocus
+            />
+            <div
+              className="min-h-[20px] mt-2 text-sm"
+              style={{
+                color: feedbackStatus?.type === 'error'
+                  ? 'var(--error)'
+                  : feedbackStatus?.type === 'success'
+                    ? 'var(--olive)'
+                    : 'var(--fg-secondary)',
+              }}
+              data-testid="feedback-status"
+            >
+              {feedbackStatus?.text || ''}
+            </div>
+            <button
+              type="submit"
+              disabled={feedbackSubmitting || feedbackMessage.trim().length < 3}
+              className="mt-2 h-9 px-4 rounded-md text-base font-medium transition-all border inline-flex items-center gap-2"
+              style={{
+                color: 'var(--bg-white)',
+                borderColor: 'var(--clay)',
+                background: 'var(--clay)',
+                opacity: feedbackSubmitting || feedbackMessage.trim().length < 3 ? 0.45 : 1,
+                cursor: feedbackSubmitting || feedbackMessage.trim().length < 3 ? 'not-allowed' : 'pointer',
+              }}
+              data-testid="feedback-submit"
+            >
+              <Send size={15} />
+              {feedbackSubmitting ? 'Sending…' : 'Send feedback'}
+            </button>
+          </form>
+        </div>
+      )}
 
       {/* Secrets modal */}
       {secretsOpen && (

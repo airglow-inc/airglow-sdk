@@ -14,26 +14,17 @@ const DEV_SECRET_PREFIX = 'airglow:dev-secret:';
 const DEFAULT_POPUP_WIDTH = 520;
 const DEFAULT_POPUP_HEIGHT = 720;
 const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
-const AIRGLOW_USER_SECRET_KEY = '__airglow_user_secret';
 
-async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string; userSecret: string }> {
-  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, AIRGLOW_USER_ID_KEY, AIRGLOW_USER_SECRET_KEY]);
+async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string }> {
+  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, AIRGLOW_USER_ID_KEY]);
   let userId = typeof stored[AIRGLOW_USER_ID_KEY] === 'string' ? stored[AIRGLOW_USER_ID_KEY] : '';
-  let userSecret = typeof stored[AIRGLOW_USER_SECRET_KEY] === 'string' ? stored[AIRGLOW_USER_SECRET_KEY] : '';
-  const updates: Record<string, string> = {};
   if (!userId) {
     userId = `ag_${crypto.randomUUID()}`;
-    updates[AIRGLOW_USER_ID_KEY] = userId;
+    await chrome.storage.local.set({ [AIRGLOW_USER_ID_KEY]: userId });
   }
-  if (!userSecret) {
-    userSecret = crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
-    updates[AIRGLOW_USER_SECRET_KEY] = userSecret;
-  }
-  if (Object.keys(updates).length > 0) await chrome.storage.local.set(updates);
   return {
     email: normalizeUserEmail(stored[USER_EMAIL_KEY]),
     userId,
-    userSecret,
   };
 }
 
@@ -319,7 +310,6 @@ function dispatchAirglowMessage(
           headers: {
             'Content-Type': 'application/json',
             'X-Airglow-User-Id': identity.userId,
-            'X-Airglow-User-Secret': identity.userSecret,
             ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
           },
           body: JSON.stringify(msg.payload),
@@ -364,7 +354,6 @@ function dispatchAirglowMessage(
             'Content-Type': 'application/json',
             'X-Airglow-App-Id': appId,
             'X-Airglow-User-Id': identity.userId,
-            'X-Airglow-User-Secret': identity.userSecret,
             ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
           },
           body: JSON.stringify(msg.payload),

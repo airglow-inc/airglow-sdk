@@ -9,7 +9,5 @@ const DEV_USER_EMAIL: string | undefined = import.meta.env.DEV
 export const runtimeConfig = {
   enableNativeHost: true,
   localManifestPollMs: 5000,
-  enableFeedback: true,
-  feedbackEndpoint: '',
   devUserEmail: DEV_USER_EMAIL,
 } as const;
