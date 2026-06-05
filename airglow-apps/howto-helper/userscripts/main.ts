@@ -1,6 +1,6 @@
 declare const airglow: any;
 import { createChatWindow, type ChatMessage } from '../../shared/widgets/chat-window';
-import iconSvg from '../../shared/logo/icon.svg';
+import iconSvg from '../../../extension-source/lib/branding/icon.svg';
 import { marked } from 'marked';
 import { applyHighlights, clearHighlights } from './highlight';
 

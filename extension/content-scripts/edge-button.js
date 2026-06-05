@@ -1,5 +1,5 @@
 var edgeButton=(function(){function e(e){return e}var t=`<?xml version="1.0" encoding="utf-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="245 250 520 520">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 250 520 520">
   <g transform="translate(52, 18) scale(0.98)">
     <!-- Black trapezoid -->
     <path fill="#1c1917" d="M416.6 246.2 L200.8 753.5 L707.6 753.5 L490.8 246.2 Z"/>

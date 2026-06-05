@@ -1,6 +1,6 @@
 // Gmail Calendar — extract meeting details from email threads, pre-fill calendar events
 // Runs on mail.google.com via airglow userscript injection
-import iconSvg from '../../shared/logo/icon.svg';
+import iconSvg from '../../../extension-source/lib/branding/icon.svg';
 
 interface EventData {
   title?: string;
@@ -500,20 +500,22 @@ const ICON_SVG = `<span style="display:inline-flex; width:20px; height:20px; mar
 function injectMeetingButton() {
   if (document.getElementById('airglow-create-meeting')) return;
 
-  const links = [...document.querySelectorAll('span[role="link"]')];
-  const replySpan = links.find(s => s.textContent?.trim() === 'Reply');
+  const links = [...document.querySelectorAll<HTMLElement>('span[role="link"]')];
+  const replySpan = links.find((s) => s.textContent?.trim() === 'Reply');
   if (!replySpan) return;
 
   const row = replySpan.parentElement;
   if (!row || row.children.length < 2) return;
 
-  const btn = document.createElement('span');
+  // Use a real <button> (not role="link") so Gmail's link-click delegation
+  // never routes activations from in-body links (e.g. "Unsubscribe") to us.
+  const btn = document.createElement('button');
   btn.id = 'airglow-create-meeting';
-  btn.setAttribute('role', 'link');
-  btn.setAttribute('tabindex', '0');
+  btn.type = 'button';
   btn.style.cssText = `
     display: flex; align-items: center;
     height: 36px; padding: 0 16px 0 11px;
+    margin: 0;
     border: 2px solid #2563eb; border-radius: 18px;
     color: #2563eb;
     font-family: 'Google Sans', Roboto, RobotoDraft, Helvetica, Arial, sans-serif;
@@ -522,12 +524,16 @@ function injectMeetingButton() {
     cursor: pointer; user-select: none;
     background: transparent;
     transition: background 0.15s;
+    appearance: none; -webkit-appearance: none;
+    line-height: 1;
   `;
   btn.innerHTML = `${ICON_SVG}Create Meeting`;
   btn.addEventListener('mouseenter', () => { btn.style.background = 'rgba(37,99,235,0.08)'; });
   btn.addEventListener('mouseleave', () => { btn.style.background = 'transparent'; });
 
-  btn.addEventListener('click', async () => {
+  btn.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    e.preventDefault();
     const origHTML = btn.innerHTML;
     let dotCount = 0;
     let dotInterval: ReturnType<typeof setInterval> | null = null;

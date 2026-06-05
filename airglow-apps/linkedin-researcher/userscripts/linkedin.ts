@@ -1,5 +1,5 @@
 declare const airglow: any;
-import iconSvg from '../../shared/logo/icon.svg';
+import iconSvg from '../../../extension-source/lib/branding/icon.svg';
 import tokensCSS from '../../shared/theme/tokens-injectable';
 
 // ── Types ──

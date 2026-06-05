@@ -12,6 +12,15 @@ Before any other work in this workspace, you **must**:
    - If the port is taken by a non-airglow process, **stop and ask the user** what to do. Never kill processes on your own. If the user chooses to change the port, you can pass `--port N` to `pnpm airglow dev`, but the matching dev-port update in the extension dashboard must be done by the user manually — ask them to do it.
    - Keep the server running for the rest of the session.
 
+## Always read logs after editing an app
+
+The dev server keeps running silently — bundle failures, missing files, RPC errors, and uncaught userscript errors will **not** surface in your tool output. After every edit to an app (userscript, UI, startup, server function, manifest, or `.env`), read both log streams before moving on:
+
+- **Dev server** (bundle errors, RPC failures, startup errors) — `tail -n 100 .airglow/dev.log`. Truncated each `pnpm airglow dev` run.
+- **Browser** (userscript / UI / startup runtime errors, `airglow.log.*`) — `curl -s 'localhost:3277/logs?level=error&n=50' | jq`. Drop `level=error` to see info/warn too; add `source=<app-id>` to filter to one app.
+
+A clean tool output is **not** a signal that the change worked. If either stream shows an error related to your change, fix it before claiming success. See [`docs/browser-debugging.md`](docs/browser-debugging.md) for more options.
+
 ## Docs
 
 @docs/app-developer-guide.md — manifest, each app part, runtime contract

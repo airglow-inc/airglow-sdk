@@ -1,4 +1,4 @@
-import iconSvg from '../../logo/icon.svg';
+import iconSvg from '../../../../extension-source/lib/branding/icon.svg';
 
 // ── Types ──
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, X } from 'lucide-react';
+import logoUrl from '../../lib/branding/logo.svg';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
 // (Apache 2.0, https://fonts.google.com/icons?icon.query=extension)
@@ -658,7 +659,7 @@ export default function App() {
             className="inline-block cursor-pointer"
             data-testid="dashboard-logo"
           >
-            <img src="/logo.svg" alt="Airglow" width={170} />
+            <img src={logoUrl} alt="Airglow" width={170} />
           </a>
         </div>
 
