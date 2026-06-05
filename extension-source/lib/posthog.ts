@@ -4,7 +4,7 @@
  *
  * Configuration via WXT-injected env (read at build time, see wxt.config.ts):
  *   WXT_POSTHOG_KEY  — phc_… project key. Empty/absent → no-op.
- *   WXT_POSTHOG_HOST — defaults to https://us.i.posthog.com.
+ *   WXT_POSTHOG_HOST — defaults to https://api.airglow.dev/e.
  *
  * MV3 service workers have no `window` and no localStorage; we force in-memory
  * persistence and re-`identify()` on every event so a suspended SW that wakes
@@ -20,7 +20,7 @@ import { logger } from './logger';
 import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 
 const USER_ID_KEY = '__airglow_user_id';
-const DEFAULT_HOST = 'https://us.i.posthog.com';
+const DEFAULT_HOST = 'https://api.airglow.dev/e';
 // Public, write-only PostHog Project API key — safe to embed in the published
 // extension bundle. Override at build time with WXT_POSTHOG_KEY (e.g. point a
 // dev build at a separate test project).
@@ -55,6 +55,10 @@ function getClient(): PostHog | null {
       preloadFeatureFlags: false,
       // Disable surveys/etc. silently.
       disableSurveys: true,
+      // MV3 service workers can be suspended before the default 10s batch
+      // timer fires. Send each analytics event immediately instead.
+      flushAt: 1,
+      flushInterval: 0,
     } as ConstructorParameters<typeof PostHog>[1]);
   } catch (e) {
     logger.warn('airglow', `posthog init failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -116,6 +120,7 @@ export async function capture(event: string, properties: Record<string, Property
   try {
     client.identify(identity.distinctId, identity.email ? { email: identity.email } : undefined);
     client.capture(event, sanitizeProperties(properties));
+    await client.flush();
   } catch (e) {
     logger.warn('airglow', `posthog capture '${event}' failed: ${e instanceof Error ? e.message : String(e)}`);
   }
@@ -134,6 +139,7 @@ export async function identify(extra: Record<string, PropertyValue> = {}): Promi
     const traits: Record<string, PropertyValue> = { ...sanitizeProperties(extra) };
     if (identity.email) traits.email = identity.email;
     client.identify(identity.distinctId, traits);
+    await client.flush();
   } catch (e) {
     logger.warn('airglow', `posthog identify failed: ${e instanceof Error ? e.message : String(e)}`);
   }
