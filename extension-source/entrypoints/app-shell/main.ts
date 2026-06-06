@@ -315,7 +315,7 @@ function mountApp(appId: string, source: AppSource) {
 
     sandboxNonce = crypto.randomUUID();
     pendingSandboxPayload = {
-      sdk: buildSdkCode(appId),
+      sdk: buildSdkCode(appId, 'app_ui'),
       code: await res.text(),
     };
 

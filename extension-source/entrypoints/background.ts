@@ -3,7 +3,7 @@ const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
 import { APP_INVENTORY_MANIFESTS_KEY, APP_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
-import { trackAppSeen, trackAppUsed, trackDashboardOpened, trackInstalled, type AnalyticsPropertyValue, type AppSeenSurface, type AppUseAction, type DashboardPage } from '../lib/analytics';
+import { trackAppSeen, trackAppUiOpened, trackAppUsed, trackDashboardOpened, trackIdentified, trackInstalled, type AnalyticsPropertyValue, type AppSeenSurface, type AppUiOpenSurface, type AppUseAction, type DashboardPage } from '../lib/analytics';
 import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
 
 export default defineBackground(() => {
@@ -272,6 +272,25 @@ export default defineBackground(() => {
   // don't trip the email-required gate during local development.
   // `__airglow_skip_dev_seed` opts a profile out of that — used by
   // `pnpm chrome --ask-email` to test the email-onboarding flow.
+  let lastTrackedUserEmail: string | null = null;
+
+  function trackStoredUserEmail(emailValue: unknown) {
+    const email = normalizeUserEmail(emailValue);
+    if (!email) return;
+    if (email === lastTrackedUserEmail) return;
+    lastTrackedUserEmail = email;
+    trackIdentified(email).catch((e) => {
+      if (lastTrackedUserEmail === email) lastTrackedUserEmail = null;
+      logger.warn('airglow', `trackIdentified failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }
+
+  chrome.storage.local.onChanged.addListener((changes) => {
+    if (USER_EMAIL_KEY in changes) {
+      trackStoredUserEmail(changes[USER_EMAIL_KEY].newValue);
+    }
+  });
+
   chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed'], async (result) => {
     let stored = normalizeUserEmail(result[USER_EMAIL_KEY]);
     const skipDevSeed = result['__airglow_skip_dev_seed'] === true;
@@ -279,9 +298,11 @@ export default defineBackground(() => {
       const dev = normalizeUserEmail(runtimeConfig.devUserEmail);
       if (dev) {
         await chrome.storage.local.set({ [USER_EMAIL_KEY]: dev });
+        stored = dev;
         log(`dev auto-set user email: ${dev}`);
       }
     }
+    trackStoredUserEmail(stored);
   });
 
   async function loadAndRegisterApps(force = false, skipReload = false) {
@@ -983,7 +1004,7 @@ export default defineBackground(() => {
       if (match) {
         const appId = match.target.replace('airglow://', '');
         findAnalyticsApp(appId).then((app) => {
-          if (app) trackUsedApp(app, 'open_ui', { surface: 'page_redirect' });
+          if (app) trackUiOpenApp(app, 'page_redirect');
         }).catch((e) =>
           logger.warn('airglow', `track redirect app open failed: ${e instanceof Error ? e.message : String(e)}`)
         );
@@ -992,6 +1013,9 @@ export default defineBackground(() => {
         });
         return;
       }
+      trackUserscriptInjectedForUrl(details.url).catch((e) =>
+        logger.warn('airglow', `track userscript injection failed: ${e instanceof Error ? e.message : String(e)}`)
+      );
       // Trace injection: only for tabs Claude has attached via native host.
       if (spiedTabs.has(details.tabId)) {
         injectTrace(details.tabId).catch((e) => logger.error('airglow', `trace inject failed: ${e}`));
@@ -1095,45 +1119,93 @@ export default defineBackground(() => {
       || value === 'dashboard_details'
       || value === 'page_edge_menu'
       || value === 'app_shell_edge_menu'
+      || value === 'userscript_injected'
       ? value
       : 'dashboard_list';
   }
 
-  function normalizeUseAction(value: unknown): AppUseAction {
-    return value === 'open_ui'
-      || value === 'rpc'
+  function normalizeUiOpenSurface(value: unknown): AppUiOpenSurface {
+    return value === 'dashboard_card'
+      || value === 'dashboard_sidebar'
+      || value === 'edge_menu'
+      || value === 'page_redirect'
+      ? value
+      : 'dashboard_card';
+  }
+
+  function normalizeUseAction(value: unknown): AppUseAction | undefined {
+    return value === 'rpc'
       || value === 'llm'
       || value === 'fetch'
       || value === 'open_window'
       || value === 'open_tab'
       || value === 'capture_tab'
+      || value === 'app_action'
       ? value
-      : 'open_ui';
+      : undefined;
   }
 
   function normalizeDashboardPage(value: unknown): DashboardPage {
     return value === 'logs' ? 'logs' : 'apps';
   }
 
-  function trackSeenAppOnce(
+  async function trackSeenAppOnce(
     app: SourcedManifest,
     surface: AppSeenSurface,
     extra: Record<string, AnalyticsPropertyValue> = {},
-  ) {
-    const throttleKey = `${surface}:${app._sourceType}:${app.id}:${typeof extra.section === 'string' ? extra.section : ''}`;
+  ): Promise<void> {
+    const section = typeof extra.section === 'string' ? extra.section : '';
+    const page = typeof extra.page_host === 'string' || typeof extra.page_path === 'string'
+      ? `${extra.page_host || ''}${extra.page_path || ''}`
+      : '';
+    const throttleKey = `${surface}:${app._sourceType}:${app.id}:${section}:${page}`;
     const now = Date.now();
     const previous = appSeenTrackedAt.get(throttleKey) || 0;
     if (now - previous < APP_SEEN_THROTTLE_MS) return;
     appSeenTrackedAt.set(throttleKey, now);
-    trackAppSeen(app, surface, extra).catch((e) =>
-      logger.warn('airglow', `trackAppSeen failed: ${e instanceof Error ? e.message : String(e)}`)
-    );
+    await trackAppSeen(app, surface, extra).catch((e) => {
+      appSeenTrackedAt.delete(throttleKey);
+      logger.warn('airglow', `trackAppSeen failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
   }
 
-  function trackPageAppImpressions(matches: PageAppMatch[], surface: AppSeenSurface) {
-    matches.forEach(({ manifest, disabled }, position) => {
-      trackSeenAppOnce(manifest, surface, { disabled, position });
-    });
+  async function trackPageAppImpressions(matches: PageAppMatch[], surface: AppSeenSurface): Promise<void> {
+    await Promise.all(matches.map(({ manifest, disabled }, position) =>
+      trackSeenAppOnce(manifest, surface, { disabled, position })
+    ));
+  }
+
+  function urlMatchesPattern(pattern: string, rawUrl: string): boolean {
+    const re = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+    return re.test(rawUrl);
+  }
+
+  function pageLocationProperties(rawUrl: string): Record<string, AnalyticsPropertyValue> {
+    try {
+      const url = new URL(rawUrl);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        return { page_host: null, page_path: null };
+      }
+      return {
+        page_host: url.hostname,
+        page_path: url.pathname || '/',
+      };
+    } catch {
+      return { page_host: null, page_path: null };
+    }
+  }
+
+  async function trackUserscriptInjectedForUrl(rawUrl: string) {
+    if (!userScriptsAllowed || !/^https?:\/\//.test(rawUrl)) return;
+    const disabled = await getDisabledApps();
+    const pageProps = pageLocationProperties(rawUrl);
+    for (const manifest of getAppManifests()) {
+      if (disabled.has(manifest.id)) continue;
+      const matches = manifest.userscripts?.some((userscript) =>
+        userscript.matches.some((pattern) => urlMatchesPattern(pattern, rawUrl))
+      );
+      if (matches) await trackSeenAppOnce(manifest, 'userscript_injected', pageProps);
+    }
   }
 
   async function trackUsedApp(
@@ -1143,6 +1215,16 @@ export default defineBackground(() => {
   ): Promise<void> {
     await trackAppUsed(app, action, extra).catch((e) =>
       logger.warn('airglow', `trackAppUsed failed: ${e instanceof Error ? e.message : String(e)}`)
+    );
+  }
+
+  async function trackUiOpenApp(
+    app: SourcedManifest,
+    surface: AppUiOpenSurface,
+    extra: Record<string, AnalyticsPropertyValue> = {},
+  ): Promise<void> {
+    await trackAppUiOpened(app, surface, extra).catch((e) =>
+      logger.warn('airglow', `trackAppUiOpened failed: ${e instanceof Error ? e.message : String(e)}`)
     );
   }
 
@@ -1170,6 +1252,30 @@ export default defineBackground(() => {
     // ── Airglow SDK messages (from content scripts/UI/startup) ──
     if (handleAirglowMessage(msg, _sender as chrome.runtime.MessageSender, sendResponse)) return true;
 
+    if (msg?.type === 'airglow:identity:getUserEmail') {
+      chrome.storage.local.get(USER_EMAIL_KEY, (result) => {
+        sendResponse({ email: normalizeUserEmail(result[USER_EMAIL_KEY]) });
+      });
+      return true;
+    }
+
+    if (msg?.type === 'airglow:identity:setUserEmail') {
+      const email = normalizeUserEmail(msg.email);
+      if (!email) {
+        sendResponse({ error: 'Enter a valid email address.', code: 'INVALID_EMAIL' });
+        return true;
+      }
+      chrome.storage.local.set({ [USER_EMAIL_KEY]: email }, () => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          sendResponse({ error: runtimeError.message || 'Could not save email.', code: 'STORAGE_ERROR' });
+          return;
+        }
+        sendResponse({ ok: true, email });
+      });
+      return true;
+    }
+
     // ── Edge button ──
     if (msg?.type === 'airglow:open-dashboard') {
       const page = msg.page ? `?page=${msg.page}` : '';
@@ -1191,7 +1297,7 @@ export default defineBackground(() => {
             section: typeof entry?.section === 'string' ? entry.section : null,
             position: typeof entry?.position === 'number' ? entry.position : fallbackPosition,
           };
-          trackSeenAppOnce(app, surface, extra);
+          await trackSeenAppOnce(app, surface, extra);
         }
         sendResponse({ ok: true });
       })().catch((e) => {
@@ -1201,7 +1307,7 @@ export default defineBackground(() => {
       return true;
     }
 
-    if (msg?.type === 'airglow:track-app-used') {
+    if (msg?.type === 'airglow:track-app-ui-opened') {
       const appId = typeof msg.appId === 'string' ? msg.appId : '';
       (async () => {
         const app = appId ? await findAnalyticsApp(appId, normalizeAnalyticsSourceType(msg.sourceType)) : undefined;
@@ -1209,10 +1315,26 @@ export default defineBackground(() => {
           sendResponse({ ok: false, error: `unknown appId: ${appId}` });
           return;
         }
-        const extra: Record<string, AnalyticsPropertyValue> = {
-          surface: typeof msg.surface === 'string' ? msg.surface : 'extension',
-        };
-        await trackUsedApp(app, normalizeUseAction(msg.action), extra);
+        await trackUiOpenApp(app, normalizeUiOpenSurface(msg.surface));
+        sendResponse({ ok: true });
+      })().catch((e) => {
+        logger.warn('airglow', `track app ui open failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track app ui open failed' });
+      });
+      return true;
+    }
+
+    if (msg?.type === 'airglow:track-app-used') {
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      (async () => {
+        const app = appId ? await findAnalyticsApp(appId, normalizeAnalyticsSourceType(msg.sourceType)) : undefined;
+        const action = normalizeUseAction(msg.action);
+        if (!app || !action) {
+          sendResponse({ ok: false, error: `unknown app usage: ${appId || 'missing appId'}` });
+          return;
+        }
+        const extra: Record<string, AnalyticsPropertyValue> = {};
+        await trackUsedApp(app, action, extra);
         sendResponse({ ok: true });
       })().catch((e) => {
         logger.warn('airglow', `track app used failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1222,12 +1344,15 @@ export default defineBackground(() => {
     }
 
     if (msg?.type === 'airglow:track-dashboard-opened') {
-      trackDashboardOpened(normalizeDashboardPage(msg.page), {
-        has_email: Boolean(msg.hasEmail),
-      }).catch((e) =>
-        logger.warn('airglow', `trackDashboardOpened failed: ${e instanceof Error ? e.message : String(e)}`)
-      );
-      sendResponse({ ok: true });
+      (async () => {
+        await trackDashboardOpened(normalizeDashboardPage(msg.page), {
+          has_email: Boolean(msg.hasEmail),
+        });
+        sendResponse({ ok: true });
+      })().catch((e) => {
+        logger.warn('airglow', `trackDashboardOpened failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track dashboard opened failed' });
+      });
       return true;
     }
 
@@ -1237,7 +1362,7 @@ export default defineBackground(() => {
       (async () => {
         if (appId) {
           const app = await findAnalyticsApp(appId);
-          if (app) await trackUsedApp(app, 'open_ui', { surface: 'edge_menu' });
+          if (app) await trackUiOpenApp(app, 'edge_menu');
         }
         sendResponse({ ok: true });
       })().catch((e) => {
@@ -1316,7 +1441,7 @@ export default defineBackground(() => {
       const senderTabId = _sender?.tab?.id;
       const errorsOnTab = senderTabId ? tabErrors.get(senderTabId) : undefined;
       const allManifests = getAppManifests();
-      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(([disabled, lastSeenRes]) => {
+      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(async ([disabled, lastSeenRes]) => {
         const lastSeen = (lastSeenRes['__logs_last_seen_ts'] as number | undefined) ?? 0;
         const hasError = (id: string) => {
           const ts = errorsOnTab?.get(id);
@@ -1341,7 +1466,7 @@ export default defineBackground(() => {
         if (appId) {
           const m = allManifests.find(m => m.id === appId);
           if (m) addMatchingApp(m);
-          trackPageAppImpressions(matchingAnalytics, 'app_shell_edge_menu');
+          await trackPageAppImpressions(matchingAnalytics, 'app_shell_edge_menu');
           sendResponse({ apps: matching });
           return;
         }
@@ -1349,10 +1474,7 @@ export default defineBackground(() => {
         // Check userscript matches
         for (const m of allManifests) {
           if (m.userscripts?.some(us =>
-            us.matches.some(p => {
-              const re = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
-              return re.test(url);
-            })
+            us.matches.some(p => urlMatchesPattern(p, url))
           )) {
             seen.add(m.id);
             addMatchingApp(m);
@@ -1379,30 +1501,32 @@ export default defineBackground(() => {
         } catch {}
 
         // Also check disabled apps' redirect rules (they're excluded from redirectRules)
-        chrome.storage.local.get('__platform:redirects', (result) => {
-          const all = (result['__platform:redirects'] || {}) as Record<string, { domains: string[]; target: string }[]>;
-          try {
-            const hostname = new URL(url).hostname;
-            for (const [rAppId, rules] of Object.entries(all)) {
-              if (seen.has(rAppId)) continue;
-              for (const rule of rules) {
-                const parts = hostname.split('.');
-                for (let i = 0; i < parts.length - 1; i++) {
-                  if (rule.domains.includes(parts.slice(i).join('.'))) {
-                    const m = allManifests.find(m => m.id === rAppId);
-                    if (m) {
-                      seen.add(m.id);
-                      addMatchingApp(m);
-                    }
-                    break;
+        const result = await chrome.storage.local.get('__platform:redirects');
+        const all = (result['__platform:redirects'] || {}) as Record<string, { domains: string[]; target: string }[]>;
+        try {
+          const hostname = new URL(url).hostname;
+          for (const [rAppId, rules] of Object.entries(all)) {
+            if (seen.has(rAppId)) continue;
+            for (const rule of rules) {
+              const parts = hostname.split('.');
+              for (let i = 0; i < parts.length - 1; i++) {
+                if (rule.domains.includes(parts.slice(i).join('.'))) {
+                  const m = allManifests.find(m => m.id === rAppId);
+                  if (m) {
+                    seen.add(m.id);
+                    addMatchingApp(m);
                   }
+                  break;
                 }
               }
             }
-          } catch {}
-          trackPageAppImpressions(matchingAnalytics, 'page_edge_menu');
-          sendResponse({ apps: matching });
-        });
+          }
+        } catch {}
+        await trackPageAppImpressions(matchingAnalytics, 'page_edge_menu');
+        sendResponse({ apps: matching });
+      }).catch((e) => {
+        logger.warn('airglow', `get page apps failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ error: 'get page apps failed' });
       });
       return true;
     }

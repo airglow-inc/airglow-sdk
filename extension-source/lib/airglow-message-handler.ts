@@ -6,7 +6,7 @@
 import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
 import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
-import { trackAppUsed, trackIdentified, type AnalyticsPropertyValue, type AppUseAction } from './analytics';
+import { trackAppUsed, type AnalyticsPropertyValue, type AppUseAction } from './analytics';
 
 const STORAGE_PREFIX = 'airglow:app:';
 const USER_SECRET_PREFIX = 'airglow:secret:';
@@ -295,10 +295,17 @@ export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
 
 type AppUsageExtra = Record<string, AnalyticsPropertyValue>;
 
+const MAX_CUSTOM_ANALYTICS_PROPS = 20;
+const CUSTOM_ANALYTICS_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
+
 function senderSurface(sender: chrome.runtime.MessageSender): string {
   const senderWorldId = (sender as any).userScriptWorldId as string | undefined;
   if (senderWorldId) return 'userscript';
   const senderUrl = typeof sender.url === 'string' ? sender.url : '';
+  try {
+    const url = new URL(senderUrl);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return 'userscript';
+  } catch {}
   if (senderUrl.includes('/app-shell.html')) return 'app_ui';
   if (senderUrl.includes('/startup-runner.html') || senderUrl.includes('/startup-sandbox.html')) return 'startup';
   return 'extension';
@@ -311,10 +318,48 @@ function trackUsage(
   extra: AppUsageExtra = {},
 ) {
   const app = getManifest(appId);
-  if (!app) return;
-  trackAppUsed(app, action, { surface: senderSurface(sender), ...extra }).catch((e) =>
-    logger.warn('airglow', `trackAppUsed failed: ${e instanceof Error ? e.message : String(e)}`)
-  );
+  if (!app) return Promise.resolve();
+  return trackAppUsed(app, action, { surface: senderSurface(sender), ...extra }).catch((e) => {
+    logger.warn('airglow', `trackAppUsed failed: ${e instanceof Error ? e.message : String(e)}`);
+  });
+}
+
+function normalizeCustomUsageAction(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
+  if (!normalized || !/^[a-z]/.test(normalized)) return undefined;
+  return normalized;
+}
+
+function normalizeCustomPropertyKey(key: string): string | undefined {
+  const normalized = key.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
+  if (!CUSTOM_ANALYTICS_KEY_RE.test(normalized)) return undefined;
+  if (normalized === 'action' || normalized === 'app' || normalized === 'email' || normalized === 'user' || normalized === 'distinct_id') return undefined;
+  if (normalized.startsWith('app_') || normalized.startsWith('user_') || normalized.startsWith('$')) return undefined;
+  return normalized;
+}
+
+function normalizeCustomPropertyValue(value: unknown): AnalyticsPropertyValue | undefined {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (Array.isArray(value)) {
+    const strings = value.filter((item): item is string => typeof item === 'string').slice(0, 20);
+    return strings.length > 0 ? strings : undefined;
+  }
+  return undefined;
+}
+
+function sanitizeCustomUsageProperties(value: unknown): Record<string, AnalyticsPropertyValue> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const out: Record<string, AnalyticsPropertyValue> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>).slice(0, MAX_CUSTOM_ANALYTICS_PROPS)) {
+    const key = normalizeCustomPropertyKey(rawKey);
+    if (!key) continue;
+    const propValue = normalizeCustomPropertyValue(rawValue);
+    if (propValue === undefined) continue;
+    out[`usage_${key}`] = propValue;
+  }
+  return out;
 }
 
 function errorCode(error: unknown, fallback: string): string {
@@ -404,6 +449,24 @@ function dispatchAirglowMessage(
 
   try {
   switch (msg.type) {
+    case 'airglow:analytics:used': {
+      const usageAction = normalizeCustomUsageAction(msg.action);
+      if (!usageAction) {
+        sendResponse({ error: 'usage action must be a non-empty string starting with a letter', code: 'INVALID_USAGE_ACTION' });
+        return true;
+      }
+      trackUsage(appId, 'app_action', _sender, {
+        usage_action: usageAction,
+        ...sanitizeCustomUsageProperties(msg.properties),
+      }).then(() => {
+        sendResponse({ ok: true });
+      }).catch((error) => {
+        logger.warn('airglow', `analytics used failed: ${error instanceof Error ? error.message : String(error)}`);
+        sendResponse({ error: 'analytics used failed', code: 'ANALYTICS_USED_FAILED' });
+      });
+      return true;
+    }
+
     case 'airglow:storage:get': {
       if (isClientSetting(appId, msg.key)) {
         const userKey = `${USER_SECRET_PREFIX}${msg.key}`;
@@ -701,9 +764,6 @@ function dispatchAirglowMessage(
       }
       chrome.storage.local.set({ [USER_EMAIL_KEY]: email }, () => {
         sendResponse({ ok: true, email });
-        trackIdentified(email).catch((e) =>
-          logger.warn('airglow', `trackIdentified failed: ${e instanceof Error ? e.message : String(e)}`)
-        );
       });
       return true;
     }

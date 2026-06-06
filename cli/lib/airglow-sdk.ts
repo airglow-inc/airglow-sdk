@@ -1,6 +1,6 @@
 /**
  * Airglow SDK — injected into app contexts before app code runs.
- * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, airglow.platform.
+ * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, airglow.platform, airglow.analytics.
  *
  * Auto-detects environment:
  * - Userscripts/extension pages: uses chrome.runtime.sendMessage
@@ -15,11 +15,14 @@
 
 export const AIRGLOW_SDK_CONTRACT_VERSION = '0.1.0-beta.1';
 
-export function buildSdkCode(appId: string): string {
+export type AirglowSdkContext = 'userscript' | 'app_ui' | 'startup';
+
+export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui'): string {
   return `
 (function() {
   const APP_ID = ${JSON.stringify(appId)};
   const SDK_VERSION = ${JSON.stringify(AIRGLOW_SDK_CONTRACT_VERSION)};
+  const SDK_CONTEXT = ${JSON.stringify(context)};
   const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
 
   let callCounter = 0;
@@ -149,6 +152,16 @@ export function buildSdkCode(appId: string): string {
     },
   };
 
+  const analytics = {
+    async used(action, properties) {
+      await sendMsg({
+        type: 'airglow:analytics:used',
+        action,
+        properties: properties || {},
+      });
+    },
+  };
+
   // Auto-capture uncaught errors. The global error handler also fires for
   // errors from the host page (e.g. Outlook's own ResizeObserver loop), so we
   // only report errors whose filename or stack points back to our bundle —
@@ -263,6 +276,7 @@ export function buildSdkCode(appId: string): string {
     fetch: airglowFetch,
     storage,
     log,
+    analytics,
     rpc,
     llm,
     platform,

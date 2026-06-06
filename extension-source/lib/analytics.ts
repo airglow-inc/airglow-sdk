@@ -33,8 +33,9 @@ type AppAnalyticsManifest = {
   _sourceType?: string;
 };
 
-export type AppSeenSurface = 'dashboard_list' | 'dashboard_details' | 'page_edge_menu' | 'app_shell_edge_menu';
-export type AppUseAction = 'open_ui' | 'rpc' | 'llm' | 'fetch' | 'open_window' | 'open_tab' | 'capture_tab';
+export type AppSeenSurface = 'dashboard_list' | 'dashboard_details' | 'page_edge_menu' | 'app_shell_edge_menu' | 'userscript_injected';
+export type AppUiOpenSurface = 'dashboard_card' | 'dashboard_sidebar' | 'edge_menu' | 'page_redirect';
+export type AppUseAction = 'rpc' | 'llm' | 'fetch' | 'open_window' | 'open_tab' | 'capture_tab' | 'app_action';
 export type DashboardPage = 'apps' | 'logs';
 
 function arrayCount(value: unknown): number {
@@ -71,14 +72,12 @@ function appAnalyticsProperties(
   };
 }
 
-/** Fire-and-forget; dedup'd via storage. */
+/** Dedup'd via storage after PostHog accepts the event. */
 export async function trackInstalled(): Promise<void> {
   const stored = await chrome.storage.local.get(INSTALLED_FLAG_KEY);
   if (stored[INSTALLED_FLAG_KEY]) return;
+  await posthog.capture('Extension Installed');
   await chrome.storage.local.set({ [INSTALLED_FLAG_KEY]: Date.now() });
-  posthog.capture('Extension Installed').catch((e) => {
-    logger.warn('airglow', `posthog capture 'Extension Installed' failed: ${e instanceof Error ? e.message : String(e)}`);
-  });
 }
 
 /** Refreshes person traits and emits `User Identified` once per email value. */
@@ -94,12 +93,10 @@ export async function trackIdentified(emailValue?: unknown): Promise<void> {
   }
 
   if (normalizeUserEmail(stored[IDENTIFIED_EMAIL_KEY]) === email) return;
+  await posthog.capture('User Identified');
   await chrome.storage.local.set({
     [IDENTIFIED_FLAG_KEY]: Date.now(),
     [IDENTIFIED_EMAIL_KEY]: email,
-  });
-  posthog.capture('User Identified').catch((e) => {
-    logger.warn('airglow', `posthog capture 'User Identified' failed: ${e instanceof Error ? e.message : String(e)}`);
   });
 }
 
@@ -120,13 +117,13 @@ export async function trackAppsRegistered(appIds: string[]): Promise<void> {
     ? (stored[APPS_REGISTERED_KEY] as string[])
     : [];
   if (previous.length === current.length && previous.every((id, i) => id === current[i])) return;
-  await chrome.storage.local.set({ [APPS_REGISTERED_KEY]: current });
-  posthog.identify({ apps_registered: current }).catch((e) => {
+  try {
+    await posthog.identify({ apps_registered: current });
+  } catch (e) {
     logger.warn('airglow', `posthog identify (apps_registered) failed: ${e instanceof Error ? e.message : String(e)}`);
-  });
-  posthog.capture('Apps Registered', { apps: current, count: current.length }).catch((e) => {
-    logger.warn('airglow', `posthog capture 'Apps Registered' failed: ${e instanceof Error ? e.message : String(e)}`);
-  });
+  }
+  await posthog.capture('Apps Registered', { apps: current, count: current.length });
+  await chrome.storage.local.set({ [APPS_REGISTERED_KEY]: current });
 }
 
 export async function trackAppSeen(
@@ -143,6 +140,18 @@ export async function trackAppUsed(
   extra: Record<string, AnalyticsPropertyValue> = {},
 ): Promise<void> {
   await posthog.capture('App Used', appAnalyticsProperties(app, { action, ...extra }));
+}
+
+export async function trackAppUiOpened(
+  app: AppAnalyticsManifest,
+  surface: AppUiOpenSurface,
+  extra: Record<string, AnalyticsPropertyValue> = {},
+): Promise<void> {
+  await posthog.capture(
+    'App UI Opened',
+    appAnalyticsProperties(app, { surface, ...extra }),
+    { includeIdentityProperties: true },
+  );
 }
 
 export async function trackDashboardOpened(

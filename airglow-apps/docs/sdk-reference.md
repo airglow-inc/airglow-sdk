@@ -51,6 +51,21 @@ airglow.log.error('API call failed', { status: 429 })
 
 ---
 
+## airglow.analytics.used(action, properties?)
+
+Records a meaningful in-app user action as `App Used`. Use it when the user did something valuable that is not already represented by an SDK call like `airglow.llm`, `airglow.rpc`, `airglow.fetch`, `openTab`, etc.
+
+```ts
+await airglow.analytics.used('summary_requested', {
+  story_count: 30,
+  source: 'floating_button',
+});
+```
+
+The platform always owns the event name and identity fields: it adds `app_id`, `app_name`, user identity, and `surface`. The app can only provide a short action name and simple scalar properties; custom properties are stored with a `usage_` prefix.
+
+---
+
 ## airglow.rpc(name, payload)
 
 Calls a server function at `server/<name>.ts`.

@@ -1,21 +1,20 @@
 /**
  * PostHog client — product analytics that ingests directly from the extension
- * without going through our Next backend. Survives the backend being offline.
+ * through Airglow's reverse proxy.
  *
  * Configuration via WXT-injected env (read at build time, see wxt.config.ts):
  *   WXT_POSTHOG_KEY  — phc_… project key. Empty/absent → no-op.
  *   WXT_POSTHOG_HOST — defaults to https://api.airglow.dev/e.
  *
- * MV3 service workers have no `window` and no localStorage; we force in-memory
- * persistence and re-`identify()` on every event so a suspended SW that wakes
- * with a fresh memory storage still tags events with the correct distinctId.
+ * Uses PostHog's documented public capture API:
+ *   POST {host}/i/v0/e/
+ * with top-level api_key, event, distinct_id, and properties.
  *
  * Distinct ID = `__airglow_user_id` (the same anonymous extension id we send
  * as `X-Airglow-User-Id`), so PostHog persons line up with Vercel Analytics
  * `userIdHash` (which is salted SHA-256 of the same value).
  */
 
-import { PostHog } from 'posthog-js-lite';
 import { logger } from './logger';
 import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 
@@ -25,8 +24,10 @@ const DEFAULT_HOST = 'https://api.airglow.dev/e';
 // extension bundle. Override at build time with WXT_POSTHOG_KEY (e.g. point a
 // dev build at a separate test project).
 const DEFAULT_KEY = 'phc_nUaAkXacoSn97fwjsjuQNKvYKc3uYzgsZAq5jc7ZA4XS';
+const REQUEST_TIMEOUT_MS = 10_000;
 
-let clientCache: PostHog | null | undefined;
+type Config = { key: string; host: string };
+let configCache: Config | null | undefined;
 
 function readBuildEnv(key: string): string | undefined {
   // import.meta.env is populated by WXT/Vite at build time. Guarded for the
@@ -36,35 +37,16 @@ function readBuildEnv(key: string): string | undefined {
   return typeof value === 'string' && value ? value : undefined;
 }
 
-function getClient(): PostHog | null {
-  if (clientCache !== undefined) return clientCache;
+function getConfig(): Config | null {
+  if (configCache !== undefined) return configCache;
   const key = readBuildEnv('WXT_POSTHOG_KEY') || DEFAULT_KEY;
   if (!key) {
-    clientCache = null;
+    configCache = null;
     return null;
   }
-  const host = readBuildEnv('WXT_POSTHOG_HOST') || DEFAULT_HOST;
-  try {
-    clientCache = new PostHog(key, {
-      host,
-      // SW has no localStorage; memory is fine because distinctId is restored
-      // from chrome.storage on each event via identify().
-      persistence: 'memory',
-      autocapture: false,
-      // Don't try to pull feature flags — we're write-only.
-      preloadFeatureFlags: false,
-      // Disable surveys/etc. silently.
-      disableSurveys: true,
-      // MV3 service workers can be suspended before the default 10s batch
-      // timer fires. Send each analytics event immediately instead.
-      flushAt: 1,
-      flushInterval: 0,
-    } as ConstructorParameters<typeof PostHog>[1]);
-  } catch (e) {
-    logger.warn('airglow', `posthog init failed: ${e instanceof Error ? e.message : String(e)}`);
-    clientCache = null;
-  }
-  return clientCache;
+  const host = (readBuildEnv('WXT_POSTHOG_HOST') || DEFAULT_HOST).replace(/\/+$/, '');
+  configCache = { key, host };
+  return configCache;
 }
 
 async function getIdentity(): Promise<{ distinctId: string; email?: string } | null> {
@@ -85,6 +67,10 @@ const JWT_RE = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 const URL_QUERY_RE = /(https?:\/\/[^\s?#]+)\?[^\s]*/g;
 
 type PropertyValue = string | number | boolean | null | string[];
+
+type CaptureOptions = {
+  includeIdentityProperties?: boolean;
+};
 
 function scrubString(input: string): string {
   let s = input.replace(URL_QUERY_RE, '$1');
@@ -108,39 +94,80 @@ function sanitizeProperties(properties: Record<string, PropertyValue>): Record<s
   return out;
 }
 
-/**
- * Send an event to PostHog. Idempotent identify() on every call so the SW
- * restart case (memory persistence cleared) doesn't drop the distinctId.
- */
-export async function capture(event: string, properties: Record<string, PropertyValue> = {}): Promise<void> {
-  const client = getClient();
-  if (!client) return;
-  const identity = await getIdentity();
-  if (!identity) return;
+async function postEvent(payload: {
+  event: string;
+  distinct_id: string;
+  properties?: Record<string, PropertyValue | Record<string, PropertyValue>>;
+}): Promise<void> {
+  const config = getConfig();
+  if (!config) return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    client.identify(identity.distinctId, identity.email ? { email: identity.email } : undefined);
-    client.capture(event, sanitizeProperties(properties));
-    await client.flush();
-  } catch (e) {
-    logger.warn('airglow', `posthog capture '${event}' failed: ${e instanceof Error ? e.message : String(e)}`);
+    const res = await fetch(`${config.host}/i/v0/e/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        api_key: config.key,
+        event: payload.event,
+        distinct_id: payload.distinct_id,
+        properties: payload.properties || {},
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`PostHog capture returned ${res.status}${text ? `: ${text.slice(0, 200)}` : ''}`);
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
 /**
- * Set/refresh person properties without emitting a `$identify`-only event.
+ * Send an event to PostHog using the documented public capture endpoint.
+ */
+export async function capture(
+  event: string,
+  properties: Record<string, PropertyValue> = {},
+  options: CaptureOptions = {},
+): Promise<void> {
+  const identity = await getIdentity();
+  if (!identity) return;
+  try {
+    const eventProperties = sanitizeProperties(properties);
+    if (options.includeIdentityProperties) {
+      eventProperties.user_id = identity.distinctId;
+      eventProperties.user_email = identity.email || null;
+    }
+    await postEvent({
+      event,
+      distinct_id: identity.distinctId,
+      properties: eventProperties,
+    });
+  } catch (e) {
+    logger.warn('airglow', `posthog capture '${event}' failed: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
+  }
+}
+
+/**
+ * Set/refresh person properties via PostHog's documented `$identify` event.
  * Use after the user supplies their email.
  */
 export async function identify(extra: Record<string, PropertyValue> = {}): Promise<void> {
-  const client = getClient();
-  if (!client) return;
   const identity = await getIdentity();
   if (!identity) return;
   try {
     const traits: Record<string, PropertyValue> = { ...sanitizeProperties(extra) };
     if (identity.email) traits.email = identity.email;
-    client.identify(identity.distinctId, traits);
-    await client.flush();
+    await postEvent({
+      event: '$identify',
+      distinct_id: identity.distinctId,
+      properties: { $set: traits },
+    });
   } catch (e) {
     logger.warn('airglow', `posthog identify failed: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
   }
 }

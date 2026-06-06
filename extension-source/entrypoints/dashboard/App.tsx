@@ -423,14 +423,6 @@ export default function App() {
   }, [identityLoaded, userEmail, page, apps, appOrder]);
 
   useEffect(() => {
-    if (!identityLoaded || !userEmail) return;
-    chrome.runtime.sendMessage({
-      type: 'airglow:identity:setUserEmail',
-      email: userEmail,
-    }, () => { void chrome.runtime.lastError; });
-  }, [identityLoaded, userEmail]);
-
-  useEffect(() => {
     if (!identityLoaded || dashboardOpenTracked.current) return;
     dashboardOpenTracked.current = true;
     chrome.runtime.sendMessage({
@@ -464,17 +456,14 @@ export default function App() {
       setEmailError('Enter a valid email address.');
       return;
     }
-    chrome.runtime.sendMessage({
-      type: 'airglow:identity:setUserEmail',
-      email: trimmed,
-    }, (response?: { ok?: boolean; email?: string; error?: string }) => {
+    chrome.storage.local.set({ [USER_EMAIL_KEY]: trimmed }, () => {
       const runtimeError = chrome.runtime.lastError;
-      if (runtimeError || !response?.ok || !response.email) {
-        setEmailError(response?.error || runtimeError?.message || 'Could not save email.');
+      if (runtimeError) {
+        setEmailError(runtimeError.message || 'Could not save email.');
         return;
       }
-      setUserEmail(response.email);
-      setEmailInput(response.email);
+      setUserEmail(trimmed);
+      setEmailInput(trimmed);
       setEmailError(null);
     });
   }
@@ -574,10 +563,9 @@ export default function App() {
 
   function trackAppUiOpen(app: Pick<AppManifest, 'id' | '_sourceType'>, surface: string = 'dashboard') {
     chrome.runtime.sendMessage({
-      type: 'airglow:track-app-used',
+      type: 'airglow:track-app-ui-opened',
       appId: app.id,
       sourceType: app._sourceType,
-      action: 'open_ui',
       surface,
     }, () => { void chrome.runtime.lastError; });
   }

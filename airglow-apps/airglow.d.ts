@@ -34,6 +34,8 @@ interface AirglowRedirectRule {
   target: string;
 }
 
+type AirglowAnalyticsValue = string | number | boolean | null | string[];
+
 interface Airglow {
   sdkVersion: AirglowSdkVersion;
 
@@ -53,6 +55,10 @@ interface Airglow {
     info(message: string, data?: any): Promise<void>;
     warn(message: string, data?: any): Promise<void>;
     error(message: string, data?: any): Promise<void>;
+  };
+
+  analytics: {
+    used(action: string, properties?: Record<string, AirglowAnalyticsValue>): Promise<void>;
   };
 
   rpc<T = any>(functionName: string, payload?: any): Promise<T>;

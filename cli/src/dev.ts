@@ -406,7 +406,7 @@ async function handleUi(appsDir: string, appId: string): Promise<[number, string
     try { css = await readFile(join(appsDir, 'shared/theme/tokens.css'), 'utf-8'); } catch {}
   }
 
-  const sdkCode = buildSdkCode(appId);
+  const sdkCode = buildSdkCode(appId, 'app_ui');
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${appId}</title><style>${AIRGLOW_BASE_CSS}</style><style>${css}</style></head>
