@@ -1,5 +1,6 @@
 import { newApp } from './new';
 import { dev } from './dev';
+import { upload } from './upload';
 
 const [,, command, ...rest] = process.argv;
 
@@ -43,6 +44,23 @@ switch (command) {
       appsDir: typeof flags['apps-dir'] === 'string' ? flags['apps-dir'] : undefined,
     });
     break;
+  case 'upload':
+    upload({
+      target: positional[0],
+      appsDir: typeof flags['apps-dir'] === 'string' ? flags['apps-dir'] : undefined,
+      cloudUrl: typeof flags.cloud === 'string' ? flags.cloud : undefined,
+      visibility: typeof flags.visibility === 'string' ? flags.visibility : undefined,
+      visibleTo: typeof flags['visible-to'] === 'string' ? flags['visible-to'] : undefined,
+      publish: flags.publish === true,
+      dryRun: flags['dry-run'] === true,
+      yes: flags.yes === true,
+      user: typeof flags.user === 'string' ? flags.user : undefined,
+      password: typeof flags.password === 'string' ? flags.password : undefined,
+    }).catch((error) => {
+      console.error(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    });
+    break;
   case '--help':
   case '-h':
   case 'help':
@@ -54,11 +72,17 @@ switch (command) {
 Commands:
   \x1b[1mnew <app-id>\x1b[0m              \x1b[2mScaffold a new app (app-id: lowercase a-z, digits, dashes)\x1b[0m
   \x1b[1mdev [--port N] [--apps-dir D]\x1b[0m  \x1b[2mRun apps locally with hot reload\x1b[0m
+  \x1b[1mupload <app> [options]\x1b[0m     \x1b[2mZip and upload an app to Airglow Cloud\x1b[0m
 
 Run from inside the workspace (\x1b[36mcd airglow-apps\x1b[0m).
 
 Options:
   --port N           Bind port (default 3222)
   --apps-dir D       Apps workspace directory (default cwd)
+  --cloud URL        Cloud URL (default https://api.airglow.dev)
+  --visibility MODE  production, dev, or hidden
+  --publish          Publish uploaded ready version
+  --dry-run          Print archive contents without uploading
+  --yes              Confirm upload
   --help, -h         Show this message`);
 }

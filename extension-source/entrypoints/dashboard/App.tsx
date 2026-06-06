@@ -66,7 +66,7 @@ async function getFeedbackEndpoint(): Promise<string> {
   return new URL(endpoint, `${endpointBase}/`).toString();
 }
 
-type AppVisibility = 'public' | 'hidden';
+type AppVisibility = 'public' | 'development' | 'hidden';
 
 type AppSourceType = 'local' | 'cloud';
 
@@ -370,6 +370,7 @@ export default function App() {
         const next = normalizeUserEmail(changes[USER_EMAIL_KEY].newValue) || '';
         setUserEmail(next || null);
         setEmailInput(next);
+        chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       }
       if ('__native_host_connected' in changes) {
         const v = changes['__native_host_connected'].newValue;
@@ -422,6 +423,10 @@ export default function App() {
       setUserEmail(trimmed);
       setEmailInput(trimmed);
       setEmailError(null);
+      chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => {
+        void chrome.runtime.lastError;
+        loadAll();
+      });
     });
   }
 

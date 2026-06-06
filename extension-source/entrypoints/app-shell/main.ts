@@ -11,6 +11,7 @@
 import '../../lib/airglow-base.css';
 import { logger } from '../../lib/logger';
 import { buildSdkCode } from '../../lib/airglow-sdk';
+import { getAirglowIdentityHeaders } from '../../lib/airglow-identity';
 
 const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
@@ -173,9 +174,13 @@ function mountApp(appId: string, source: AppSource) {
 
   async function fetchUiBundle(url: string): Promise<Response> {
     let lastError = '';
+    const headers = source.type === 'cloud' ? await getAirglowIdentityHeaders() : {};
     for (let attempt = 0; attempt <= UI_BUNDLE_RETRY_DELAYS_MS.length; attempt++) {
       try {
-        const res = await fetch(url, { signal: AbortSignal.timeout(UI_BUNDLE_FETCH_TIMEOUT_MS) });
+        const res = await fetch(url, {
+          headers,
+          signal: AbortSignal.timeout(UI_BUNDLE_FETCH_TIMEOUT_MS),
+        });
         if (!res.ok && shouldRetryHttpStatus(res.status) && attempt < UI_BUNDLE_RETRY_DELAYS_MS.length) {
           lastError = `UI bundle request failed with HTTP ${res.status}`;
           await sleep(UI_BUNDLE_RETRY_DELAYS_MS[attempt]);

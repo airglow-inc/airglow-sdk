@@ -8,6 +8,7 @@ import { logger } from './logger';
 import { trackAppsRegistered } from './analytics';
 import { ensureAirglowOffscreenDocument, sendRuntimeMessageWhenReady } from './offscreen-runtime';
 import { getCloudAppSourceUrl } from './app-source-config';
+import { getAirglowIdentityHeaders } from './airglow-identity';
 import {
   buildSourceMap,
   resolveAppInventoryManifests,
@@ -93,9 +94,13 @@ function shouldRetryAppSourceStatus(status: number): boolean {
 async function fetchAppSource(source: AppSource, url: string, timeoutMs: number): Promise<Response> {
   const retryDelays = sourceRetryDelaysMs(source);
   let lastError = '';
+  const identityHeaders = source.type === 'cloud' ? await getAirglowIdentityHeaders() : {};
   for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
     try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      const res = await fetch(url, {
+        headers: identityHeaders,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
       if (!res.ok && shouldRetryAppSourceStatus(res.status) && attempt < retryDelays.length) {
         lastError = `${source.type} app source ${source.url} returned ${res.status}`;
         await sleep(retryDelays[attempt]);

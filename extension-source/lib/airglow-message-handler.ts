@@ -5,7 +5,7 @@
 
 import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
-import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
+import { buildIdentityHeaders, getAirglowIdentity, USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 import { trackIdentified } from './analytics';
 
 const STORAGE_PREFIX = 'airglow:app:';
@@ -13,32 +13,11 @@ const USER_SECRET_PREFIX = 'airglow:secret:';
 const DEV_SECRET_PREFIX = 'airglow:dev-secret:';
 const DEFAULT_POPUP_WIDTH = 520;
 const DEFAULT_POPUP_HEIGHT = 720;
-const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
 const APP_MANIFESTS_KEY = '__app_manifests';
 const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
 const LLM_TIMEOUT_MS = 60000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
-
-async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string }> {
-  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, AIRGLOW_USER_ID_KEY]);
-  let userId = typeof stored[AIRGLOW_USER_ID_KEY] === 'string' ? stored[AIRGLOW_USER_ID_KEY] : '';
-  if (!userId) {
-    userId = `ag_${crypto.randomUUID()}`;
-    await chrome.storage.local.set({ [AIRGLOW_USER_ID_KEY]: userId });
-  }
-  return {
-    email: normalizeUserEmail(stored[USER_EMAIL_KEY]),
-    userId,
-  };
-}
-
-function buildIdentityHeaders(identity: { email?: string; userId: string }): Record<string, string> {
-  return {
-    'X-Airglow-User-Id': identity.userId,
-    ...(identity.email ? { 'X-Airglow-User-Email': identity.email } : {}),
-  };
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -108,7 +87,7 @@ async function executeRemoteRpc(
   functionName: string,
   payload: unknown,
 ): Promise<unknown> {
-  const identity = await getAirglowRpcIdentity();
+  const identity = await getAirglowIdentity();
   const baseUrl = source.url.replace(/\/+$/, '');
   const url = `${baseUrl}/api/apps/${encodeURIComponent(appId)}/rpc/${encodeURIComponent(functionName)}`;
   const requestInit: RequestInit = {
@@ -483,7 +462,7 @@ function dispatchAirglowMessage(
       const baseUrl = source.url.replace(/\/+$/, '');
       const url = `${baseUrl}/api/llm/anthropic/messages`;
       (async () => {
-        const identity = await getAirglowRpcIdentity();
+        const identity = await getAirglowIdentity();
         const requestInit: RequestInit = {
           method: 'POST',
           headers: {

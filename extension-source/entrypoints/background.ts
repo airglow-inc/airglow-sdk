@@ -420,6 +420,14 @@ export default defineBackground(() => {
   loadAndRegisterApps(true).catch((e) => logger.error('airglow', `initial app load failed: ${e}`));
   scheduleLocalManifestPolling();
 
+  chrome.storage.local.onChanged.addListener((changes) => {
+    if (USER_EMAIL_KEY in changes) {
+      loadAndRegisterApps(true, true).catch((e) =>
+        logger.error('airglow', `email-scoped app refresh failed: ${e}`)
+      );
+    }
+  });
+
   // ───── Native messaging bridge for the network trace ─────
   const NM_HOST = 'com.airglow.trace';
   const spiedTabs = new Set<number>();

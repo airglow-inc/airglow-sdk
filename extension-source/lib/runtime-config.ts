@@ -3,7 +3,7 @@
 // replaces at build time, so the prod branch tree-shakes away — this string
 // never reaches the production bundle.
 const DEV_USER_EMAIL: string | undefined = import.meta.env.DEV
-  ? 'test@airglow.cc'
+  ? 'test@airglow.dev'
   : undefined;
 
 export const runtimeConfig = {

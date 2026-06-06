@@ -9,7 +9,7 @@
  *   shadowed by your local copy" with a badge.
  */
 
-export type AppVisibility = 'public' | 'hidden';
+export type AppVisibility = 'public' | 'development' | 'hidden';
 export type AppSourceType = 'local' | 'cloud';
 
 export interface AppManifest {
