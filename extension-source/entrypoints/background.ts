@@ -1155,10 +1155,8 @@ export default defineBackground(() => {
     extra: Record<string, AnalyticsPropertyValue> = {},
   ): Promise<void> {
     const section = typeof extra.section === 'string' ? extra.section : '';
-    const page = typeof extra.page_host === 'string' || typeof extra.page_path === 'string'
-      ? `${extra.page_host || ''}${extra.page_path || ''}`
-      : '';
-    const throttleKey = `${surface}:${app._sourceType}:${app.id}:${section}:${page}`;
+    const pageHost = typeof extra.page_host === 'string' ? extra.page_host : '';
+    const throttleKey = `${surface}:${app._sourceType}:${app.id}:${section}:${pageHost}`;
     const now = Date.now();
     const previous = appSeenTrackedAt.get(throttleKey) || 0;
     if (now - previous < APP_SEEN_THROTTLE_MS) return;
@@ -1184,14 +1182,11 @@ export default defineBackground(() => {
     try {
       const url = new URL(rawUrl);
       if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-        return { page_host: null, page_path: null };
+        return { page_host: null };
       }
-      return {
-        page_host: url.hostname,
-        page_path: url.pathname || '/',
-      };
+      return { page_host: url.hostname };
     } catch {
-      return { page_host: null, page_path: null };
+      return { page_host: null };
     }
   }
 

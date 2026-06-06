@@ -86,11 +86,7 @@ export async function trackIdentified(emailValue?: unknown): Promise<void> {
   const email = normalizeUserEmail(emailValue) || normalizeUserEmail(stored[USER_EMAIL_KEY]);
   if (!email) return;
 
-  try {
-    await posthog.identify();
-  } catch (e) {
-    logger.warn('airglow', `posthog identify failed: ${e instanceof Error ? e.message : String(e)}`);
-  }
+  await posthog.identify();
 
   if (normalizeUserEmail(stored[IDENTIFIED_EMAIL_KEY]) === email) return;
   await posthog.capture('User Identified');
