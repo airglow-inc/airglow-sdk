@@ -45,6 +45,27 @@ switch (command) {
     });
     break;
   case 'upload':
+    if (flags.help === true || !positional[0]) {
+      console.log(`
+  ◆ \x1b[1mairglow upload\x1b[0m — zip and upload an app to Airglow Cloud \x1b[2m(maintainer-only)\x1b[0m
+
+Usage:
+  \x1b[1mairglow upload <app-id-or-path> [options]\x1b[0m
+
+Options:
+  --apps-dir D         \x1b[2mApps workspace directory (default cwd)\x1b[0m
+  --cloud URL          \x1b[2mCloud URL (default https://api.airglow.dev)\x1b[0m
+  --visibility MODE    \x1b[2mproduction, development, or hidden\x1b[0m
+  --visible-to EMAIL   \x1b[2mAssert app is visible to this email after publish\x1b[0m
+  --publish            \x1b[2mPublish uploaded version\x1b[0m
+  --dry-run            \x1b[2mPrint archive contents without uploading\x1b[0m
+  --yes                \x1b[2mConfirm upload\x1b[0m
+  --user NAME          \x1b[2mAdmin user (env: AIRGLOW_ADMIN_USER, default airglow)\x1b[0m
+  --password PASS      \x1b[2mAdmin password (env: AIRGLOW_ADMIN_PASSWORD — prefer the env var)\x1b[0m
+
+See \x1b[36mcli/MAINTAINERS.md\x1b[0m for the full reference.`);
+      break;
+    }
     upload({
       target: positional[0],
       appsDir: typeof flags['apps-dir'] === 'string' ? flags['apps-dir'] : undefined,
@@ -66,23 +87,18 @@ switch (command) {
   case 'help':
   default:
     // Keep this help text in sync with cli/README.md (the fenced block under "Run it from").
+    // The `upload` command is intentionally hidden from public help; see cli/MAINTAINERS.md.
     console.log(`
   ◆ \x1b[1mairglow\x1b[0m — build apps for the web
 
 Commands:
   \x1b[1mnew <app-id>\x1b[0m              \x1b[2mScaffold a new app (app-id: lowercase a-z, digits, dashes)\x1b[0m
   \x1b[1mdev [--port N] [--apps-dir D]\x1b[0m  \x1b[2mRun apps locally with hot reload\x1b[0m
-  \x1b[1mupload <app> [options]\x1b[0m     \x1b[2mZip and upload an app to Airglow Cloud\x1b[0m
 
 Run from inside the workspace (\x1b[36mcd airglow-apps\x1b[0m).
 
 Options:
-  --port N           Bind port (default 3222)
-  --apps-dir D       Apps workspace directory (default cwd)
-  --cloud URL        Cloud URL (default https://api.airglow.dev)
-  --visibility MODE  production, dev, or hidden
-  --publish          Publish uploaded ready version
-  --dry-run          Print archive contents without uploading
-  --yes              Confirm upload
-  --help, -h         Show this message`);
+  --port N      Bind port (default 3222)
+  --apps-dir D  Apps workspace directory (default cwd)
+  --help, -h    Show this message`);
 }
