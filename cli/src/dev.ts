@@ -266,6 +266,7 @@ async function scanManifestsInto(
       const raw = await readFile(join(appDir, 'manifest.json'), 'utf-8');
       const manifest = JSON.parse(raw);
       manifest._hash = await computeAppHash(appDir, sharedMtimes);
+      manifest._hasUi = (await findUiEntry(join(appDir, 'ui'))) !== null;
       manifest._serverFunctions = await listServerFunctions(appDir);
       if (manifest.id) appDirCache.set(manifest.id, appDir);
       out.push(manifest);

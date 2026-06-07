@@ -26,6 +26,8 @@ export interface AppManifest {
   userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
   secrets?: Record<string, { scope?: string; label?: string }>;
   host_permissions?: string[];
+  // App-source-injected: whether the app exposes a UI entrypoint.
+  _hasUi?: boolean;
   // Dev-server-injected on local source: names of `server/*.ts` RPC handlers.
   // Surfaced in the dashboard to warn when an app depends on the dev server.
   _serverFunctions?: string[];

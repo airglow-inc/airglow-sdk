@@ -30,6 +30,7 @@ type AppAnalyticsManifest = {
   startup?: unknown;
   serverFunctions?: unknown;
   _serverFunctions?: unknown;
+  _hasUi?: unknown;
   userscripts?: unknown;
   _sourceType?: string;
 };
@@ -50,7 +51,7 @@ function appRegistrationProperties(app: AppAnalyticsManifest): Record<string, An
   return {
     app_id: app.id,
     app_source_type: normalizeAppSourceType(app._sourceType),
-    has_ui: true,
+    has_ui: app._hasUi === true,
     has_startup: typeof app.startup === 'string' && app.startup.trim().length > 0,
     has_server_functions: serverFunctionCount > 0,
     has_userscripts: userscriptCount > 0,
