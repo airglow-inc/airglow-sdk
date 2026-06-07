@@ -4,6 +4,7 @@ import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } f
 import { APP_INVENTORY_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackDashboardOpened, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
+import * as posthog from '../lib/posthog';
 import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from '../lib/airglow-identity';
 
 export default defineBackground(() => {
@@ -295,8 +296,23 @@ export default defineBackground(() => {
     // Resolve user_id + auto-fill email from chrome.identity.getProfileUserInfo
     // before the email-tracking branch reads storage. ensureIdentity may write
     // USER_EMAIL_KEY, which fires the onChanged listener above.
-    const identity = await ensureIdentity();
-    log(`identity resolved: user_id=${identity.userId}${identity.email ? ` email=${identity.email}` : ''}`);
+    //
+    // If an email is available, send $identify *and await it* before releasing
+    // the posthog.capture gate — so the first event the user sees in PostHog
+    // already has `email` set on the person (otherwise events.list renders the
+    // raw distinct_id and never backfills). try/finally guarantees the gate
+    // releases even on crash; the capture-side timeout is a pure safety net.
+    try {
+      const identity = await ensureIdentity();
+      log(`identity resolved: user_id=${identity.userId}${identity.email ? ` email=${identity.email}` : ''}`);
+      if (identity.email) {
+        await posthog.identify().catch((e) =>
+          logger.warn('airglow', `boot $identify failed: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
+    } finally {
+      posthog.markIdentifyComplete();
+    }
 
     const result = await chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed']);
     let stored = normalizeUserEmail(result[USER_EMAIL_KEY]);

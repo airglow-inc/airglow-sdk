@@ -3,7 +3,6 @@
  *
  * Dedup state lives in `chrome.storage.local`:
  *   `__airglow_installed_tracked` — set on the first install dispatch.
- *   `__airglow_identified_tracked` — set on the first valid email dispatch.
  *   `__airglow_apps_registered`   — last-shipped sorted app-id set; we only
  *                                   fire `apps_registered` when this changes.
  */
@@ -13,8 +12,6 @@ import { logger } from './logger';
 import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 
 const INSTALLED_FLAG_KEY = '__airglow_installed_tracked';
-const IDENTIFIED_FLAG_KEY = '__airglow_identified_tracked';
-const IDENTIFIED_EMAIL_KEY = '__airglow_identified_tracked_email';
 const APPS_REGISTERED_KEY = '__airglow_apps_registered';
 
 export type AnalyticsPropertyValue =
@@ -70,20 +67,12 @@ export async function trackInstalled(): Promise<void> {
   await chrome.storage.local.set({ [INSTALLED_FLAG_KEY]: Date.now() });
 }
 
-/** Refreshes person traits and emits `user_identified` once per email value. */
+/** Refreshes the PostHog person's `email` trait via $identify. */
 export async function trackIdentified(emailValue?: unknown): Promise<void> {
-  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, IDENTIFIED_EMAIL_KEY]);
+  const stored = await chrome.storage.local.get([USER_EMAIL_KEY]);
   const email = normalizeUserEmail(emailValue) || normalizeUserEmail(stored[USER_EMAIL_KEY]);
   if (!email) return;
-
   await posthog.identify();
-
-  if (normalizeUserEmail(stored[IDENTIFIED_EMAIL_KEY]) === email) return;
-  await posthog.capture('user_identified');
-  await chrome.storage.local.set({
-    [IDENTIFIED_FLAG_KEY]: Date.now(),
-    [IDENTIFIED_EMAIL_KEY]: email,
-  });
 }
 
 /**

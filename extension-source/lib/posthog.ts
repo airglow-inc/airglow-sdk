@@ -20,6 +20,23 @@ import { logger } from './logger';
 import { ensureIdentity } from './airglow-identity';
 
 const DEFAULT_HOST = 'https://api.airglow.dev/e';
+// Cap how long a capture will block waiting for the boot-time $identify to
+// land. Without this, a stuck network would freeze all analytics forever.
+const IDENTIFY_GATE_TIMEOUT_MS = 5000;
+
+// `capture()` awaits this before posting, so the first event a person sees
+// in PostHog already has their email property set (otherwise PostHog renders
+// the row with the raw distinct_id and never backfills the display name).
+// Background boot calls `releaseIdentifyGate()` after the boot $identify
+// resolves; if boot never runs (e.g. content-script context), the timeout
+// above takes over.
+let releaseIdentifyGate: () => void = () => {};
+const identifyGate = new Promise<void>((resolve) => {
+  releaseIdentifyGate = resolve;
+});
+export function markIdentifyComplete(): void {
+  releaseIdentifyGate();
+}
 // Public, write-only PostHog Project API key — safe to embed in the published
 // extension bundle. Override at build time with WXT_POSTHOG_KEY (e.g. point a
 // dev build at a separate test project).
@@ -128,11 +145,20 @@ async function postEvent(payload: {
 
 /**
  * Send an event to PostHog using the documented public capture endpoint.
+ *
+ * Blocks on the identify gate so the boot-time $identify always lands first —
+ * otherwise the events panel renders early rows with the raw distinct_id and
+ * never backfills the email display. The timeout is a safety net for contexts
+ * where boot can't run (e.g. content script) or crashed before releasing.
  */
 export async function capture(
   event: string,
   properties: Record<string, PropertyValue> = {},
 ): Promise<void> {
+  await Promise.race([
+    identifyGate,
+    new Promise<void>((resolve) => setTimeout(resolve, IDENTIFY_GATE_TIMEOUT_MS)),
+  ]);
   const identity = await getIdentity();
   if (!identity) return;
   try {
