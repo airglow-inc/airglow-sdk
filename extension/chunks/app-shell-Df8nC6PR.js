@@ -197,9 +197,6 @@ import"./_virtual_wxt-html-plugins-Ch_nAHUK.js";var e=`__airglow_logs`,t=1e3;fun
   }
 
   const platform = {
-    async registerRedirects(rules) {
-      await sendMsg({ type: 'airglow:platform:registerRedirects', rules });
-    },
     async allowIframes(domains, initiators) {
       await sendMsg({ type: 'airglow:platform:allowIframes', domains, initiators: initiators || [] });
     },
