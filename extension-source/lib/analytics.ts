@@ -5,7 +5,7 @@
  *   `__airglow_installed_tracked` — set on the first install dispatch.
  *   `__airglow_identified_tracked` — set on the first valid email dispatch.
  *   `__airglow_apps_registered`   — last-shipped sorted app-id set; we only
- *                                   fire `Apps Registered` when this changes.
+ *                                   fire `apps_registered` when this changes.
  */
 
 import * as posthog from './posthog';
@@ -66,11 +66,11 @@ function appEventProperties(appId: string): Record<string, AnalyticsPropertyValu
 export async function trackInstalled(): Promise<void> {
   const stored = await chrome.storage.local.get(INSTALLED_FLAG_KEY);
   if (stored[INSTALLED_FLAG_KEY]) return;
-  await posthog.capture('Extension Installed');
+  await posthog.capture('extension_installed');
   await chrome.storage.local.set({ [INSTALLED_FLAG_KEY]: Date.now() });
 }
 
-/** Refreshes person traits and emits `User Identified` once per email value. */
+/** Refreshes person traits and emits `user_identified` once per email value. */
 export async function trackIdentified(emailValue?: unknown): Promise<void> {
   const stored = await chrome.storage.local.get([USER_EMAIL_KEY, IDENTIFIED_EMAIL_KEY]);
   const email = normalizeUserEmail(emailValue) || normalizeUserEmail(stored[USER_EMAIL_KEY]);
@@ -79,7 +79,7 @@ export async function trackIdentified(emailValue?: unknown): Promise<void> {
   await posthog.identify();
 
   if (normalizeUserEmail(stored[IDENTIFIED_EMAIL_KEY]) === email) return;
-  await posthog.capture('User Identified');
+  await posthog.capture('user_identified');
   await chrome.storage.local.set({
     [IDENTIFIED_FLAG_KEY]: Date.now(),
     [IDENTIFIED_EMAIL_KEY]: email,
@@ -111,7 +111,7 @@ export async function trackAppsRegistered(apps: AppAnalyticsManifest[]): Promise
   } catch (e) {
     logger.warn('airglow', `posthog identify (apps_registered) failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  await posthog.capture('Apps Registered', {
+  await posthog.capture('apps_registered', {
     apps: currentIds,
     app_properties: current,
     count: current.length,
@@ -120,15 +120,15 @@ export async function trackAppsRegistered(apps: AppAnalyticsManifest[]): Promise
 }
 
 export async function trackUserscriptInjected(appId: string): Promise<void> {
-  await posthog.capture('Userscript Injected', appEventProperties(appId));
+  await posthog.capture('userscript_injected', appEventProperties(appId));
 }
 
 export async function trackUiPageOpened(appId: string): Promise<void> {
-  await posthog.capture('UI Page Opened', appEventProperties(appId));
+  await posthog.capture('ui_page_opened', appEventProperties(appId));
 }
 
 export async function trackDashboardOpened(
   page: DashboardPage,
 ): Promise<void> {
-  await posthog.capture('Dashboard Opened', { page });
+  await posthog.capture('dashboard_opened', { page });
 }
