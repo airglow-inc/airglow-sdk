@@ -102,15 +102,9 @@ The gateway is only present on the cloud app source (`api.airglow.dev`). Apps lo
 Privileged extension capabilities. Registrations persist across service-worker restarts and are typically called from `startup.ts`.
 
 ```ts
-await airglow.platform.registerRedirects([
-  { domains: ['instagram.com', 'x.com'], target: 'airglow://focus-blocker?site=instagram.com' }
-]);
-
 await airglow.platform.allowIframes(['notion.so'], ['example.com']);
 ```
 
-- `airglow://{appId}` resolves to the app's UI.
-- `registerRedirects` replaces previous registrations on each call.
 - `allowIframes(domains, initiators?)` strips `X-Frame-Options` / CSP `frame-ancestors` so the listed `domains` can be framed. Optional `initiators` restricts which parent origins are allowed.
 
 ---

@@ -34,7 +34,7 @@ type AppAnalyticsManifest = {
 };
 
 export type AppSeenSurface = 'dashboard_list' | 'dashboard_details' | 'page_edge_menu' | 'app_shell_edge_menu' | 'userscript_injected';
-export type AppUiOpenSurface = 'dashboard_card' | 'dashboard_sidebar' | 'edge_menu' | 'page_redirect';
+export type AppUiOpenSurface = 'dashboard_card' | 'dashboard_sidebar' | 'edge_menu';
 export type AppUseAction = 'rpc' | 'llm' | 'fetch' | 'open_window' | 'open_tab' | 'capture_tab' | 'app_action';
 export type DashboardPage = 'apps' | 'logs';
 

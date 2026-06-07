@@ -908,19 +908,6 @@ function dispatchAirglowMessage(
       return true;
     }
 
-    case 'airglow:platform:registerRedirects': {
-      const REDIRECTS_KEY = '__platform:redirects';
-      chrome.storage.local.get(REDIRECTS_KEY, (result) => {
-        const all: Record<string, any[]> = result[REDIRECTS_KEY] as Record<string, any[]> || {};
-        all[appId] = msg.rules || [];
-        chrome.storage.local.set({ [REDIRECTS_KEY]: all }, () => {
-          logger.info(appId, `stored ${(msg.rules || []).length} redirect rule(s)`);
-          sendResponse({ ok: true });
-        });
-      });
-      return true;
-    }
-
     case 'airglow:platform:allowIframes': {
       const IFRAME_KEY = '__platform:iframeAllow';
       chrome.storage.local.get(IFRAME_KEY, (result) => {

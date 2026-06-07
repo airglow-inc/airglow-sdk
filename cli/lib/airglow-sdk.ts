@@ -8,9 +8,9 @@
  *
  * Disable/delete safety:
  * `storage` is app-scoped key-value — background doesn't act on it, safe to ignore.
- * `platform` writes persistent config that background listeners actively consume
- * (e.g. registerRedirects → webNavigation.onCommitted). Any such endpoint MUST tag
- * entries with appId so background can skip disabled apps (__disabled_apps).
+ * `platform` writes persistent config that background listeners actively consume.
+ * Any such endpoint MUST tag entries with appId so background can skip disabled
+ * apps (__disabled_apps).
  */
 
 export const AIRGLOW_SDK_CONTRACT_VERSION = '0.1.0-beta.1';
@@ -217,9 +217,6 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
   }
 
   const platform = {
-    async registerRedirects(rules) {
-      await sendMsg({ type: 'airglow:platform:registerRedirects', rules });
-    },
     async allowIframes(domains, initiators) {
       await sendMsg({ type: 'airglow:platform:allowIframes', domains, initiators: initiators || [] });
     },

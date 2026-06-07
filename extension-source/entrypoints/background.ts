@@ -957,62 +957,9 @@ export default defineBackground(() => {
 
 
 
-  // ───── Platform redirects (storage-backed, registered by apps via startup.ts) ─────
-  const REDIRECTS_KEY = '__platform:redirects';
-  let redirectRules: { appId: string; domains: string[]; target: string }[] = [];
-
-  function loadRedirectRules() {
-    chrome.storage.local.get([REDIRECTS_KEY, '__disabled_apps'], (result) => {
-      const all = (result[REDIRECTS_KEY] || {}) as Record<string, { domains: string[]; target: string }[]>;
-      const disabled = new Set((result['__disabled_apps'] || []) as string[]);
-      redirectRules = [];
-      for (const [appId, rules] of Object.entries(all)) {
-        if (disabled.has(appId)) continue;
-        for (const rule of rules) {
-          redirectRules.push({ appId, domains: rule.domains, target: rule.target });
-        }
-      }
-      if (redirectRules.length > 0) {
-        log(`loaded ${redirectRules.length} redirect rule(s)`);
-      }
-    });
-  }
-  loadRedirectRules();
-  // Reload rules when apps register/update redirects or apps are disabled
-  chrome.storage.local.onChanged.addListener((changes) => {
-    if (REDIRECTS_KEY in changes || '__disabled_apps' in changes) loadRedirectRules();
-  });
-
-  function matchRedirect(hostname: string): { appId: string; domain: string; target: string } | undefined {
-    const parts = hostname.split('.');
-    for (const rule of redirectRules) {
-      for (let i = 0; i < parts.length - 1; i++) {
-        const candidate = parts.slice(i).join('.');
-        if (rule.domains.includes(candidate)) {
-          return { appId: rule.appId, domain: candidate, target: rule.target };
-        }
-      }
-    }
-  }
-
-  // Use onCommitted to catch the final URL after HTTP redirects (e.g. youtu.be → youtube.com)
   chrome.webNavigation.onCommitted.addListener((details) => {
     if (details.frameId !== 0) return; // main frame only
     try {
-      const url = new URL(details.url);
-      const match = matchRedirect(url.hostname);
-      if (match) {
-        const appId = match.target.replace('airglow://', '');
-        findAnalyticsApp(appId).then((app) => {
-          if (app) trackUiOpenApp(app, 'page_redirect');
-        }).catch((e) =>
-          logger.warn('airglow', `track redirect app open failed: ${e instanceof Error ? e.message : String(e)}`)
-        );
-        chrome.tabs.update(details.tabId, {
-          url: chrome.runtime.getURL(`app-shell.html?app=${appId}&site=${match.domain}`),
-        });
-        return;
-      }
       trackUserscriptInjectedForUrl(details.url).catch((e) =>
         logger.warn('airglow', `track userscript injection failed: ${e instanceof Error ? e.message : String(e)}`)
       );
@@ -1128,7 +1075,6 @@ export default defineBackground(() => {
     return value === 'dashboard_card'
       || value === 'dashboard_sidebar'
       || value === 'edge_menu'
-      || value === 'page_redirect'
       ? value
       : 'dashboard_card';
   }
@@ -1476,47 +1422,6 @@ export default defineBackground(() => {
           }
         }
 
-        // Check redirect domains
-        try {
-          const hostname = new URL(url).hostname;
-          for (const rule of redirectRules) {
-            if (seen.has(rule.appId)) continue;
-            const parts = hostname.split('.');
-            for (let i = 0; i < parts.length - 1; i++) {
-              if (rule.domains.includes(parts.slice(i).join('.'))) {
-                const m = allManifests.find(m => m.id === rule.appId);
-                if (m) {
-                  seen.add(m.id);
-                  addMatchingApp(m);
-                }
-                break;
-              }
-            }
-          }
-        } catch {}
-
-        // Also check disabled apps' redirect rules (they're excluded from redirectRules)
-        const result = await chrome.storage.local.get('__platform:redirects');
-        const all = (result['__platform:redirects'] || {}) as Record<string, { domains: string[]; target: string }[]>;
-        try {
-          const hostname = new URL(url).hostname;
-          for (const [rAppId, rules] of Object.entries(all)) {
-            if (seen.has(rAppId)) continue;
-            for (const rule of rules) {
-              const parts = hostname.split('.');
-              for (let i = 0; i < parts.length - 1; i++) {
-                if (rule.domains.includes(parts.slice(i).join('.'))) {
-                  const m = allManifests.find(m => m.id === rAppId);
-                  if (m) {
-                    seen.add(m.id);
-                    addMatchingApp(m);
-                  }
-                  break;
-                }
-              }
-            }
-          }
-        } catch {}
         await trackPageAppImpressions(matchingAnalytics, 'page_edge_menu');
         sendResponse({ apps: matching });
       }).catch((e) => {

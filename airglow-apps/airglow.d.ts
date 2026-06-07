@@ -29,11 +29,6 @@ interface AirglowCaptureResult {
   mediaType: 'image/jpeg';
 }
 
-interface AirglowRedirectRule {
-  domains: string[];
-  target: string;
-}
-
 type AirglowAnalyticsValue = string | number | boolean | null | string[];
 
 interface Airglow {
@@ -77,7 +72,6 @@ interface Airglow {
   captureTab(): Promise<AirglowCaptureResult>;
 
   platform: {
-    registerRedirects(rules: AirglowRedirectRule[]): Promise<void>;
     allowIframes(domains: string[], initiators?: string[]): Promise<void>;
   };
 }
