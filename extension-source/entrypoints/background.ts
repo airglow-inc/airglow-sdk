@@ -4,7 +4,7 @@ import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } f
 import { APP_INVENTORY_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackDashboardOpened, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
-import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
+import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from '../lib/airglow-identity';
 
 export default defineBackground(() => {
   log('service worker started');
@@ -291,7 +291,14 @@ export default defineBackground(() => {
     }
   });
 
-  chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed'], async (result) => {
+  (async () => {
+    // Resolve user_id + auto-fill email from chrome.identity.getProfileUserInfo
+    // before the email-tracking branch reads storage. ensureIdentity may write
+    // USER_EMAIL_KEY, which fires the onChanged listener above.
+    const identity = await ensureIdentity();
+    log(`identity resolved: user_id=${identity.userId}${identity.email ? ` email=${identity.email}` : ''}`);
+
+    const result = await chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed']);
     let stored = normalizeUserEmail(result[USER_EMAIL_KEY]);
     const skipDevSeed = result['__airglow_skip_dev_seed'] === true;
     if (!stored && runtimeConfig.devUserEmail && !skipDevSeed) {
@@ -303,7 +310,7 @@ export default defineBackground(() => {
       }
     }
     trackStoredUserEmail(stored);
-  });
+  })();
 
   async function loadAndRegisterApps(force = false, skipReload = false) {
     const gen = ++loadGeneration;

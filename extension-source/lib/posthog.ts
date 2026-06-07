@@ -10,15 +10,15 @@
  *   POST {host}/i/v0/e/
  * with top-level api_key, event, distinct_id, and properties.
  *
- * Distinct ID = `__airglow_user_id` (the same anonymous extension id we send
- * as `X-Airglow-User-Id`), so PostHog persons line up with Vercel Analytics
- * `userIdHash` (which is salted SHA-256 of the same value).
+ * Distinct ID = the resolved `__airglow_user_id` from ensureIdentity:
+ * `gaia_<obfuscated-gaia-id>` when Chrome is signed in to Google, otherwise
+ * `ag_<uuid>`. Same value flows into `X-Airglow-User-Id`, so PostHog persons
+ * line up with Vercel Analytics `userIdHash` (salted SHA-256 of the same).
  */
 
 import { logger } from './logger';
-import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
+import { ensureIdentity } from './airglow-identity';
 
-const USER_ID_KEY = '__airglow_user_id';
 const DEFAULT_HOST = 'https://api.airglow.dev/e';
 // Public, write-only PostHog Project API key — safe to embed in the published
 // extension bundle. Override at build time with WXT_POSTHOG_KEY (e.g. point a
@@ -50,13 +50,8 @@ function getConfig(): Config | null {
 }
 
 async function getIdentity(): Promise<{ distinctId: string; email?: string } | null> {
-  const stored = await chrome.storage.local.get([USER_ID_KEY, USER_EMAIL_KEY]);
-  let distinctId = typeof stored[USER_ID_KEY] === 'string' ? stored[USER_ID_KEY] : '';
-  if (!distinctId) {
-    distinctId = `ag_${crypto.randomUUID()}`;
-    await chrome.storage.local.set({ [USER_ID_KEY]: distinctId });
-  }
-  return { distinctId, email: normalizeUserEmail(stored[USER_EMAIL_KEY]) };
+  const { userId, email } = await ensureIdentity();
+  return { distinctId: userId, email };
 }
 
 const MAX_PROP_LEN = 500;

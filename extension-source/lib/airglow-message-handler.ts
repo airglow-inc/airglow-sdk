@@ -5,14 +5,13 @@
 
 import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
-import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
+import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from './airglow-identity';
 
 const STORAGE_PREFIX = 'airglow:app:';
 const USER_SECRET_PREFIX = 'airglow:secret:';
 const DEV_SECRET_PREFIX = 'airglow:dev-secret:';
 const DEFAULT_POPUP_WIDTH = 520;
 const DEFAULT_POPUP_HEIGHT = 720;
-const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
 const APP_MANIFESTS_KEY = '__app_manifests';
 const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
@@ -20,16 +19,7 @@ const LLM_TIMEOUT_MS = 60000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
 
 async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string }> {
-  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, AIRGLOW_USER_ID_KEY]);
-  let userId = typeof stored[AIRGLOW_USER_ID_KEY] === 'string' ? stored[AIRGLOW_USER_ID_KEY] : '';
-  if (!userId) {
-    userId = `ag_${crypto.randomUUID()}`;
-    await chrome.storage.local.set({ [AIRGLOW_USER_ID_KEY]: userId });
-  }
-  return {
-    email: normalizeUserEmail(stored[USER_EMAIL_KEY]),
-    userId,
-  };
+  return ensureIdentity();
 }
 
 function buildIdentityHeaders(identity: { email?: string; userId: string }): Record<string, string> {
