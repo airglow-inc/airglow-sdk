@@ -10,21 +10,18 @@ $ pnpm airglow --help
   ◆ airglow — build apps for the web
 
 Commands:
-  new <app-id>                   Scaffold a new app (app-id: lowercase a-z, digits, dashes)
-  dev [--port N] [--apps-dir D]  Run apps locally with hot reload
-  upload <app> [options]         Zip and upload an app to Airglow Cloud
+  new <app-id>    Scaffold a new app (app-id: lowercase a-z, digits, dashes)
+  dev [options]   Run apps locally with hot reload
 
 Run from inside the workspace (cd airglow-apps).
 
-Options:
-  --port N           Bind port (default 3222)
-  --apps-dir D       Apps workspace directory (default cwd)
-  --cloud URL        Cloud URL (default https://api.airglow.dev)
-  --visibility MODE  production, dev, or hidden
-  --publish          Publish uploaded ready version
-  --dry-run          Print archive contents without uploading
-  --yes              Confirm upload
-  --help, -h         Show this message
+Command options:
+  dev:
+    --port N       Bind port (default 3222)
+    --apps-dir D   Apps workspace directory (default cwd)
+
+Global options:
+  --help, -h       Show this message
 ```
 
 ## Layout
@@ -35,8 +32,7 @@ cli/
 ├── src/
 │   ├── cli.ts              # arg dispatcher
 │   ├── new.ts              # `airglow new` command
-│   ├── dev.ts              # `airglow dev` command (HTTP server, bundler, RPC runner)
-│   └── upload.ts           # `airglow upload` command (archive + admin upload)
+│   └── dev.ts              # `airglow dev` command (HTTP server, bundler, RPC runner)
 └── lib/
     ├── airglow-sdk.ts      # SDK source
     └── native-host/        # Chrome native-messaging host (extension debug bridge)

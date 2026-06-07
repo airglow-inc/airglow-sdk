@@ -30,8 +30,78 @@ function parseFlags(args: string[]): { positional: string[]; flags: Record<strin
 
 const { positional, flags } = parseFlags(rest);
 
+function showMainHelp(): void {
+  console.log(`
+  ◆ \x1b[1mairglow\x1b[0m — build apps for the web
+
+Commands:
+  \x1b[1mnew <app-id>\x1b[0m    \x1b[2mScaffold a new app (app-id: lowercase a-z, digits, dashes)\x1b[0m
+  \x1b[1mdev [options]\x1b[0m   \x1b[2mRun apps locally with hot reload\x1b[0m
+
+Run from inside the workspace (\x1b[36mcd airglow-apps\x1b[0m).
+
+Command options:
+  dev:
+    --port N       Bind port (default 3222)
+    --apps-dir D   Apps workspace directory (default cwd)
+
+Global options:
+  --help, -h       Show this message`);
+}
+
+function showNewHelp(): void {
+  console.log(`
+Usage:
+  airglow new <app-id>
+
+Scaffold a new app.
+
+Arguments:
+  app-id           Lowercase letters, digits, and dashes`);
+}
+
+function showDevHelp(): void {
+  console.log(`
+Usage:
+  airglow dev [options]
+
+Run apps locally with hot reload.
+
+Options:
+  --port N         Bind port (default 3222)
+  --apps-dir D     Apps workspace directory (default cwd)
+  --help, -h       Show this message`);
+}
+
+function showUploadHelp(): void {
+  console.log(`
+Usage:
+  airglow upload <app-id-or-path> [options]
+
+Admin-only command for uploading an app archive to Airglow Cloud.
+
+Options:
+  --apps-dir D       Apps workspace directory (default cwd)
+  --cloud URL        Cloud URL (default https://api.airglow.dev)
+  --visibility MODE  production, dev, or hidden
+  --visible-to EMAIL Verify published manifest visibility for an email
+  --publish          Publish uploaded ready version
+  --dry-run          Print archive contents without uploading
+  --yes              Confirm upload
+  --user USER        Admin basic-auth user
+  --password PASS    Admin basic-auth password
+  --help, -h         Show this message
+
+Note:
+  development/dev visibility is not a security boundary; identity headers are caller-controlled.`);
+}
+
 switch (command) {
   case 'new':
+    if (flags.help === true) {
+      showNewHelp();
+      break;
+    }
     if (!positional[0]) {
       console.error('Usage: airglow new <app-id>   (lowercase letters, digits, dashes; e.g. my-app)');
       process.exit(1);
@@ -39,12 +109,20 @@ switch (command) {
     newApp(positional[0]);
     break;
   case 'dev':
+    if (flags.help === true) {
+      showDevHelp();
+      break;
+    }
     dev({
       port: typeof flags.port === 'string' ? Number(flags.port) : undefined,
       appsDir: typeof flags['apps-dir'] === 'string' ? flags['apps-dir'] : undefined,
     });
     break;
   case 'upload':
+    if (flags.help === true) {
+      showUploadHelp();
+      break;
+    }
     upload({
       target: positional[0],
       appsDir: typeof flags['apps-dir'] === 'string' ? flags['apps-dir'] : undefined,
@@ -66,23 +144,5 @@ switch (command) {
   case 'help':
   default:
     // Keep this help text in sync with cli/README.md (the fenced block under "Run it from").
-    console.log(`
-  ◆ \x1b[1mairglow\x1b[0m — build apps for the web
-
-Commands:
-  \x1b[1mnew <app-id>\x1b[0m              \x1b[2mScaffold a new app (app-id: lowercase a-z, digits, dashes)\x1b[0m
-  \x1b[1mdev [--port N] [--apps-dir D]\x1b[0m  \x1b[2mRun apps locally with hot reload\x1b[0m
-  \x1b[1mupload <app> [options]\x1b[0m     \x1b[2mZip and upload an app to Airglow Cloud\x1b[0m
-
-Run from inside the workspace (\x1b[36mcd airglow-apps\x1b[0m).
-
-Options:
-  --port N           Bind port (default 3222)
-  --apps-dir D       Apps workspace directory (default cwd)
-  --cloud URL        Cloud URL (default https://api.airglow.dev)
-  --visibility MODE  production, dev, or hidden
-  --publish          Publish uploaded ready version
-  --dry-run          Print archive contents without uploading
-  --yes              Confirm upload
-  --help, -h         Show this message`);
+    showMainHelp();
 }
