@@ -1,9 +1,9 @@
 import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
-import { APP_INVENTORY_MANIFESTS_KEY, APP_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
+import { APP_INVENTORY_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
-import { trackAppSeen, trackAppUiOpened, trackAppUsed, trackDashboardOpened, trackIdentified, trackInstalled, type AnalyticsPropertyValue, type AppSeenSurface, type AppUiOpenSurface, type AppUseAction, type DashboardPage } from '../lib/analytics';
+import { trackDashboardOpened, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
 import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
 
 export default defineBackground(() => {
@@ -1009,8 +1009,6 @@ export default defineBackground(() => {
   // tabId → appId → latest error/warn ts. Compared against __logs_last_seen_ts
   // so the indicator clears once the user reads the logs page.
   const tabErrors = new Map<number, Map<string, number>>();
-  const appSeenTrackedAt = new Map<string, number>();
-  const APP_SEEN_THROTTLE_MS = 30 * 60 * 1000;
 
   type PageApp = {
     id: string;
@@ -1020,103 +1018,8 @@ export default defineBackground(() => {
     sourceType: SourcedManifest['_sourceType'];
   };
 
-  type PageAppMatch = {
-    manifest: SourcedManifest;
-    disabled: boolean;
-  };
-
-  function findAppInList(
-    manifests: SourcedManifest[],
-    appId: string,
-    sourceType?: SourcedManifest['_sourceType'],
-  ): SourcedManifest | undefined {
-    return sourceType
-      ? manifests.find((m) => m.id === appId && m._sourceType === sourceType)
-      : manifests.find((m) => m.id === appId);
-  }
-
-  async function findAnalyticsApp(appId: string, sourceType?: SourcedManifest['_sourceType']): Promise<SourcedManifest | undefined> {
-    const inventory = dashboardAppManifests.length > 0 ? dashboardAppManifests : getAppManifests();
-    if (sourceType) {
-      const inMemory = findAppInList(inventory, appId, sourceType) || findAppInList(getAppManifests(), appId, sourceType);
-      if (inMemory) return inMemory;
-    } else {
-      const inMemory = findAppInList(getAppManifests(), appId) || findAppInList(inventory, appId);
-      if (inMemory) return inMemory;
-    }
-
-    const stored = await chrome.storage.local.get([APP_INVENTORY_MANIFESTS_KEY, APP_MANIFESTS_KEY]);
-    const storedInventory = Array.isArray(stored[APP_INVENTORY_MANIFESTS_KEY])
-      ? stored[APP_INVENTORY_MANIFESTS_KEY] as SourcedManifest[]
-      : [];
-    const storedRuntime = Array.isArray(stored[APP_MANIFESTS_KEY])
-      ? stored[APP_MANIFESTS_KEY] as SourcedManifest[]
-      : [];
-    return sourceType
-      ? findAppInList(storedInventory, appId, sourceType) || findAppInList(storedRuntime, appId, sourceType)
-      : findAppInList(storedRuntime, appId) || findAppInList(storedInventory, appId);
-  }
-
-  function normalizeAnalyticsSourceType(value: unknown): SourcedManifest['_sourceType'] | undefined {
-    return value === 'local' || value === 'cloud' ? value : undefined;
-  }
-
-  function normalizeSeenSurface(value: unknown): AppSeenSurface {
-    return value === 'dashboard_list'
-      || value === 'dashboard_details'
-      || value === 'page_edge_menu'
-      || value === 'app_shell_edge_menu'
-      || value === 'userscript_injected'
-      ? value
-      : 'dashboard_list';
-  }
-
-  function normalizeUiOpenSurface(value: unknown): AppUiOpenSurface {
-    return value === 'dashboard_card'
-      || value === 'dashboard_sidebar'
-      || value === 'edge_menu'
-      ? value
-      : 'dashboard_card';
-  }
-
-  function normalizeUseAction(value: unknown): AppUseAction | undefined {
-    return value === 'rpc'
-      || value === 'llm'
-      || value === 'fetch'
-      || value === 'open_window'
-      || value === 'open_tab'
-      || value === 'capture_tab'
-      || value === 'app_action'
-      ? value
-      : undefined;
-  }
-
   function normalizeDashboardPage(value: unknown): DashboardPage {
     return value === 'logs' ? 'logs' : 'apps';
-  }
-
-  async function trackSeenAppOnce(
-    app: SourcedManifest,
-    surface: AppSeenSurface,
-    extra: Record<string, AnalyticsPropertyValue> = {},
-  ): Promise<void> {
-    const section = typeof extra.section === 'string' ? extra.section : '';
-    const pageHost = typeof extra.page_host === 'string' ? extra.page_host : '';
-    const throttleKey = `${surface}:${app._sourceType}:${app.id}:${section}:${pageHost}`;
-    const now = Date.now();
-    const previous = appSeenTrackedAt.get(throttleKey) || 0;
-    if (now - previous < APP_SEEN_THROTTLE_MS) return;
-    appSeenTrackedAt.set(throttleKey, now);
-    await trackAppSeen(app, surface, extra).catch((e) => {
-      appSeenTrackedAt.delete(throttleKey);
-      logger.warn('airglow', `trackAppSeen failed: ${e instanceof Error ? e.message : String(e)}`);
-    });
-  }
-
-  async function trackPageAppImpressions(matches: PageAppMatch[], surface: AppSeenSurface): Promise<void> {
-    await Promise.all(matches.map(({ manifest, disabled }, position) =>
-      trackSeenAppOnce(manifest, surface, { disabled, position })
-    ));
   }
 
   function urlMatchesPattern(pattern: string, rawUrl: string): boolean {
@@ -1124,49 +1027,16 @@ export default defineBackground(() => {
     return re.test(rawUrl);
   }
 
-  function pageLocationProperties(rawUrl: string): Record<string, AnalyticsPropertyValue> {
-    try {
-      const url = new URL(rawUrl);
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-        return { page_host: null };
-      }
-      return { page_host: url.hostname };
-    } catch {
-      return { page_host: null };
-    }
-  }
-
   async function trackUserscriptInjectedForUrl(rawUrl: string) {
     if (!userScriptsAllowed || !/^https?:\/\//.test(rawUrl)) return;
     const disabled = await getDisabledApps();
-    const pageProps = pageLocationProperties(rawUrl);
     for (const manifest of getAppManifests()) {
       if (disabled.has(manifest.id)) continue;
       const matches = manifest.userscripts?.some((userscript) =>
         userscript.matches.some((pattern) => urlMatchesPattern(pattern, rawUrl))
       );
-      if (matches) await trackSeenAppOnce(manifest, 'userscript_injected', pageProps);
+      if (matches) await trackUserscriptInjected(manifest.id);
     }
-  }
-
-  async function trackUsedApp(
-    app: SourcedManifest,
-    action: AppUseAction,
-    extra: Record<string, AnalyticsPropertyValue> = {},
-  ): Promise<void> {
-    await trackAppUsed(app, action, extra).catch((e) =>
-      logger.warn('airglow', `trackAppUsed failed: ${e instanceof Error ? e.message : String(e)}`)
-    );
-  }
-
-  async function trackUiOpenApp(
-    app: SourcedManifest,
-    surface: AppUiOpenSurface,
-    extra: Record<string, AnalyticsPropertyValue> = {},
-  ): Promise<void> {
-    await trackAppUiOpened(app, surface, extra).catch((e) =>
-      logger.warn('airglow', `trackAppUiOpened failed: ${e instanceof Error ? e.message : String(e)}`)
-    );
   }
 
   // Track errors only after the message handler validates and persists the log.
@@ -1224,71 +1094,25 @@ export default defineBackground(() => {
       return;
     }
 
-    if (msg?.type === 'airglow:track-apps-seen') {
-      const surface = normalizeSeenSurface(msg.surface);
-      const entries = Array.isArray(msg.apps) ? msg.apps : [];
-      (async () => {
-        for (let fallbackPosition = 0; fallbackPosition < entries.length; fallbackPosition++) {
-          const entry = entries[fallbackPosition];
-          const appId = typeof entry?.appId === 'string' ? entry.appId : typeof entry?.id === 'string' ? entry.id : '';
-          if (!appId) continue;
-          const app = await findAnalyticsApp(appId, normalizeAnalyticsSourceType(entry?.sourceType));
-          if (!app) continue;
-          const extra: Record<string, AnalyticsPropertyValue> = {
-            section: typeof entry?.section === 'string' ? entry.section : null,
-            position: typeof entry?.position === 'number' ? entry.position : fallbackPosition,
-          };
-          await trackSeenAppOnce(app, surface, extra);
-        }
-        sendResponse({ ok: true });
-      })().catch((e) => {
-        logger.warn('airglow', `track apps seen failed: ${e instanceof Error ? e.message : String(e)}`);
-        sendResponse({ ok: false, error: 'track apps seen failed' });
-      });
-      return true;
-    }
-
-    if (msg?.type === 'airglow:track-app-ui-opened') {
+    if (msg?.type === 'airglow:track-ui-page-opened') {
       const appId = typeof msg.appId === 'string' ? msg.appId : '';
       (async () => {
-        const app = appId ? await findAnalyticsApp(appId, normalizeAnalyticsSourceType(msg.sourceType)) : undefined;
-        if (!app) {
-          sendResponse({ ok: false, error: `unknown appId: ${appId}` });
+        if (!appId) {
+          sendResponse({ ok: false, error: 'missing appId' });
           return;
         }
-        await trackUiOpenApp(app, normalizeUiOpenSurface(msg.surface));
+        await trackUiPageOpened(appId);
         sendResponse({ ok: true });
       })().catch((e) => {
-        logger.warn('airglow', `track app ui open failed: ${e instanceof Error ? e.message : String(e)}`);
-        sendResponse({ ok: false, error: 'track app ui open failed' });
-      });
-      return true;
-    }
-
-    if (msg?.type === 'airglow:track-app-used') {
-      const appId = typeof msg.appId === 'string' ? msg.appId : '';
-      (async () => {
-        const app = appId ? await findAnalyticsApp(appId, normalizeAnalyticsSourceType(msg.sourceType)) : undefined;
-        const action = normalizeUseAction(msg.action);
-        if (!app || !action) {
-          sendResponse({ ok: false, error: `unknown app usage: ${appId || 'missing appId'}` });
-          return;
-        }
-        const extra: Record<string, AnalyticsPropertyValue> = {};
-        await trackUsedApp(app, action, extra);
-        sendResponse({ ok: true });
-      })().catch((e) => {
-        logger.warn('airglow', `track app used failed: ${e instanceof Error ? e.message : String(e)}`);
-        sendResponse({ ok: false, error: 'track app used failed' });
+        logger.warn('airglow', `track UI page opened failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track UI page opened failed' });
       });
       return true;
     }
 
     if (msg?.type === 'airglow:track-dashboard-opened') {
       (async () => {
-        await trackDashboardOpened(normalizeDashboardPage(msg.page), {
-          has_email: Boolean(msg.hasEmail),
-        });
+        await trackDashboardOpened(normalizeDashboardPage(msg.page));
         sendResponse({ ok: true });
       })().catch((e) => {
         logger.warn('airglow', `trackDashboardOpened failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -1300,16 +1124,7 @@ export default defineBackground(() => {
     if (msg?.type === 'airglow:open-app') {
       const appId = typeof msg.appId === 'string' ? msg.appId : '';
       chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${appId}`) });
-      (async () => {
-        if (appId) {
-          const app = await findAnalyticsApp(appId);
-          if (app) await trackUiOpenApp(app, 'edge_menu');
-        }
-        sendResponse({ ok: true });
-      })().catch((e) => {
-        logger.warn('airglow', `track edge app open failed: ${e instanceof Error ? e.message : String(e)}`);
-        sendResponse({ ok: false, error: 'track edge app open failed' });
-      });
+      sendResponse({ ok: true });
       return true;
     }
 
@@ -1389,7 +1204,6 @@ export default defineBackground(() => {
           return ts !== undefined && ts > lastSeen;
         };
         const matching: PageApp[] = [];
-        const matchingAnalytics: PageAppMatch[] = [];
         const seen = new Set<string>();
         const addMatchingApp = (m: SourcedManifest) => {
           const isDisabled = disabled.has(m.id);
@@ -1400,14 +1214,12 @@ export default defineBackground(() => {
             hasError: hasError(m.id),
             sourceType: m._sourceType,
           });
-          matchingAnalytics.push({ manifest: m, disabled: isDisabled });
         };
 
         // If appId is specified (app-shell), return just that app
         if (appId) {
           const m = allManifests.find(m => m.id === appId);
           if (m) addMatchingApp(m);
-          await trackPageAppImpressions(matchingAnalytics, 'app_shell_edge_menu');
           sendResponse({ apps: matching });
           return;
         }
@@ -1422,7 +1234,6 @@ export default defineBackground(() => {
           }
         }
 
-        await trackPageAppImpressions(matchingAnalytics, 'page_edge_menu');
         sendResponse({ apps: matching });
       }).catch((e) => {
         logger.warn('airglow', `get page apps failed: ${e instanceof Error ? e.message : String(e)}`);

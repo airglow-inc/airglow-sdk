@@ -66,11 +66,13 @@ const JWT_RE = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 // ids, authuser, reqid, gsessionid — all live there. Drop the whole `?…` tail.
 const URL_QUERY_RE = /(https?:\/\/[^\s?#]+)\?[^\s]*/g;
 
-type PropertyValue = string | number | boolean | null | string[];
-
-type CaptureOptions = {
-  includeIdentityProperties?: boolean;
-};
+type PropertyValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PropertyValue[]
+  | { [key: string]: PropertyValue };
 
 function scrubString(input: string): string {
   let s = input.replace(URL_QUERY_RE, '$1');
@@ -82,7 +84,12 @@ function scrubString(input: string): string {
 
 function sanitizeValue(v: PropertyValue): PropertyValue {
   if (typeof v === 'string') return scrubString(v);
-  if (Array.isArray(v)) return v.map((s) => (typeof s === 'string' ? scrubString(s) : s));
+  if (Array.isArray(v)) return v.map((item) => sanitizeValue(item));
+  if (v && typeof v === 'object') {
+    const out: Record<string, PropertyValue> = {};
+    for (const [key, value] of Object.entries(v)) out[key] = sanitizeValue(value);
+    return out;
+  }
   return v;
 }
 
@@ -97,7 +104,7 @@ function sanitizeProperties(properties: Record<string, PropertyValue>): Record<s
 async function postEvent(payload: {
   event: string;
   distinct_id: string;
-  properties?: Record<string, PropertyValue | Record<string, PropertyValue>>;
+  properties?: Record<string, PropertyValue>;
 }): Promise<void> {
   const config = getConfig();
   if (!config) return;
@@ -130,16 +137,11 @@ async function postEvent(payload: {
 export async function capture(
   event: string,
   properties: Record<string, PropertyValue> = {},
-  options: CaptureOptions = {},
 ): Promise<void> {
   const identity = await getIdentity();
   if (!identity) return;
   try {
     const eventProperties = sanitizeProperties(properties);
-    if (options.includeIdentityProperties) {
-      eventProperties.user_id = identity.distinctId;
-      eventProperties.user_email = identity.email || null;
-    }
     await postEvent({
       event,
       distinct_id: identity.distinctId,

@@ -6,7 +6,6 @@
 import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
 import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
-import { trackAppUsed, type AnalyticsPropertyValue, type AppUseAction } from './analytics';
 
 const STORAGE_PREFIX = 'airglow:app:';
 const USER_SECRET_PREFIX = 'airglow:secret:';
@@ -293,91 +292,8 @@ export type OnAppLog = (appId: string, level: 'info' | 'warn' | 'error', sender:
 let _onAppLog: OnAppLog | undefined;
 export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
 
-type AppUsageExtra = Record<string, AnalyticsPropertyValue>;
-
-const MAX_CUSTOM_ANALYTICS_PROPS = 20;
-const CUSTOM_ANALYTICS_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
-
-function senderSurface(sender: chrome.runtime.MessageSender): string {
-  const senderWorldId = (sender as any).userScriptWorldId as string | undefined;
-  if (senderWorldId) return 'userscript';
-  const senderUrl = typeof sender.url === 'string' ? sender.url : '';
-  try {
-    const url = new URL(senderUrl);
-    if (url.protocol === 'http:' || url.protocol === 'https:') return 'userscript';
-  } catch {}
-  if (senderUrl.includes('/app-shell.html')) return 'app_ui';
-  if (senderUrl.includes('/startup-runner.html') || senderUrl.includes('/startup-sandbox.html')) return 'startup';
-  return 'extension';
-}
-
-function trackUsage(
-  appId: string,
-  action: AppUseAction,
-  sender: chrome.runtime.MessageSender,
-  extra: AppUsageExtra = {},
-) {
-  const app = getManifest(appId);
-  if (!app) return Promise.resolve();
-  return trackAppUsed(app, action, { surface: senderSurface(sender), ...extra }).catch((e) => {
-    logger.warn('airglow', `trackAppUsed failed: ${e instanceof Error ? e.message : String(e)}`);
-  });
-}
-
-function normalizeCustomUsageAction(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
-  if (!normalized || !/^[a-z]/.test(normalized)) return undefined;
-  return normalized;
-}
-
-function normalizeCustomPropertyKey(key: string): string | undefined {
-  const normalized = key.trim().toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 64);
-  if (!CUSTOM_ANALYTICS_KEY_RE.test(normalized)) return undefined;
-  if (normalized === 'action' || normalized === 'app' || normalized === 'email' || normalized === 'user' || normalized === 'distinct_id') return undefined;
-  if (normalized.startsWith('app_') || normalized.startsWith('user_') || normalized.startsWith('$')) return undefined;
-  return normalized;
-}
-
-function normalizeCustomPropertyValue(value: unknown): AnalyticsPropertyValue | undefined {
-  if (value === null || typeof value === 'boolean' || typeof value === 'string') return value;
-  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
-  if (Array.isArray(value)) {
-    const strings = value.filter((item): item is string => typeof item === 'string').slice(0, 20);
-    return strings.length > 0 ? strings : undefined;
-  }
-  return undefined;
-}
-
-function sanitizeCustomUsageProperties(value: unknown): Record<string, AnalyticsPropertyValue> {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-  const out: Record<string, AnalyticsPropertyValue> = {};
-  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>).slice(0, MAX_CUSTOM_ANALYTICS_PROPS)) {
-    const key = normalizeCustomPropertyKey(rawKey);
-    if (!key) continue;
-    const propValue = normalizeCustomPropertyValue(rawValue);
-    if (propValue === undefined) continue;
-    out[`usage_${key}`] = propValue;
-  }
-  return out;
-}
-
-function errorCode(error: unknown, fallback: string): string {
-  const code = (error as { code?: unknown } | undefined)?.code;
-  return typeof code === 'string' && code ? code : fallback;
-}
-
-function errorStatus(error: unknown): number | null {
-  const status = (error as { status?: unknown } | undefined)?.status;
-  return typeof status === 'number' ? status : null;
-}
-
 function normalizeHttpMethod(value: unknown): string {
   return (typeof value === 'string' && value.trim() ? value.trim() : 'GET').toUpperCase().slice(0, 20);
-}
-
-function usageResultForHttpStatus(status: number): 'success' | 'error' {
-  return status >= 200 && status < 400 ? 'success' : 'error';
 }
 
 export function handleAirglowMessage(
@@ -449,24 +365,6 @@ function dispatchAirglowMessage(
 
   try {
   switch (msg.type) {
-    case 'airglow:analytics:used': {
-      const usageAction = normalizeCustomUsageAction(msg.action);
-      if (!usageAction) {
-        sendResponse({ error: 'usage action must be a non-empty string starting with a letter', code: 'INVALID_USAGE_ACTION' });
-        return true;
-      }
-      trackUsage(appId, 'app_action', _sender, {
-        usage_action: usageAction,
-        ...sanitizeCustomUsageProperties(msg.properties),
-      }).then(() => {
-        sendResponse({ ok: true });
-      }).catch((error) => {
-        logger.warn('airglow', `analytics used failed: ${error instanceof Error ? error.message : String(error)}`);
-        sendResponse({ error: 'analytics used failed', code: 'ANALYTICS_USED_FAILED' });
-      });
-      return true;
-    }
-
     case 'airglow:storage:get': {
       if (isClientSetting(appId, msg.key)) {
         const userKey = `${USER_SECRET_PREFIX}${msg.key}`;
@@ -510,27 +408,14 @@ function dispatchAirglowMessage(
       // ones). Without this, a cloud app could exfiltrate to any URL via
       // the extension's privileged context (CORS-bypass, no SOP).
       const httpMethod = normalizeHttpMethod(msg.method);
-      const fetchContext = msg.includeCookies ? 'page' : 'extension';
       let targetUrl: URL;
       try {
         targetUrl = new URL(String(msg.url || ''));
       } catch {
-        trackUsage(appId, 'fetch', _sender, {
-          result: 'error',
-          error_code: 'INVALID_FETCH_URL',
-          fetch_context: fetchContext,
-          http_method: httpMethod,
-        });
         sendResponse({ error: 'invalid fetch URL', code: 'INVALID_FETCH_URL' });
         return true;
       }
       if (!isUrlAllowedForFetch(appId, targetUrl.href)) {
-        trackUsage(appId, 'fetch', _sender, {
-          result: 'error',
-          error_code: 'FETCH_HOST_PERMISSION_DENIED',
-          fetch_context: fetchContext,
-          http_method: httpMethod,
-        });
         sendResponse({
           error: `app "${appId}" lacks host_permissions for ${targetUrl.hostname}`,
           code: 'FETCH_HOST_PERMISSION_DENIED',
@@ -540,21 +425,9 @@ function dispatchAirglowMessage(
       if (msg.includeCookies) {
         fetchViaPage(msg.url, msg.method, msg.headers, msg.body)
           .then((result) => {
-            trackUsage(appId, 'fetch', _sender, {
-              result: usageResultForHttpStatus(result.status),
-              fetch_context: fetchContext,
-              http_method: httpMethod,
-              http_status: result.status,
-            });
             sendResponse(result);
           })
           .catch((e) => {
-            trackUsage(appId, 'fetch', _sender, {
-              result: 'error',
-              error_code: errorCode(e, 'FETCH_NETWORK_ERROR'),
-              fetch_context: fetchContext,
-              http_method: httpMethod,
-            });
             sendResponse({ error: e.message });
           });
       } else {
@@ -568,21 +441,9 @@ function dispatchAirglowMessage(
             const text = await res.text();
             let body;
             try { body = JSON.parse(text); } catch { body = text; }
-            trackUsage(appId, 'fetch', _sender, {
-              result: res.ok ? 'success' : 'error',
-              fetch_context: fetchContext,
-              http_method: httpMethod,
-              http_status: res.status,
-            });
             sendResponse({ status: res.status, body });
           })
           .catch((e) => {
-            trackUsage(appId, 'fetch', _sender, {
-              result: 'error',
-              error_code: errorCode(e, 'FETCH_NETWORK_ERROR'),
-              fetch_context: fetchContext,
-              http_method: httpMethod,
-            });
             sendResponse({ error: e.message });
           });
       }
@@ -603,11 +464,6 @@ function dispatchAirglowMessage(
       const source = appSourceMap.get(appId);
       if (!source) {
         logger.warn('airglow', `RPC failed: no source registered for app '${appId}'`);
-        trackUsage(appId, 'rpc', _sender, {
-          result: 'error',
-          function_name: functionName,
-          error_code: 'RPC_SOURCE_NOT_REGISTERED',
-        });
         sendResponse({
           error: `No source registered for app '${appId}'. Is an app source reachable?`,
           code: 'RPC_SOURCE_NOT_REGISTERED',
@@ -618,21 +474,9 @@ function dispatchAirglowMessage(
       // the dev server, cloud apps run on the cloud. No client-side execution.
       executeRemoteRpc(appId, source, functionName, msg.payload)
         .then((result) => {
-          trackUsage(appId, 'rpc', _sender, {
-            result: 'success',
-            function_name: functionName,
-            execution: source.type === 'local' ? 'local_server' : 'cloud_server',
-          });
           sendResponse({ result });
         })
         .catch((e) => {
-          trackUsage(appId, 'rpc', _sender, {
-            result: 'error',
-            function_name: functionName,
-            execution: source.type === 'local' ? 'local_server' : 'cloud_server',
-            error_code: errorCode(e, 'RPC_NETWORK_ERROR'),
-            http_status: errorStatus(e),
-          });
           sendResponse({
             error: e instanceof Error ? e.message : String(e),
             code: (e as any)?.code || 'RPC_NETWORK_ERROR',
@@ -647,11 +491,6 @@ function dispatchAirglowMessage(
     case 'airglow:llm:anthropic:messages': {
       const source = appSourceMap.get(appId);
       if (!source) {
-        trackUsage(appId, 'llm', _sender, {
-          result: 'error',
-          provider: 'anthropic',
-          error_code: 'LLM_SOURCE_NOT_REGISTERED',
-        });
         sendResponse({
           error: `No source registered for app '${appId}'. Is an app source reachable?`,
           code: 'LLM_SOURCE_NOT_REGISTERED',
@@ -697,12 +536,6 @@ function dispatchAirglowMessage(
               }
               throw error;
             }
-            trackUsage(appId, 'llm', _sender, {
-              result: 'success',
-              provider: 'anthropic',
-              execution: source.type === 'local' ? 'local_server' : 'cloud_server',
-              http_status: res.status,
-            });
             sendResponse({ result });
             return;
           } catch (error) {
@@ -716,13 +549,6 @@ function dispatchAirglowMessage(
           }
         }
         const err = lastError as any;
-        trackUsage(appId, 'llm', _sender, {
-          result: 'error',
-          provider: 'anthropic',
-          execution: source.type === 'local' ? 'local_server' : 'cloud_server',
-          error_code: errorCode(err, 'LLM_NETWORK_ERROR'),
-          http_status: errorStatus(err),
-        });
         sendResponse({
           error: err instanceof Error ? err.message : String(err),
           code: err?.code || 'LLM_NETWORK_ERROR',
@@ -731,13 +557,6 @@ function dispatchAirglowMessage(
           details: err?.details,
         });
       })().catch((e) => {
-        trackUsage(appId, 'llm', _sender, {
-          result: 'error',
-          provider: 'anthropic',
-          execution: source.type === 'local' ? 'local_server' : 'cloud_server',
-          error_code: errorCode(e, 'LLM_NETWORK_ERROR'),
-          http_status: errorStatus(e),
-        });
         sendResponse({ error: e?.message || String(e), code: 'LLM_NETWORK_ERROR' });
       });
       return true;
@@ -809,31 +628,14 @@ function dispatchAirglowMessage(
         const type = msg.popup !== false ? 'popup' : 'normal';
         chrome.windows.create({ url: msg.url, type, width: w, height: h, left, top }, (win) => {
           if (chrome.runtime.lastError) {
-            trackUsage(appId, 'open_window', _sender, {
-              result: 'error',
-              window_type: type,
-              wait_close: Boolean(msg.waitClose),
-              error_code: 'CHROME_RUNTIME_ERROR',
-            });
             sendResponse({ ok: false, error: chrome.runtime.lastError.message });
             return;
           }
           const winId = win?.id;
           if (winId == null) {
-            trackUsage(appId, 'open_window', _sender, {
-              result: 'error',
-              window_type: type,
-              wait_close: Boolean(msg.waitClose),
-              error_code: 'WINDOW_NOT_CREATED',
-            });
             sendResponse({ ok: false, error: 'no window created' });
             return;
           }
-          trackUsage(appId, 'open_window', _sender, {
-            result: 'success',
-            window_type: type,
-            wait_close: Boolean(msg.waitClose),
-          });
           if (!msg.waitClose) {
             sendResponse({ ok: true, windowId: winId });
             return;
@@ -852,18 +654,9 @@ function dispatchAirglowMessage(
     case 'airglow:openTab': {
       chrome.tabs.create({ url: msg.url, active: msg.active !== false }, (tab) => {
         if (chrome.runtime.lastError) {
-          trackUsage(appId, 'open_tab', _sender, {
-            result: 'error',
-            active: msg.active !== false,
-            error_code: 'CHROME_RUNTIME_ERROR',
-          });
           sendResponse({ ok: false, error: chrome.runtime.lastError.message });
           return;
         }
-        trackUsage(appId, 'open_tab', _sender, {
-          result: 'success',
-          active: msg.active !== false,
-        });
         sendResponse({ ok: true, tabId: tab?.id });
       });
       return true;
@@ -872,36 +665,20 @@ function dispatchAirglowMessage(
     case 'airglow:captureTab': {
       const tabId = _sender.tab?.id;
       if (tabId == null) {
-        trackUsage(appId, 'capture_tab', _sender, {
-          result: 'error',
-          error_code: 'NO_SENDER_TAB',
-        });
         sendResponse({ error: 'no sender tab' });
         return true;
       }
       chrome.tabs.get(tabId, (tab) => {
         if (chrome.runtime.lastError || !tab.windowId) {
-          trackUsage(appId, 'capture_tab', _sender, {
-            result: 'error',
-            error_code: chrome.runtime.lastError ? 'CHROME_RUNTIME_ERROR' : 'TAB_WINDOW_NOT_FOUND',
-          });
           sendResponse({ error: 'cannot get tab window' });
           return;
         }
         chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 90 }, (dataUrl) => {
           if (chrome.runtime.lastError) {
-            trackUsage(appId, 'capture_tab', _sender, {
-              result: 'error',
-              error_code: 'CHROME_RUNTIME_ERROR',
-            });
             sendResponse({ error: chrome.runtime.lastError.message });
             return;
           }
           const base64 = dataUrl.split(',')[1];
-          trackUsage(appId, 'capture_tab', _sender, {
-            result: 'success',
-            media_type: 'image/jpeg',
-          });
           sendResponse({ base64, mediaType: 'image/jpeg' });
         });
       });

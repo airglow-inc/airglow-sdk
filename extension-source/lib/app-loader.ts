@@ -361,7 +361,7 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     }
   }
 
-  await trackAppsRegistered(manifests.map((m) => m.id)).catch((e) =>
+  await trackAppsRegistered(manifests).catch((e) =>
     logger.warn('airglow', `trackAppsRegistered failed: ${e instanceof Error ? e.message : String(e)}`),
   );
 

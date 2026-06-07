@@ -195,7 +195,6 @@ export default function App() {
   const [appOrder, setAppOrder] = useState<Record<string, string[]>>({});
   const dragItem = useRef<{ section: string; index: number } | null>(null);
   const dragOverItem = useRef<{ section: string; index: number } | null>(null);
-  const seenDashboardApps = useRef<Set<string>>(new Set());
   const dashboardOpenTracked = useRef(false);
 
   function sortByOrder(list: AppManifest[], section: string): AppManifest[] {
@@ -207,27 +206,6 @@ export default function App() {
       const bi = idxMap.get(b.id) ?? -1;
       return ai - bi;
     });
-  }
-
-  function trackDashboardAppsSeen(currentApps: AppManifest[]) {
-    const payload: { appId: string; sourceType: AppSourceType; section: string; position: number }[] = [];
-    const addSection = (section: string, sectionApps: AppManifest[]) => {
-      sectionApps.forEach((app, position) => {
-        const key = appIdentityKey(app);
-        if (seenDashboardApps.current.has(key)) return;
-        seenDashboardApps.current.add(key);
-        payload.push({ appId: app.id, sourceType: app._sourceType, section, position });
-      });
-    };
-
-    addSection('cloud', sortByOrder(currentApps.filter(isCloudApp), 'published'));
-    addSection('local', sortByOrder(currentApps.filter((app) => app._sourceType === 'local'), 'local'));
-    if (payload.length === 0) return;
-    chrome.runtime.sendMessage({
-      type: 'airglow:track-apps-seen',
-      surface: 'dashboard_list',
-      apps: payload,
-    }, () => { void chrome.runtime.lastError; });
   }
 
   function handleDragStart(section: string, index: number) {
@@ -418,19 +396,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!identityLoaded || !userEmail || page !== 'apps' || !apps?.length) return;
-    trackDashboardAppsSeen(apps);
-  }, [identityLoaded, userEmail, page, apps, appOrder]);
-
-  useEffect(() => {
     if (!identityLoaded || dashboardOpenTracked.current) return;
     dashboardOpenTracked.current = true;
     chrome.runtime.sendMessage({
       type: 'airglow:track-dashboard-opened',
       page,
-      hasEmail: Boolean(userEmail),
     }, () => { void chrome.runtime.lastError; });
-  }, [identityLoaded, page, userEmail]);
+  }, [identityLoaded, page]);
 
   // Poll the dev server's update-status endpoint while the server is online so
   // the "Reload Airglow" banner appears without the user having to refresh the
@@ -559,15 +531,6 @@ export default function App() {
 
   function appUrl(appId: string) {
     return chrome.runtime.getURL(`app-shell.html?app=${appId}`);
-  }
-
-  function trackAppUiOpen(app: Pick<AppManifest, 'id' | '_sourceType'>, surface: string = 'dashboard') {
-    chrome.runtime.sendMessage({
-      type: 'airglow:track-app-ui-opened',
-      appId: app.id,
-      sourceType: app._sourceType,
-      surface,
-    }, () => { void chrome.runtime.lastError; });
   }
 
   // ── Secrets modal ──
@@ -734,7 +697,6 @@ export default function App() {
                 target="_blank"
                 className="no-underline"
                 style={{ color: 'inherit' }}
-                onClick={() => trackAppUiOpen(app, 'dashboard_card')}
               >
                 {app.name}
               </a>
@@ -783,7 +745,6 @@ export default function App() {
               target="_blank"
               className="block text-base leading-relaxed no-underline"
               style={{ color: 'var(--fg-secondary)' }}
-              onClick={() => trackAppUiOpen(app, 'dashboard_card')}
             >
               {app.description}
             </a>
@@ -919,7 +880,6 @@ export default function App() {
                 style={{ color: 'var(--fg-secondary)', borderBottom: i < published.length - 1 ? '1px solid var(--border-tertiary)' : 'none' }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
                 onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-secondary)'; }}
-                onClick={() => trackAppUiOpen(app, 'dashboard_sidebar')}
               >
                 {app.name}
               </a>
@@ -947,7 +907,6 @@ export default function App() {
                   style={{ color: 'var(--olive)', borderBottom: i < local.length - 1 ? '1px solid color-mix(in srgb, var(--olive) 15%, var(--border-tertiary))' : 'none' }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--olive) 12%, var(--bg-tertiary))'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                  onClick={() => trackAppUiOpen(app, 'dashboard_sidebar')}
                 >
                   {app.name}
                 </a>

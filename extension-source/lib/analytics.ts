@@ -17,25 +17,23 @@ const IDENTIFIED_FLAG_KEY = '__airglow_identified_tracked';
 const IDENTIFIED_EMAIL_KEY = '__airglow_identified_tracked_email';
 const APPS_REGISTERED_KEY = '__airglow_apps_registered';
 
-export type AnalyticsPropertyValue = string | number | boolean | null | string[];
+export type AnalyticsPropertyValue =
+  | string
+  | number
+  | boolean
+  | null
+  | AnalyticsPropertyValue[]
+  | { [key: string]: AnalyticsPropertyValue };
 
 type AppAnalyticsManifest = {
   id: string;
-  name?: string;
-  version?: string;
-  visibility?: string;
   startup?: unknown;
   serverFunctions?: unknown;
   _serverFunctions?: unknown;
-  rpcExecution?: string;
   userscripts?: unknown;
-  host_permissions?: unknown;
   _sourceType?: string;
 };
 
-export type AppSeenSurface = 'dashboard_list' | 'dashboard_details' | 'page_edge_menu' | 'app_shell_edge_menu' | 'userscript_injected';
-export type AppUiOpenSurface = 'dashboard_card' | 'dashboard_sidebar' | 'edge_menu';
-export type AppUseAction = 'rpc' | 'llm' | 'fetch' | 'open_window' | 'open_tab' | 'capture_tab' | 'app_action';
 export type DashboardPage = 'apps' | 'logs';
 
 function arrayCount(value: unknown): number {
@@ -46,30 +44,21 @@ function normalizeAppSourceType(value: string | undefined): string {
   return value === 'local' || value === 'cloud' ? value : 'unknown';
 }
 
-function appAnalyticsProperties(
-  app: AppAnalyticsManifest,
-  extra: Record<string, AnalyticsPropertyValue> = {},
-): Record<string, AnalyticsPropertyValue> {
+function appRegistrationProperties(app: AppAnalyticsManifest): Record<string, AnalyticsPropertyValue> {
   const serverFunctionCount = arrayCount(app.serverFunctions || app._serverFunctions);
   const userscriptCount = arrayCount(app.userscripts);
-  const hostPermissionCount = arrayCount(app.host_permissions);
   return {
     app_id: app.id,
-    app_name: app.name || app.id,
     app_source_type: normalizeAppSourceType(app._sourceType),
-    app_version: app.version || null,
-    app_visibility: app.visibility || null,
     has_ui: true,
     has_startup: typeof app.startup === 'string' && app.startup.trim().length > 0,
     has_server_functions: serverFunctionCount > 0,
     has_userscripts: userscriptCount > 0,
-    has_host_permissions: hostPermissionCount > 0,
-    server_function_count: serverFunctionCount,
-    userscript_count: userscriptCount,
-    host_permission_count: hostPermissionCount,
-    rpc_execution: app.rpcExecution || null,
-    ...extra,
   };
+}
+
+function appEventProperties(appId: string): Record<string, AnalyticsPropertyValue> {
+  return { app_id: appId };
 }
 
 /** Dedup'd via storage after PostHog accepts the event. */
@@ -106,53 +95,39 @@ export async function trackIdentified(emailValue?: unknown): Promise<void> {
  * network call when the set is unchanged. Expected lifetime volume is in the
  * single digits per user.
  */
-export async function trackAppsRegistered(appIds: string[]): Promise<void> {
-  const current = [...new Set(appIds)].sort();
+export async function trackAppsRegistered(apps: AppAnalyticsManifest[]): Promise<void> {
+  const current = [...apps]
+    .map(appRegistrationProperties)
+    .sort((a, b) => String(a.app_id).localeCompare(String(b.app_id)));
+  const currentIds = current.map((app) => String(app.app_id));
   const stored = await chrome.storage.local.get(APPS_REGISTERED_KEY);
   const previous = Array.isArray(stored[APPS_REGISTERED_KEY])
-    ? (stored[APPS_REGISTERED_KEY] as string[])
+    ? stored[APPS_REGISTERED_KEY] as unknown[]
     : [];
-  if (previous.length === current.length && previous.every((id, i) => id === current[i])) return;
+  if (JSON.stringify(previous) === JSON.stringify(current)) return;
   try {
-    await posthog.identify({ apps_registered: current });
+    await posthog.identify({ apps_registered: currentIds });
   } catch (e) {
     logger.warn('airglow', `posthog identify (apps_registered) failed: ${e instanceof Error ? e.message : String(e)}`);
   }
-  await posthog.capture('Apps Registered', { apps: current, count: current.length });
+  await posthog.capture('Apps Registered', {
+    apps: currentIds,
+    app_properties: current,
+    count: current.length,
+  });
   await chrome.storage.local.set({ [APPS_REGISTERED_KEY]: current });
 }
 
-export async function trackAppSeen(
-  app: AppAnalyticsManifest,
-  surface: AppSeenSurface,
-  extra: Record<string, AnalyticsPropertyValue> = {},
-): Promise<void> {
-  await posthog.capture('App Seen', appAnalyticsProperties(app, { surface, ...extra }));
+export async function trackUserscriptInjected(appId: string): Promise<void> {
+  await posthog.capture('Userscript Injected', appEventProperties(appId));
 }
 
-export async function trackAppUsed(
-  app: AppAnalyticsManifest,
-  action: AppUseAction,
-  extra: Record<string, AnalyticsPropertyValue> = {},
-): Promise<void> {
-  await posthog.capture('App Used', appAnalyticsProperties(app, { action, ...extra }));
-}
-
-export async function trackAppUiOpened(
-  app: AppAnalyticsManifest,
-  surface: AppUiOpenSurface,
-  extra: Record<string, AnalyticsPropertyValue> = {},
-): Promise<void> {
-  await posthog.capture(
-    'App UI Opened',
-    appAnalyticsProperties(app, { surface, ...extra }),
-    { includeIdentityProperties: true },
-  );
+export async function trackUiPageOpened(appId: string): Promise<void> {
+  await posthog.capture('UI Page Opened', appEventProperties(appId));
 }
 
 export async function trackDashboardOpened(
   page: DashboardPage,
-  extra: Record<string, AnalyticsPropertyValue> = {},
 ): Promise<void> {
-  await posthog.capture('Dashboard Opened', { page, ...extra });
+  await posthog.capture('Dashboard Opened', { page });
 }

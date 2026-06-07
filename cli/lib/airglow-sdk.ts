@@ -1,6 +1,6 @@
 /**
  * Airglow SDK — injected into app contexts before app code runs.
- * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, airglow.platform, airglow.analytics.
+ * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, and airglow.platform.
  *
  * Auto-detects environment:
  * - Userscripts/extension pages: uses chrome.runtime.sendMessage
@@ -152,16 +152,6 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     },
   };
 
-  const analytics = {
-    async used(action, properties) {
-      await sendMsg({
-        type: 'airglow:analytics:used',
-        action,
-        properties: properties || {},
-      });
-    },
-  };
-
   // Auto-capture uncaught errors. The global error handler also fires for
   // errors from the host page (e.g. Outlook's own ResizeObserver loop), so we
   // only report errors whose filename or stack points back to our bundle —
@@ -273,7 +263,6 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     fetch: airglowFetch,
     storage,
     log,
-    analytics,
     rpc,
     llm,
     platform,
