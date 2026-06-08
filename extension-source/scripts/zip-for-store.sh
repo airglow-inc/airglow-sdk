@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Repackage the WXT build for Chrome Web Store upload.
+# Repackage the exported extension/ for Chrome Web Store upload.
 #
-# The committed extension/ ships with `manifest.key` set so every dev install
-# resolves to the same deterministic extension ID. The Web Store rejects any
-# manifest containing `key` ("key field is not allowed in manifest"), so this
-# script stages a copy of .output/chrome-mv3/ with `key` removed and zips
-# that. .output/chrome-mv3/ itself is left untouched — export-extension.sh
-# still ships the keyed manifest into extension/.
+# Source from extension/ (not .output/chrome-mv3/) so the zip carries the
+# airglow_build_ts and airglow_build_hash that export-extension.sh injects —
+# the dashboard's "Build:" line reads airglow_build_ts off the loaded manifest
+# and shows "unknown" if it's missing.
+#
+# extension/ ships with `manifest.key` set so every dev install resolves to
+# the same deterministic extension ID. The Web Store rejects any manifest
+# containing `key` ("key field is not allowed in manifest"), so this script
+# stages a copy with `key` removed and zips that. extension/ itself is left
+# untouched.
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source_dir="$(cd "$script_dir/.." && pwd)"
-build_dir="$source_dir/.output/chrome-mv3"
+repo_root="$(cd "$source_dir/.." && pwd)"
+build_dir="$repo_root/extension"
 stage_dir="$source_dir/.output/chrome-mv3-store"
 zip_path="$source_dir/.output/airglow-ext-prod.zip"
 
 if [ ! -f "$build_dir/manifest.json" ]; then
-  echo "Missing $build_dir/manifest.json — run \`pnpm build\` first." >&2
+  echo "Missing $build_dir/manifest.json — run \`pnpm export\` first." >&2
   exit 1
 fi
 
