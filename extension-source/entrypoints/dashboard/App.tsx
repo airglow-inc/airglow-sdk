@@ -1004,6 +1004,12 @@ export default function App() {
                 )}
               </button>
             </div>
+            <div className="px-1 pt-2 mt-2 -mb-2" style={{ color: 'var(--fg-tertiary)', fontSize: '12px' }}>
+              Build: {(() => {
+                const ts = (chrome.runtime.getManifest() as { airglow_build_ts?: number }).airglow_build_ts;
+                return ts ? new Date(ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC' : 'unknown';
+              })()}
+            </div>
           </div>
         </div>
 
