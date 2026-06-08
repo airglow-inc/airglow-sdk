@@ -195,6 +195,7 @@ export default function App() {
   const [appOrder, setAppOrder] = useState<Record<string, string[]>>({});
   const dragItem = useRef<{ section: string; index: number } | null>(null);
   const dragOverItem = useRef<{ section: string; index: number } | null>(null);
+  const dashboardOpenTracked = useRef(false);
 
   function sortByOrder(list: AppManifest[], section: string): AppManifest[] {
     const order = appOrder[section];
@@ -394,6 +395,15 @@ export default function App() {
     return () => chrome.storage.local.onChanged.removeListener(onChange);
   }, []);
 
+  useEffect(() => {
+    if (!identityLoaded || dashboardOpenTracked.current) return;
+    dashboardOpenTracked.current = true;
+    chrome.runtime.sendMessage({
+      type: 'airglow:track-dashboard-opened',
+      page,
+    }, () => { void chrome.runtime.lastError; });
+  }, [identityLoaded, page]);
+
   // Poll the dev server's update-status endpoint while the server is online so
   // the "Reload Airglow" banner appears without the user having to refresh the
   // dashboard. Pauses while offline (no point hitting a dead server) and while
@@ -419,6 +429,11 @@ export default function App() {
       return;
     }
     chrome.storage.local.set({ [USER_EMAIL_KEY]: trimmed }, () => {
+      const runtimeError = chrome.runtime.lastError;
+      if (runtimeError) {
+        setEmailError(runtimeError.message || 'Could not save email.');
+        return;
+      }
       setUserEmail(trimmed);
       setEmailInput(trimmed);
       setEmailError(null);
@@ -677,7 +692,14 @@ export default function App() {
         <div className="flex items-start justify-between">
           <div className="flex-1">
             <div className="text-lg font-semibold mb-1 flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
-              <a href={appUrl(app.id)} target="_blank" className="no-underline" style={{ color: 'inherit' }}>{app.name}</a>
+              <a
+                href={appUrl(app.id)}
+                target="_blank"
+                className="no-underline"
+                style={{ color: 'inherit' }}
+              >
+                {app.name}
+              </a>
               {secrets && Object.keys(secrets).length > 0 && (
                 <Tooltip content={
                   <span>
@@ -718,7 +740,12 @@ export default function App() {
                 </Tooltip>
               )}
             </div>
-            <a href={appUrl(app.id)} target="_blank" className="block text-base leading-relaxed no-underline" style={{ color: 'var(--fg-secondary)' }}>
+            <a
+              href={appUrl(app.id)}
+              target="_blank"
+              className="block text-base leading-relaxed no-underline"
+              style={{ color: 'var(--fg-secondary)' }}
+            >
               {app.description}
             </a>
           </div>

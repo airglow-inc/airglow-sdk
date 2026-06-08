@@ -3,8 +3,9 @@ const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
 import { APP_INVENTORY_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
-import { trackInstalled } from '../lib/analytics';
-import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
+import { trackDashboardOpened, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
+import * as posthog from '../lib/posthog';
+import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from '../lib/airglow-identity';
 
 export default defineBackground(() => {
   log('service worker started');
@@ -272,17 +273,60 @@ export default defineBackground(() => {
   // don't trip the email-required gate during local development.
   // `__airglow_skip_dev_seed` opts a profile out of that — used by
   // `pnpm chrome --ask-email` to test the email-onboarding flow.
-  chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed'], async (result) => {
+  let lastTrackedUserEmail: string | null = null;
+
+  function trackStoredUserEmail(emailValue: unknown) {
+    const email = normalizeUserEmail(emailValue);
+    if (!email) return;
+    if (email === lastTrackedUserEmail) return;
+    lastTrackedUserEmail = email;
+    trackIdentified(email).catch((e) => {
+      if (lastTrackedUserEmail === email) lastTrackedUserEmail = null;
+      logger.warn('airglow', `trackIdentified failed: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  }
+
+  chrome.storage.local.onChanged.addListener((changes) => {
+    if (USER_EMAIL_KEY in changes) {
+      trackStoredUserEmail(changes[USER_EMAIL_KEY].newValue);
+    }
+  });
+
+  (async () => {
+    // Resolve user_id + auto-fill email from chrome.identity.getProfileUserInfo
+    // before the email-tracking branch reads storage. ensureIdentity may write
+    // USER_EMAIL_KEY, which fires the onChanged listener above.
+    //
+    // If an email is available, send $identify *and await it* before releasing
+    // the posthog.capture gate — so the first event the user sees in PostHog
+    // already has `email` set on the person (otherwise events.list renders the
+    // raw distinct_id and never backfills). try/finally guarantees the gate
+    // releases even on crash; the capture-side timeout is a pure safety net.
+    try {
+      const identity = await ensureIdentity();
+      log(`identity resolved: user_id=${identity.userId}${identity.email ? ` email=${identity.email}` : ''}`);
+      if (identity.email) {
+        await posthog.identify().catch((e) =>
+          logger.warn('airglow', `boot $identify failed: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
+    } finally {
+      posthog.markIdentifyComplete();
+    }
+
+    const result = await chrome.storage.local.get([USER_EMAIL_KEY, '__airglow_skip_dev_seed']);
     let stored = normalizeUserEmail(result[USER_EMAIL_KEY]);
     const skipDevSeed = result['__airglow_skip_dev_seed'] === true;
     if (!stored && runtimeConfig.devUserEmail && !skipDevSeed) {
       const dev = normalizeUserEmail(runtimeConfig.devUserEmail);
       if (dev) {
         await chrome.storage.local.set({ [USER_EMAIL_KEY]: dev });
+        stored = dev;
         log(`dev auto-set user email: ${dev}`);
       }
     }
-  });
+    trackStoredUserEmail(stored);
+  })();
 
   async function loadAndRegisterApps(force = false, skipReload = false) {
     const gen = ++loadGeneration;
@@ -936,57 +980,12 @@ export default defineBackground(() => {
 
 
 
-  // ───── Platform redirects (storage-backed, registered by apps via startup.ts) ─────
-  const REDIRECTS_KEY = '__platform:redirects';
-  let redirectRules: { appId: string; domains: string[]; target: string }[] = [];
-
-  function loadRedirectRules() {
-    chrome.storage.local.get([REDIRECTS_KEY, '__disabled_apps'], (result) => {
-      const all = (result[REDIRECTS_KEY] || {}) as Record<string, { domains: string[]; target: string }[]>;
-      const disabled = new Set((result['__disabled_apps'] || []) as string[]);
-      redirectRules = [];
-      for (const [appId, rules] of Object.entries(all)) {
-        if (disabled.has(appId)) continue;
-        for (const rule of rules) {
-          redirectRules.push({ appId, domains: rule.domains, target: rule.target });
-        }
-      }
-      if (redirectRules.length > 0) {
-        log(`loaded ${redirectRules.length} redirect rule(s)`);
-      }
-    });
-  }
-  loadRedirectRules();
-  // Reload rules when apps register/update redirects or apps are disabled
-  chrome.storage.local.onChanged.addListener((changes) => {
-    if (REDIRECTS_KEY in changes || '__disabled_apps' in changes) loadRedirectRules();
-  });
-
-  function matchRedirect(hostname: string): { appId: string; domain: string; target: string } | undefined {
-    const parts = hostname.split('.');
-    for (const rule of redirectRules) {
-      for (let i = 0; i < parts.length - 1; i++) {
-        const candidate = parts.slice(i).join('.');
-        if (rule.domains.includes(candidate)) {
-          return { appId: rule.appId, domain: candidate, target: rule.target };
-        }
-      }
-    }
-  }
-
-  // Use onCommitted to catch the final URL after HTTP redirects (e.g. youtu.be → youtube.com)
   chrome.webNavigation.onCommitted.addListener((details) => {
     if (details.frameId !== 0) return; // main frame only
     try {
-      const url = new URL(details.url);
-      const match = matchRedirect(url.hostname);
-      if (match) {
-        const appId = match.target.replace('airglow://', '');
-        chrome.tabs.update(details.tabId, {
-          url: chrome.runtime.getURL(`app-shell.html?app=${appId}&site=${match.domain}`),
-        });
-        return;
-      }
+      trackUserscriptInjectedForUrl(details.url).catch((e) =>
+        logger.warn('airglow', `track userscript injection failed: ${e instanceof Error ? e.message : String(e)}`)
+      );
       // Trace injection: only for tabs Claude has attached via native host.
       if (spiedTabs.has(details.tabId)) {
         injectTrace(details.tabId).catch((e) => logger.error('airglow', `trace inject failed: ${e}`));
@@ -1005,11 +1004,6 @@ export default defineBackground(() => {
       );
     }
   });
-
-  // Idempotent retry on every service-worker spin-up — the ping is dedup'd via
-  // chrome.storage, so this just covers the case where the install fire missed
-  // the network (offline backend, race with first app source discovery).
-  trackInstalled().catch(() => {});
 
   // If the extension was reloaded via our own UI ("Reload Airglow" button), reopen/refocus the dashboard.
   const REOPEN_DASHBOARD_KEY = '__reopen_dashboard_after_reload';
@@ -1039,6 +1033,35 @@ export default defineBackground(() => {
   // so the indicator clears once the user reads the logs page.
   const tabErrors = new Map<number, Map<string, number>>();
 
+  type PageApp = {
+    id: string;
+    name: string;
+    disabled: boolean;
+    hasError?: boolean;
+    sourceType: SourcedManifest['_sourceType'];
+  };
+
+  function normalizeDashboardPage(value: unknown): DashboardPage {
+    return value === 'logs' ? 'logs' : 'apps';
+  }
+
+  function urlMatchesPattern(pattern: string, rawUrl: string): boolean {
+    const re = new RegExp('^' + pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
+    return re.test(rawUrl);
+  }
+
+  async function trackUserscriptInjectedForUrl(rawUrl: string) {
+    if (!userScriptsAllowed || !/^https?:\/\//.test(rawUrl)) return;
+    const disabled = await getDisabledApps();
+    for (const manifest of getAppManifests()) {
+      if (disabled.has(manifest.id)) continue;
+      const matches = manifest.userscripts?.some((userscript) =>
+        userscript.matches.some((pattern) => urlMatchesPattern(pattern, rawUrl))
+      );
+      if (matches) await trackUserscriptInjected(manifest.id);
+    }
+  }
+
   // Track errors only after the message handler validates and persists the log.
   // This prevents the indicator from showing when the log was rejected (stale secret, etc.).
   setOnAppLog((appId, level, sender) => {
@@ -1063,6 +1086,30 @@ export default defineBackground(() => {
     // ── Airglow SDK messages (from content scripts/UI/startup) ──
     if (handleAirglowMessage(msg, _sender as chrome.runtime.MessageSender, sendResponse)) return true;
 
+    if (msg?.type === 'airglow:identity:getUserEmail') {
+      chrome.storage.local.get(USER_EMAIL_KEY, (result) => {
+        sendResponse({ email: normalizeUserEmail(result[USER_EMAIL_KEY]) });
+      });
+      return true;
+    }
+
+    if (msg?.type === 'airglow:identity:setUserEmail') {
+      const email = normalizeUserEmail(msg.email);
+      if (!email) {
+        sendResponse({ error: 'Enter a valid email address.', code: 'INVALID_EMAIL' });
+        return true;
+      }
+      chrome.storage.local.set({ [USER_EMAIL_KEY]: email }, () => {
+        const runtimeError = chrome.runtime.lastError;
+        if (runtimeError) {
+          sendResponse({ error: runtimeError.message || 'Could not save email.', code: 'STORAGE_ERROR' });
+          return;
+        }
+        sendResponse({ ok: true, email });
+      });
+      return true;
+    }
+
     // ── Edge button ──
     if (msg?.type === 'airglow:open-dashboard') {
       const page = msg.page ? `?page=${msg.page}` : '';
@@ -1070,9 +1117,38 @@ export default defineBackground(() => {
       return;
     }
 
+    if (msg?.type === 'airglow:track-ui-page-opened') {
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      (async () => {
+        if (!appId) {
+          sendResponse({ ok: false, error: 'missing appId' });
+          return;
+        }
+        await trackUiPageOpened(appId);
+        sendResponse({ ok: true });
+      })().catch((e) => {
+        logger.warn('airglow', `track UI page opened failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track UI page opened failed' });
+      });
+      return true;
+    }
+
+    if (msg?.type === 'airglow:track-dashboard-opened') {
+      (async () => {
+        await trackDashboardOpened(normalizeDashboardPage(msg.page));
+        sendResponse({ ok: true });
+      })().catch((e) => {
+        logger.warn('airglow', `trackDashboardOpened failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track dashboard opened failed' });
+      });
+      return true;
+    }
+
     if (msg?.type === 'airglow:open-app') {
-      chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${msg.appId}`) });
-      return;
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${appId}`) });
+      sendResponse({ ok: true });
+      return true;
     }
 
     // ── Dashboard actions ──
@@ -1144,19 +1220,29 @@ export default defineBackground(() => {
       const senderTabId = _sender?.tab?.id;
       const errorsOnTab = senderTabId ? tabErrors.get(senderTabId) : undefined;
       const allManifests = getAppManifests();
-      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(([disabled, lastSeenRes]) => {
+      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(async ([disabled, lastSeenRes]) => {
         const lastSeen = (lastSeenRes['__logs_last_seen_ts'] as number | undefined) ?? 0;
         const hasError = (id: string) => {
           const ts = errorsOnTab?.get(id);
           return ts !== undefined && ts > lastSeen;
         };
-        const matching: { id: string; name: string; disabled: boolean; hasError?: boolean }[] = [];
+        const matching: PageApp[] = [];
         const seen = new Set<string>();
+        const addMatchingApp = (m: SourcedManifest) => {
+          const isDisabled = disabled.has(m.id);
+          matching.push({
+            id: m.id,
+            name: m.name,
+            disabled: isDisabled,
+            hasError: hasError(m.id),
+            sourceType: m._sourceType,
+          });
+        };
 
         // If appId is specified (app-shell), return just that app
         if (appId) {
           const m = allManifests.find(m => m.id === appId);
-          if (m) matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
+          if (m) addMatchingApp(m);
           sendResponse({ apps: matching });
           return;
         }
@@ -1164,59 +1250,17 @@ export default defineBackground(() => {
         // Check userscript matches
         for (const m of allManifests) {
           if (m.userscripts?.some(us =>
-            us.matches.some(p => {
-              const re = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
-              return re.test(url);
-            })
+            us.matches.some(p => urlMatchesPattern(p, url))
           )) {
             seen.add(m.id);
-            matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
+            addMatchingApp(m);
           }
         }
 
-        // Check redirect domains
-        try {
-          const hostname = new URL(url).hostname;
-          for (const rule of redirectRules) {
-            if (seen.has(rule.appId)) continue;
-            const parts = hostname.split('.');
-            for (let i = 0; i < parts.length - 1; i++) {
-              if (rule.domains.includes(parts.slice(i).join('.'))) {
-                const m = allManifests.find(m => m.id === rule.appId);
-                if (m) {
-                  seen.add(m.id);
-                  matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
-                }
-                break;
-              }
-            }
-          }
-        } catch {}
-
-        // Also check disabled apps' redirect rules (they're excluded from redirectRules)
-        chrome.storage.local.get('__platform:redirects', (result) => {
-          const all = (result['__platform:redirects'] || {}) as Record<string, { domains: string[]; target: string }[]>;
-          try {
-            const hostname = new URL(url).hostname;
-            for (const [rAppId, rules] of Object.entries(all)) {
-              if (seen.has(rAppId)) continue;
-              for (const rule of rules) {
-                const parts = hostname.split('.');
-                for (let i = 0; i < parts.length - 1; i++) {
-                  if (rule.domains.includes(parts.slice(i).join('.'))) {
-                    const m = allManifests.find(m => m.id === rAppId);
-                    if (m) {
-                      seen.add(m.id);
-                      matching.push({ id: m.id, name: m.name, disabled: disabled.has(m.id), hasError: hasError(m.id) });
-                    }
-                    break;
-                  }
-                }
-              }
-            }
-          } catch {}
-          sendResponse({ apps: matching });
-        });
+        sendResponse({ apps: matching });
+      }).catch((e) => {
+        logger.warn('airglow', `get page apps failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ error: 'get page apps failed' });
       });
       return true;
     }

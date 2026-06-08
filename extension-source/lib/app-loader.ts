@@ -44,7 +44,7 @@ function getCloudSource(): AppSource {
 }
 
 const APP_SOURCES_KEY = '__app_sources';
-const APP_MANIFESTS_KEY = '__app_manifests';
+export const APP_MANIFESTS_KEY = '__app_manifests';
 export const APP_INVENTORY_MANIFESTS_KEY = '__app_inventory_manifests';
 // Per-app userscript source cache. Keyed by appId; hash-gated so we only
 // re-fetch when the manifest's _hash actually changes. Lets the extension
@@ -325,7 +325,7 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
   outer: for (const manifest of manifests) {
     if (!manifest.userscripts?.length) continue;
 
-    const sdkCode = buildSdkCode(manifest.id);
+    const sdkCode = buildSdkCode(manifest.id, 'userscript');
     const worldId = `airglow:${manifest.id}`;
     worldIds.add(worldId);
 
@@ -361,7 +361,7 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     }
   }
 
-  trackAppsRegistered(manifests.map((m) => m.id)).catch((e) =>
+  await trackAppsRegistered(manifests).catch((e) =>
     logger.warn('airglow', `trackAppsRegistered failed: ${e instanceof Error ? e.message : String(e)}`),
   );
 
@@ -434,7 +434,7 @@ export async function runStartupScripts(manifests: SourcedManifest[]): Promise<v
         continue;
       }
       const code = await res.text();
-      const sdk = buildSdkCode(manifest.id);
+      const sdk = buildSdkCode(manifest.id, 'startup');
       await runStartupDirect(manifest.id, code, sdk);
       logger.info(manifest.id, 'startup script ran');
     } catch (e) {

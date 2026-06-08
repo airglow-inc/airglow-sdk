@@ -23,6 +23,7 @@ interface PageApp {
   name: string;
   disabled: boolean;
   hasError?: boolean;
+  sourceType?: 'local' | 'cloud';
 }
 
 interface PopupOpts {

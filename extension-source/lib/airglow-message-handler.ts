@@ -5,15 +5,13 @@
 
 import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
-import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
-import { trackIdentified } from './analytics';
+import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from './airglow-identity';
 
 const STORAGE_PREFIX = 'airglow:app:';
 const USER_SECRET_PREFIX = 'airglow:secret:';
 const DEV_SECRET_PREFIX = 'airglow:dev-secret:';
 const DEFAULT_POPUP_WIDTH = 520;
 const DEFAULT_POPUP_HEIGHT = 720;
-const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
 const APP_MANIFESTS_KEY = '__app_manifests';
 const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
@@ -21,16 +19,7 @@ const LLM_TIMEOUT_MS = 60000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
 
 async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string }> {
-  const stored = await chrome.storage.local.get([USER_EMAIL_KEY, AIRGLOW_USER_ID_KEY]);
-  let userId = typeof stored[AIRGLOW_USER_ID_KEY] === 'string' ? stored[AIRGLOW_USER_ID_KEY] : '';
-  if (!userId) {
-    userId = `ag_${crypto.randomUUID()}`;
-    await chrome.storage.local.set({ [AIRGLOW_USER_ID_KEY]: userId });
-  }
-  return {
-    email: normalizeUserEmail(stored[USER_EMAIL_KEY]),
-    userId,
-  };
+  return ensureIdentity();
 }
 
 function buildIdentityHeaders(identity: { email?: string; userId: string }): Record<string, string> {
@@ -233,6 +222,10 @@ export function getAppManifests(): SourcedManifest[] {
   return appManifests;
 }
 
+function getManifest(appId: string): SourcedManifest | undefined {
+  return appManifests.find((m) => m.id === appId);
+}
+
 /**
  * MV3 SW death race: the SW gets killed when idle. When it wakes up to handle
  * a message, in-memory `appManifests` is empty and every dispatch fails with
@@ -252,7 +245,7 @@ async function hydrateAppManifestsFromStorage(): Promise<void> {
 }
 
 function isClientSetting(appId: string, key: string): boolean {
-  const manifest = appManifests.find((m) => m.id === appId);
+  const manifest = getManifest(appId);
   if (!manifest?.secrets) return false;
   return key in (manifest.secrets as Record<string, any>);
 }
@@ -280,7 +273,7 @@ function matchesPattern(pattern: string, url: string): boolean {
 }
 
 function isUrlAllowedForFetch(appId: string, url: string): boolean {
-  const manifest = appManifests.find((m) => m.id === appId);
+  const manifest = getManifest(appId);
   if (!manifest?.host_permissions?.length) return false;
   return manifest.host_permissions.some((p) => matchesPattern(p, url));
 }
@@ -288,6 +281,10 @@ function isUrlAllowedForFetch(appId: string, url: string): boolean {
 export type OnAppLog = (appId: string, level: 'info' | 'warn' | 'error', sender: chrome.runtime.MessageSender) => void;
 let _onAppLog: OnAppLog | undefined;
 export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
+
+function normalizeHttpMethod(value: unknown): string {
+  return (typeof value === 'string' && value.trim() ? value.trim() : 'GET').toUpperCase().slice(0, 20);
+}
 
 export function handleAirglowMessage(
   msg: any,
@@ -400,6 +397,7 @@ function dispatchAirglowMessage(
       // host_permissions enforcement applies to ALL fetches (not just cookie
       // ones). Without this, a cloud app could exfiltrate to any URL via
       // the extension's privileged context (CORS-bypass, no SOP).
+      const httpMethod = normalizeHttpMethod(msg.method);
       let targetUrl: URL;
       try {
         targetUrl = new URL(String(msg.url || ''));
@@ -416,11 +414,15 @@ function dispatchAirglowMessage(
       }
       if (msg.includeCookies) {
         fetchViaPage(msg.url, msg.method, msg.headers, msg.body)
-          .then((result) => sendResponse(result))
-          .catch((e) => sendResponse({ error: e.message }));
+          .then((result) => {
+            sendResponse(result);
+          })
+          .catch((e) => {
+            sendResponse({ error: e.message });
+          });
       } else {
         const fetchOpts: RequestInit = {
-          method: msg.method || 'GET',
+          method: httpMethod,
           headers: msg.headers,
           body: msg.body,
         };
@@ -431,7 +433,9 @@ function dispatchAirglowMessage(
             try { body = JSON.parse(text); } catch { body = text; }
             sendResponse({ status: res.status, body });
           })
-          .catch((e) => sendResponse({ error: e.message }));
+          .catch((e) => {
+            sendResponse({ error: e.message });
+          });
       }
       return true;
     }
@@ -446,6 +450,7 @@ function dispatchAirglowMessage(
     }
 
     case 'airglow:rpc': {
+      const functionName = String(msg.functionName || '');
       const source = appSourceMap.get(appId);
       if (!source) {
         logger.warn('airglow', `RPC failed: no source registered for app '${appId}'`);
@@ -457,8 +462,10 @@ function dispatchAirglowMessage(
       }
       // Server-eval against whichever source owns this app: local apps run on
       // the dev server, cloud apps run on the cloud. No client-side execution.
-      executeRemoteRpc(appId, source, String(msg.functionName || ''), msg.payload)
-        .then((result) => sendResponse({ result }))
+      executeRemoteRpc(appId, source, functionName, msg.payload)
+        .then((result) => {
+          sendResponse({ result });
+        })
         .catch((e) => {
           sendResponse({
             error: e instanceof Error ? e.message : String(e),
@@ -539,7 +546,9 @@ function dispatchAirglowMessage(
           requestId: err?.requestId,
           details: err?.details,
         });
-      })().catch((e) => sendResponse({ error: e?.message || String(e), code: 'LLM_NETWORK_ERROR' }));
+      })().catch((e) => {
+        sendResponse({ error: e?.message || String(e), code: 'LLM_NETWORK_ERROR' });
+      });
       return true;
     }
 
@@ -564,9 +573,6 @@ function dispatchAirglowMessage(
       }
       chrome.storage.local.set({ [USER_EMAIL_KEY]: email }, () => {
         sendResponse({ ok: true, email });
-        trackIdentified().catch((e) =>
-          logger.warn('airglow', `trackIdentified failed: ${e instanceof Error ? e.message : String(e)}`)
-        );
       });
       return true;
     }
@@ -611,12 +617,19 @@ function dispatchAirglowMessage(
         const top = msg.top ?? ((parent.top ?? 0) + Math.round(((parent.height ?? 800) - h) / 2));
         const type = msg.popup !== false ? 'popup' : 'normal';
         chrome.windows.create({ url: msg.url, type, width: w, height: h, left, top }, (win) => {
-          if (!msg.waitClose) {
-            sendResponse({ ok: true, windowId: win?.id });
+          if (chrome.runtime.lastError) {
+            sendResponse({ ok: false, error: chrome.runtime.lastError.message });
             return;
           }
           const winId = win?.id;
-          if (winId == null) { sendResponse({ ok: false, error: 'no window created' }); return; }
+          if (winId == null) {
+            sendResponse({ ok: false, error: 'no window created' });
+            return;
+          }
+          if (!msg.waitClose) {
+            sendResponse({ ok: true, windowId: winId });
+            return;
+          }
           const onRemoved = (removedId: number) => {
             if (removedId !== winId) return;
             chrome.windows.onRemoved.removeListener(onRemoved);
@@ -657,19 +670,6 @@ function dispatchAirglowMessage(
           }
           const base64 = dataUrl.split(',')[1];
           sendResponse({ base64, mediaType: 'image/jpeg' });
-        });
-      });
-      return true;
-    }
-
-    case 'airglow:platform:registerRedirects': {
-      const REDIRECTS_KEY = '__platform:redirects';
-      chrome.storage.local.get(REDIRECTS_KEY, (result) => {
-        const all: Record<string, any[]> = result[REDIRECTS_KEY] as Record<string, any[]> || {};
-        all[appId] = msg.rules || [];
-        chrome.storage.local.set({ [REDIRECTS_KEY]: all }, () => {
-          logger.info(appId, `stored ${(msg.rules || []).length} redirect rule(s)`);
-          sendResponse({ ok: true });
         });
       });
       return true;

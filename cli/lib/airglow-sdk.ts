@@ -1,6 +1,6 @@
 /**
  * Airglow SDK — injected into app contexts before app code runs.
- * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, airglow.platform.
+ * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, and airglow.platform.
  *
  * Auto-detects environment:
  * - Userscripts/extension pages: uses chrome.runtime.sendMessage
@@ -8,18 +8,21 @@
  *
  * Disable/delete safety:
  * `storage` is app-scoped key-value — background doesn't act on it, safe to ignore.
- * `platform` writes persistent config that background listeners actively consume
- * (e.g. registerRedirects → webNavigation.onCommitted). Any such endpoint MUST tag
- * entries with appId so background can skip disabled apps (__disabled_apps).
+ * `platform` writes persistent config that background listeners actively consume.
+ * Any such endpoint MUST tag entries with appId so background can skip disabled
+ * apps (__disabled_apps).
  */
 
 export const AIRGLOW_SDK_CONTRACT_VERSION = '0.1.0-beta.1';
 
-export function buildSdkCode(appId: string): string {
+export type AirglowSdkContext = 'userscript' | 'app_ui' | 'startup';
+
+export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui'): string {
   return `
 (function() {
   const APP_ID = ${JSON.stringify(appId)};
   const SDK_VERSION = ${JSON.stringify(AIRGLOW_SDK_CONTRACT_VERSION)};
+  const SDK_CONTEXT = ${JSON.stringify(context)};
   const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
 
   let callCounter = 0;
@@ -204,9 +207,6 @@ export function buildSdkCode(appId: string): string {
   }
 
   const platform = {
-    async registerRedirects(rules) {
-      await sendMsg({ type: 'airglow:platform:registerRedirects', rules });
-    },
     async allowIframes(domains, initiators) {
       await sendMsg({ type: 'airglow:platform:allowIframes', domains, initiators: initiators || [] });
     },

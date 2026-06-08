@@ -122,14 +122,12 @@ If `ui/globals.css` exists the dev server bundles Tailwind for the app; otherwis
 
 `startup.ts` runs once per extension boot — on browser launch, on extension reload, and on extension update. It must be **idempotent**.
 
-Access to `airglow.storage`, `airglow.log`, and `airglow.platform`; no DOM and no `airglow.fetch`. Use it for platform setup — domain redirects, iframe permissions.
+Access to `airglow.storage`, `airglow.log`, and `airglow.platform`; no DOM and no `airglow.fetch`. Use it for platform setup — iframe permissions.
 
 ```ts
 // startup.ts
-const sites = (await airglow.storage.get('blocked_sites')) ?? ['instagram.com', 'x.com'];
-await airglow.platform.registerRedirects([
-  { domains: sites, target: 'airglow://focus-blocker' }
-]);
+const domains = (await airglow.storage.get('framed_sites')) ?? ['notion.so'];
+await airglow.platform.allowIframes(domains, ['example.com']);
 ```
 
 ---

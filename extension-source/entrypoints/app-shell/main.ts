@@ -27,7 +27,15 @@ const appId = params.get('app');
 if (!appId) {
   document.getElementById('loading')!.textContent = 'Missing app parameter';
 } else {
+  trackUiPageOpened(appId);
   loadApp(appId);
+}
+
+function trackUiPageOpened(appId: string) {
+  chrome.runtime.sendMessage({
+    type: 'airglow:track-ui-page-opened',
+    appId,
+  }, () => { void chrome.runtime.lastError; });
 }
 
 function renderOfflineMessage(appId: string) {
@@ -315,7 +323,7 @@ function mountApp(appId: string, source: AppSource) {
 
     sandboxNonce = crypto.randomUUID();
     pendingSandboxPayload = {
-      sdk: buildSdkCode(appId),
+      sdk: buildSdkCode(appId, 'app_ui'),
       code: await res.text(),
     };
 
