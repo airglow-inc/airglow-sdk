@@ -63,9 +63,9 @@ function currentExtensionManifest(extensionDir: string): any | null {
 // Cached for an hour so the dev server isn't hammering GitHub on every poll.
 // Returns null on transient failure; caller treats null as "no signal" rather
 // than "definitely up-to-date" so we don't silently miss a needed pull.
-async function fetchUpstreamBuildTs(): Promise<number | null> {
+async function fetchUpstreamBuildTs(force = false): Promise<number | null> {
   const now = Date.now();
-  if (upstreamTsCache.ts !== null && now - upstreamTsCache.checkedAt < UPSTREAM_CHECK_INTERVAL_MS) {
+  if (!force && upstreamTsCache.ts !== null && now - upstreamTsCache.checkedAt < UPSTREAM_CHECK_INTERVAL_MS) {
     return upstreamTsCache.ts;
   }
   try {
@@ -81,11 +81,11 @@ async function fetchUpstreamBuildTs(): Promise<number | null> {
   }
 }
 
-async function handleUpdateStatus(extensionDir: string, loadedBuildHash: string | null) {
+async function handleUpdateStatus(extensionDir: string, loadedBuildHash: string | null, fresh: boolean) {
   const localManifest = currentExtensionManifest(extensionDir);
   const currentBuild = typeof localManifest?.airglow_build_hash === 'string' ? localManifest.airglow_build_hash : null;
   const localTs = typeof localManifest?.airglow_build_ts === 'number' ? localManifest.airglow_build_ts : null;
-  const upstreamTs = await fetchUpstreamBuildTs();
+  const upstreamTs = await fetchUpstreamBuildTs(fresh);
   return {
     extension: {
       loaded: loadedBuildHash,
@@ -615,7 +615,8 @@ export async function dev(opts: { port?: number; appsDir?: string } = {}) {
 
       if (pathname === '/api/extension/update-status' && req.method === 'GET') {
         const loadedHash = searchParams.get('extensionBuildHash');
-        const data = await handleUpdateStatus(join(appsDir, '..', 'extension'), loadedHash);
+        const fresh = searchParams.get('fresh') === '1';
+        const data = await handleUpdateStatus(join(appsDir, '..', 'extension'), loadedHash, fresh);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
         return;

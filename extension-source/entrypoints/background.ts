@@ -1165,6 +1165,13 @@ export default defineBackground(() => {
       return true;
     }
 
+    if (msg?.type === 'airglow:recheck-remote-update') {
+      // Dashboard mount triggers this so the user doesn't have to wait up to
+      // an hour for the alarm to re-poll upstream after pulling/rebuilding.
+      refreshRemoteUpdateStatus().finally(() => sendResponse({ ok: true }));
+      return true;
+    }
+
     if (msg?.type === 'airglow:set-source-override') {
       const appId = String(msg.appId || '');
       const sourceType = msg.sourceType as 'local' | 'cloud' | null;

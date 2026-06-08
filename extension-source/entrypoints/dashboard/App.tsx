@@ -248,7 +248,7 @@ export default function App() {
 
   }, []);
 
-  async function loadAll(port?: number) {
+  async function loadAll(port?: number, fresh = false) {
     const localUrl = `http://127.0.0.1:${port ?? devPort}`;
 
     // The background loader runs against both local + cloud sources and
@@ -268,19 +268,22 @@ export default function App() {
     loadSecretsState();
 
     if (online) {
-      fetchUpdateStatus(localUrl).then(setUpdateStatus).catch(() => setUpdateStatus(null));
+      fetchUpdateStatus(localUrl, fresh).then(setUpdateStatus).catch(() => setUpdateStatus(null));
     } else {
       setUpdateStatus(null);
     }
   }
 
-  async function fetchUpdateStatus(localUrl: string) {
+  async function fetchUpdateStatus(localUrl: string, fresh = false) {
     // Chrome caches manifest.json at extension load time, so getManifest()
     // returns the hash that was stamped into the loaded version — stable
     // across SW restarts and not affected by on-disk edits until the user
     // explicitly reloads the extension.
     const loadedHash = (chrome.runtime.getManifest() as { airglow_build_hash?: string }).airglow_build_hash || null;
-    const qs = loadedHash ? `?extensionBuildHash=${encodeURIComponent(loadedHash)}` : '';
+    const params = new URLSearchParams();
+    if (loadedHash) params.set('extensionBuildHash', loadedHash);
+    if (fresh) params.set('fresh', '1');
+    const qs = params.toString() ? `?${params.toString()}` : '';
     const res = await fetch(`${localUrl}/api/extension/update-status${qs}`, { signal: AbortSignal.timeout(3000) });
     if (!res.ok) throw new Error(`${res.status}`);
     return res.json();
@@ -355,7 +358,13 @@ export default function App() {
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setGitPullDueRemote(!!result['__git_pull_due_remote']);
       setIdentityLoaded(true);
-      loadAll(port);
+      // Initial mount = page (re)load: force a fresh upstream check on both
+      // sides (SW for gitPullDueRemote, dev server for behindUpstream) so a
+      // pull/rebuild reflects immediately instead of waiting for the alarm.
+      loadAll(port, true);
+      chrome.runtime.sendMessage({ type: 'airglow:recheck-remote-update' }, () => {
+        void chrome.runtime.lastError;
+      });
     });
 
     // Background polls the dev server every few seconds and writes the result
