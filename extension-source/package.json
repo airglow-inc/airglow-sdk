@@ -9,6 +9,7 @@
     "build": "wxt build",
     "export": "bash scripts/export-extension.sh",
     "zip": "bash scripts/zip-for-store.sh",
+    "bump": "bash scripts/bump.sh",
     "chrome": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev",
     "chrome:fresh": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev --fresh"
   },
