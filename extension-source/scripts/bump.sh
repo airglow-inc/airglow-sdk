@@ -44,7 +44,7 @@ bash "$script_dir/zip-for-store.sh"
 # Versioned copy for the GitHub Release asset (self-describing filename).
 # The unversioned airglow-ext-prod.zip is what you upload to the Chrome Web
 # Store dashboard; the versioned copy is what gets attached to the release.
-release_zip="$source_dir/.output/airglow-ext-$tag.zip"
+release_zip="$source_dir/.output/airglow-$tag.zip"
 cp "$source_dir/.output/airglow-ext-prod.zip" "$release_zip"
 
 cd "$repo_root"
@@ -55,9 +55,9 @@ git tag -a "$tag" -m "$new_version"
 echo
 echo "==> Bumped to $new_version, tagged $tag."
 echo "    Store zip:   extension-source/.output/airglow-ext-prod.zip   (for Web Store dashboard)"
-echo "    Release zip: extension-source/.output/airglow-ext-$tag.zip   (for GH release)"
+echo "    Release zip: extension-source/.output/airglow-$tag.zip   (for GH release)"
 echo
 echo "    Next:"
 echo "      git push && git push --tags"
 echo "      # then ask Claude for release notes, or:"
-echo "      gh release create $tag extension-source/.output/airglow-ext-$tag.zip --notes 'your notes here'"
+echo "      gh release create $tag extension-source/.output/airglow-$tag.zip --notes 'your notes here'"
