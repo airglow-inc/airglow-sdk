@@ -9,6 +9,7 @@ import { trackAppsRegistered } from './analytics';
 import { ensureAirglowOffscreenDocument, sendRuntimeMessageWhenReady } from './offscreen-runtime';
 import { getCloudAppSourceUrl } from './app-source-config';
 import { getAirglowIdentityHeaders } from './airglow-identity';
+import { airglowUserScriptWorldId } from './airglow-world-id';
 import {
   buildSourceMap,
   resolveAppInventoryManifests,
@@ -44,7 +45,7 @@ function getCloudSource(): AppSource {
   return { url: getCloudAppSourceUrl(), type: 'cloud' };
 }
 
-const APP_SOURCES_KEY = '__app_sources';
+export const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
 export const APP_INVENTORY_MANIFESTS_KEY = '__app_inventory_manifests';
 // Per-app userscript source cache. Keyed by appId; hash-gated so we only
@@ -94,11 +95,12 @@ function shouldRetryAppSourceStatus(status: number): boolean {
 async function fetchAppSource(source: AppSource, url: string, timeoutMs: number): Promise<Response> {
   const retryDelays = sourceRetryDelaysMs(source);
   let lastError = '';
-  const identityHeaders = source.type === 'cloud' ? await getAirglowIdentityHeaders() : {};
+  const identityHeaders = source.type === 'cloud' ? await getAirglowIdentityHeaders({ requireSession: true }) : {};
   for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
     try {
       const res = await fetch(url, {
         headers: identityHeaders,
+        cache: source.type === 'cloud' ? 'no-store' : 'default',
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok && shouldRetryAppSourceStatus(res.status) && attempt < retryDelays.length) {
@@ -331,7 +333,7 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     if (!manifest.userscripts?.length) continue;
 
     const sdkCode = buildSdkCode(manifest.id);
-    const worldId = `airglow:${manifest.id}`;
+    const worldId = airglowUserScriptWorldId(manifest.id);
     worldIds.add(worldId);
 
     for (const us of manifest.userscripts) {

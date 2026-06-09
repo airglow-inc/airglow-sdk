@@ -9,7 +9,7 @@
  *   shadowed by your local copy" with a badge.
  */
 
-export type AppVisibility = 'public' | 'development' | 'hidden';
+export type AppVisibility = 'public' | 'development' | 'private' | 'hidden';
 export type AppSourceType = 'local' | 'cloud';
 
 export interface AppManifest {
@@ -22,6 +22,7 @@ export interface AppManifest {
   visibility?: AppVisibility;
   defaultEnabled?: boolean;
   startup?: string;
+  capabilities?: string[];
   serverFunctions?: string[];
   userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
   secrets?: Record<string, { scope?: string; label?: string }>;

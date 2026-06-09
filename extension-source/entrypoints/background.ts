@@ -1,10 +1,27 @@
 import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
-import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
-import { APP_INVENTORY_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
+import {
+  appStorageKey,
+  fetchWithTimeout,
+  handleAirglowMessage,
+  setAppManifests,
+  getAppManifests,
+  setOnAppLog,
+  shouldRetryHttpStatus,
+} from '../lib/airglow-message-handler';
+import { APP_INVENTORY_MANIFESTS_KEY, APP_SOURCES_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSource, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackInstalled } from '../lib/analytics';
-import { USER_EMAIL_KEY, normalizeUserEmail } from '../lib/airglow-identity';
+import { USER_EMAIL_KEY, getAirglowIdentityHeaders, normalizeUserEmail } from '../lib/airglow-identity';
+import { getCloudAppSourceUrl } from '../lib/app-source-config';
+import {
+  SIDEPANEL_DRAFTS_KEY,
+  SIDEPANEL_LAST_DRAFT_KEY,
+  type AirglowAppDraft,
+  type PrivateAppSavePayload,
+  buildPrivateAppSavePayload,
+  markDraftSaved,
+} from '../lib/sidepanel-model';
 
 export default defineBackground(() => {
   log('service worker started');
@@ -15,13 +32,15 @@ export default defineBackground(() => {
   const IFRAME_RULE_BASE_ID = 9900; // IDs 9900–9999 reserved for iframe rules
 
   async function syncIframeRules() {
-    const result = await chrome.storage.local.get(IFRAME_RULES_KEY);
+    const result = await chrome.storage.local.get([IFRAME_RULES_KEY, '__disabled_apps']);
     const allApps = (result[IFRAME_RULES_KEY] || {}) as Record<string, { domains: string[]; initiators: string[] }>;
+    const disabled = new Set((result['__disabled_apps'] || []) as string[]);
     // Collect all rules across apps
     const removeIds = Array.from({ length: 100 }, (_, i) => IFRAME_RULE_BASE_ID + i);
     const addRules: any[] = [];
     let ruleId = IFRAME_RULE_BASE_ID;
     for (const appId of Object.keys(allApps)) {
+      if (disabled.has(appId)) continue;
       const { domains, initiators } = allApps[appId];
       for (const domain of domains) {
         if (ruleId > 9999) break;
@@ -53,7 +72,7 @@ export default defineBackground(() => {
   // Sync on startup and when storage changes
   syncIframeRules().catch((e: any) => logger.error('airglow', 'iframe rules sync failed: ' + e.message));
   chrome.storage.local.onChanged.addListener((changes) => {
-    if (IFRAME_RULES_KEY in changes) syncIframeRules();
+    if (IFRAME_RULES_KEY in changes || '__disabled_apps' in changes) syncIframeRules();
   });
 
   // ───── Airglow app platform ─────
@@ -1037,9 +1056,367 @@ export default defineBackground(() => {
     });
   });
 
-  // Extension icon click → open dashboard
-  chrome.action.onClicked.addListener(() => {
-    chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
+  // Extension icon click -> open the end-user side panel. Dashboard remains
+  // available through explicit messages and as a fallback when sidePanel is
+  // unavailable.
+  async function openDashboard(page?: string) {
+    const suffix = page ? `?page=${encodeURIComponent(page)}` : '';
+    await chrome.tabs.create({ url: chrome.runtime.getURL(`dashboard.html${suffix}`) });
+  }
+
+  async function openSidePanel(tab?: chrome.tabs.Tab) {
+    if (!chrome.sidePanel?.open) {
+      await openDashboard();
+      return { opened: 'dashboard' as const };
+    }
+
+    try {
+      const windowId = tab?.windowId;
+      if (windowId === undefined) {
+        await openDashboard();
+        return { opened: 'dashboard' as const };
+      }
+      await chrome.sidePanel.open({ windowId });
+      return { opened: 'sidepanel' as const };
+    } catch (error) {
+      logger.warn('airglow', `side panel open failed: ${error instanceof Error ? error.message : String(error)}`);
+      await openDashboard();
+      return { opened: 'dashboard' as const };
+    }
+  }
+
+  async function getSidePanelTargetTab() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab?.id || tab.windowId === undefined) return { target: null };
+    return {
+      target: {
+        id: tab.id,
+        windowId: tab.windowId,
+        title: tab.title,
+        url: tab.url,
+        favIconUrl: tab.favIconUrl,
+        status: tab.status,
+      },
+    };
+  }
+
+  const SIDEPANEL_SAVE_TIMEOUT_MS = 120000;
+  const SIDEPANEL_SAVE_RETRY_DELAYS_MS = [500, 1500];
+  const SIDEPANEL_INITIAL_CONTEXT_KEY = 'latestPageContext';
+
+  type SidePanelCloudSaveResult = {
+    appId: string;
+    appKey?: string;
+    versionKey?: string;
+    url?: string;
+    requestId?: string;
+    registered?: boolean;
+    userScriptsEnabled?: boolean;
+  };
+
+  type SavedAppRegistrationStatus = {
+    registered: boolean;
+    userScriptsEnabled: boolean;
+  };
+
+  type SidePanelSaveError = Error & {
+    code?: string;
+    status?: number;
+    requestId?: string;
+    details?: unknown;
+  };
+
+  type SidePanelInitialPageContext = {
+    title: string;
+    url: string;
+    origin: string;
+    text: string;
+    capturedAt: string;
+    source: 'extension-sidepanel-initial-capture';
+    promptHint: string;
+  };
+
+  function sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  async function persistSidePanelDraft(draft: AirglowAppDraft): Promise<void> {
+    const stored = await chrome.storage.local.get(SIDEPANEL_DRAFTS_KEY);
+    const drafts = Array.isArray(stored[SIDEPANEL_DRAFTS_KEY])
+      ? stored[SIDEPANEL_DRAFTS_KEY] as AirglowAppDraft[]
+      : [];
+    const withoutCurrent = drafts.filter((item) => item.id !== draft.id);
+    await chrome.storage.local.set({
+      [SIDEPANEL_DRAFTS_KEY]: [draft, ...withoutCurrent].slice(0, 25),
+      [SIDEPANEL_LAST_DRAFT_KEY]: draft.id,
+    });
+  }
+
+  function parseJson(text: string): unknown {
+    try { return JSON.parse(text); } catch { return text; }
+  }
+
+  function saveErrorFromResponse(res: Response, result: unknown): SidePanelSaveError {
+    const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+    const nestedError = envelope.error && typeof envelope.error === 'object'
+      ? envelope.error as Record<string, any>
+      : undefined;
+    const message =
+      (nestedError && typeof nestedError.message === 'string' ? nestedError.message : undefined) ||
+      (typeof envelope.error === 'string' ? envelope.error : undefined) ||
+      `Save app failed with HTTP ${res.status}`;
+    const error = new Error(message) as SidePanelSaveError;
+    error.code =
+      (nestedError && typeof nestedError.code === 'string' ? nestedError.code : undefined) ||
+      (typeof envelope.code === 'string' ? envelope.code : undefined) ||
+      'SAVE_APP_HTTP_ERROR';
+    error.status = res.status;
+    error.requestId =
+      (nestedError && typeof nestedError.requestId === 'string' ? nestedError.requestId : undefined) ||
+      res.headers.get('x-request-id') ||
+      undefined;
+    error.details = result;
+    return error;
+  }
+
+  function saveNetworkError(error: unknown): SidePanelSaveError {
+    if (error instanceof Error && (error as SidePanelSaveError).code) return error as SidePanelSaveError;
+    const message = error instanceof Error ? error.message : String(error);
+    const next = new Error(`Save app network request failed: ${message}`) as SidePanelSaveError;
+    next.code = /timed out/i.test(message) ? 'SAVE_APP_TIMEOUT' : 'SAVE_APP_NETWORK_ERROR';
+    next.details = error instanceof Error ? { name: error.name, message: error.message } : error;
+    return next;
+  }
+
+  function serializeSaveError(error: unknown) {
+    const err = error as SidePanelSaveError;
+    return {
+      message: error instanceof Error ? error.message : String(error),
+      ...(typeof err.code === 'string' ? { code: err.code } : {}),
+      ...(typeof err.status === 'number' ? { status: err.status } : {}),
+      ...(typeof err.requestId === 'string' ? { requestId: err.requestId } : {}),
+    };
+  }
+
+  function normalizeInitialPageContext(value: unknown): SidePanelInitialPageContext | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const title = typeof record.title === 'string' ? record.title : '';
+    const url = typeof record.url === 'string' ? record.url : '';
+    const origin = typeof record.origin === 'string' ? record.origin : '';
+    const text = typeof record.text === 'string' ? record.text : '';
+    const capturedAt = typeof record.capturedAt === 'string' ? record.capturedAt : new Date().toISOString();
+    const promptHint = typeof record.promptHint === 'string' ? record.promptHint : '';
+    if (!url || !origin) return null;
+    return {
+      title,
+      url,
+      origin,
+      text,
+      capturedAt,
+      source: 'extension-sidepanel-initial-capture',
+      promptHint,
+    };
+  }
+
+  async function captureInitialPageContext(draft: AirglowAppDraft): Promise<SidePanelInitialPageContext | null> {
+    const tabId = draft.target?.id;
+    if (typeof tabId !== 'number') return null;
+    let tab: chrome.tabs.Tab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return null;
+    }
+    const tabUrl = tab.url || draft.target?.url || '';
+    if (!/^https?:\/\//i.test(tabUrl)) return null;
+
+    try {
+      const [result] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'ISOLATED',
+        args: [draft.prompt.slice(0, 240)],
+        func: (promptHint: string) => {
+          const normalizeText = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+          return {
+            title: normalizeText(document.title),
+            url: location.href,
+            origin: location.origin,
+            text: normalizeText(document.body?.innerText || '').slice(0, 12000),
+            capturedAt: new Date().toISOString(),
+            source: 'extension-sidepanel-initial-capture',
+            promptHint,
+          };
+        },
+      });
+      return normalizeInitialPageContext(result?.result);
+    } catch (error) {
+      logger.warn('airglow', `sidepanel initial context capture skipped: ${error instanceof Error ? error.message : String(error)}`);
+      return null;
+    }
+  }
+
+  async function seedInitialPageContext(appId: string, context: SidePanelInitialPageContext | null): Promise<boolean> {
+    if (!context) return false;
+    await chrome.storage.local.set({
+      [appStorageKey(appId, SIDEPANEL_INITIAL_CONTEXT_KEY)]: context,
+    });
+    return true;
+  }
+
+  async function appHasRegisteredUserscript(appId: string): Promise<boolean> {
+    try {
+      const scripts = await chrome.userScripts.getScripts();
+      return scripts.some((script) => typeof script.id === 'string' && script.id.startsWith(`${appId}__`));
+    } catch {
+      return false;
+    }
+  }
+
+  async function refreshSavedAppRegistration(appId: string): Promise<SavedAppRegistrationStatus> {
+    const delays = [0, 1000, 2500];
+    for (const delay of delays) {
+      if (delay > 0) await sleep(delay);
+      await loadAndRegisterApps(true, true);
+      const stored = await chrome.storage.local.get(APP_SOURCES_KEY);
+      const sourceMap = (stored[APP_SOURCES_KEY] || {}) as Record<string, AppSource>;
+      if (Boolean(sourceMap[appId]?.url)) {
+        if (!userScriptsAllowed) return { registered: false, userScriptsEnabled: false };
+        return {
+          registered: await appHasRegisteredUserscript(appId),
+          userScriptsEnabled: true,
+        };
+      }
+    }
+    return { registered: false, userScriptsEnabled: userScriptsAllowed };
+  }
+
+  async function openAppShell(appId: string): Promise<void> {
+    await refreshSavedAppRegistration(appId).catch((error) => {
+      logger.warn('airglow', `app refresh before open failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    await chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${encodeURIComponent(appId)}`) });
+  }
+
+  async function reloadTargetTabForSavedApp(tabId: number, appId?: string): Promise<void> {
+    const status = appId
+      ? await refreshSavedAppRegistration(appId)
+      : await (async () => {
+          await loadAndRegisterApps(true, true);
+          return { registered: true, userScriptsEnabled: userScriptsAllowed };
+        })();
+    if (!status.userScriptsEnabled) {
+      throw new Error('Enable User Scripts in Chrome extension settings, then refresh the page.');
+    }
+    if (appId && !status.registered) {
+      throw new Error('The saved app page script is not registered yet. Reload Airglow, then refresh the page.');
+    }
+    await chrome.tabs.reload(tabId);
+  }
+
+  async function postPrivateAppSave(payload: PrivateAppSavePayload): Promise<SidePanelCloudSaveResult> {
+    const url = `${getCloudAppSourceUrl()}/api/apps/private/save`;
+    const requestInit: RequestInit = {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...await getAirglowIdentityHeaders({ requireSession: true }),
+      },
+      body: JSON.stringify(payload),
+    };
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= SIDEPANEL_SAVE_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        const res = await fetchWithTimeout(url, requestInit, SIDEPANEL_SAVE_TIMEOUT_MS);
+        const result = parseJson(await res.text());
+        if (!res.ok) {
+          const error = saveErrorFromResponse(res, result);
+          lastError = error;
+          if (shouldRetryHttpStatus(res.status) && attempt < SIDEPANEL_SAVE_RETRY_DELAYS_MS.length) {
+            await sleep(SIDEPANEL_SAVE_RETRY_DELAYS_MS[attempt]);
+            continue;
+          }
+          throw error;
+        }
+        const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+        const appId = typeof envelope.appId === 'string'
+          ? envelope.appId
+          : typeof envelope.appKey === 'string'
+            ? envelope.appKey
+            : '';
+        if (!appId) throw new Error('Save app response did not include appId');
+        return {
+          appId,
+          ...(typeof envelope.appKey === 'string' ? { appKey: envelope.appKey } : {}),
+          ...(typeof envelope.versionKey === 'string' ? { versionKey: envelope.versionKey } : {}),
+          requestId: res.headers.get('x-request-id') || undefined,
+        };
+      } catch (error) {
+        lastError = error;
+        if (isSaveTimeoutError(error)) throw saveNetworkError(error);
+        const rawStatus = (error as SidePanelSaveError)?.status;
+        const status = typeof rawStatus === 'number' ? rawStatus : null;
+        if (status !== null && !shouldRetryHttpStatus(status)) throw error;
+        if (attempt < SIDEPANEL_SAVE_RETRY_DELAYS_MS.length) {
+          await sleep(SIDEPANEL_SAVE_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+      }
+    }
+    throw saveNetworkError(lastError);
+  }
+
+  function isSaveTimeoutError(error: unknown): boolean {
+    return error instanceof Error && /timed out/i.test(error.message);
+  }
+
+  async function saveSidePanelDraft(draft: AirglowAppDraft, requestId?: string) {
+    const clientRequestId = requestId || crypto.randomUUID();
+    const initialContextPromise = captureInitialPageContext(draft);
+    let cloud: SidePanelCloudSaveResult;
+    try {
+      cloud = await postPrivateAppSave(buildPrivateAppSavePayload(draft, clientRequestId));
+    } catch (error) {
+      const fallbackReason = serializeSaveError(error);
+      const saved = markDraftSaved(draft, {
+        persistence: {
+          mode: 'local',
+          fallbackReason,
+        },
+      });
+      await persistSidePanelDraft(saved);
+      logger.warn('airglow', `sidepanel cloud save fell back to local: ${fallbackReason.message}`);
+      return { ok: true, mode: 'local_fallback' as const, draft: saved, cloudError: fallbackReason };
+    }
+
+    const seededInitialContext = await seedInitialPageContext(cloud.appId, await initialContextPromise);
+
+    let registrationStatus: SavedAppRegistrationStatus = { registered: false, userScriptsEnabled: userScriptsAllowed };
+    await refreshSavedAppRegistration(cloud.appId)
+      .then((result) => { registrationStatus = result; })
+      .catch((error) => {
+        logger.warn('airglow', `reload after sidepanel save failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    cloud = { ...cloud, ...registrationStatus };
+    const saved = markDraftSaved(draft, {
+      persistence: {
+        mode: 'cloud',
+        cloud,
+      },
+    });
+    await persistSidePanelDraft(saved);
+    if (seededInitialContext) {
+      logger.info('airglow', `seeded initial page context for saved app ${cloud.appId}`);
+    }
+    return { ok: true, mode: 'cloud' as const, draft: saved, cloud };
+  }
+
+  chrome.action.onClicked.addListener((tab) => {
+    openSidePanel(tab).catch((error) => {
+      logger.error('airglow', `open side panel failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
   });
 
   // ── Per-tab error tracking (in-memory, for edge button indicators) ──
@@ -1073,14 +1450,60 @@ export default defineBackground(() => {
 
     // ── Edge button ──
     if (msg?.type === 'airglow:open-dashboard') {
-      const page = msg.page ? `?page=${msg.page}` : '';
-      chrome.tabs.create({ url: chrome.runtime.getURL(`dashboard.html${page}`) });
-      return;
+      openDashboard(typeof msg.page === 'string' ? msg.page : undefined)
+        .then(() => sendResponse({ ok: true }))
+        .catch((e) => sendResponse({ error: e.message }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:open-sidepanel') {
+      openSidePanel(_sender?.tab)
+        .then((result) => sendResponse({ ok: true, ...result }))
+        .catch((e) => sendResponse({ error: e.message }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:get-target') {
+      getSidePanelTargetTab()
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e.message }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:save-draft') {
+      const draft = msg.draft as AirglowAppDraft | undefined;
+      if (!draft || typeof draft !== 'object' || typeof draft.prompt !== 'string') {
+        sendResponse({ error: 'draft is required' });
+        return;
+      }
+      saveSidePanelDraft(draft, typeof msg.requestId === 'string' ? msg.requestId : undefined)
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e.message }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:reload-target') {
+      const tabId = typeof msg.tabId === 'number' ? msg.tabId : undefined;
+      if (tabId === undefined) {
+        sendResponse({ error: 'tabId is required' });
+        return;
+      }
+      reloadTargetTabForSavedApp(tabId, typeof msg.appId === 'string' ? msg.appId : undefined)
+        .then(() => sendResponse({ ok: true }))
+        .catch((e) => sendResponse({ error: e.message }));
+      return true;
     }
 
     if (msg?.type === 'airglow:open-app') {
-      chrome.tabs.create({ url: chrome.runtime.getURL(`app-shell.html?app=${msg.appId}`) });
-      return;
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      if (!appId) {
+        sendResponse({ error: 'appId is required' });
+        return;
+      }
+      openAppShell(appId)
+        .then(() => sendResponse({ ok: true }))
+        .catch((e) => sendResponse({ error: e.message }));
+      return true;
     }
 
     // ── Dashboard actions ──

@@ -78,7 +78,7 @@ const res = await airglow.llm.anthropic.messages({
 
 `payload` is the [Anthropic Messages API request body](https://docs.claude.com/en/api/messages), passed through unchanged. The gateway returns the response unchanged. Per-user rate limits and request size caps apply server-side; failures reject with `AirglowError` (`code`, `status`, `requestId`).
 
-The gateway is only present on the cloud app source (`api.airglow.dev`). Apps loaded from `pnpm airglow dev` (localhost) will 404 — for local development, fall back to a server function that calls Anthropic directly with your own key.
+The gateway is only present on the cloud app source (`mvp-api.airglow.dev` for the current MVP build). Apps loaded from `pnpm airglow dev` (localhost) will 404 — for local development, fall back to a server function that calls Anthropic directly with your own key.
 
 ---
 
@@ -108,6 +108,12 @@ await airglow.openWindowAndWaitClose(authUrl, { width: 520, height: 720 }); // O
 ```
 
 Options: `width`, `height` (default 800×600), `left`, `top`, `popup` (default `true`). Use these in userscripts — `window.open()` doesn't work there (isolated `window`).
+
+These calls require the matching manifest capability (`browser.openWindow`) and
+ask the user for runtime approval before opening browser UI. `airglow.openTab`
+uses the same model with `browser.openTab`. Auth windows launched through
+`airglow.identity.launchWebAuthFlow` require `identity.launchWebAuthFlow` and
+also ask at runtime.
 
 ---
 

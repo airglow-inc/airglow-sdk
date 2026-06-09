@@ -25,6 +25,10 @@
         document.title = data.appId || 'Airglow app';
         new Function(String(data.sdk || '') + '\n//# sourceURL=airglow-sdk://' + data.appId)();
         new Function(String(data.code || '') + '\n//# sourceURL=airglow-app://' + data.appId)();
+        window.parent.postMessage({
+          _airglow_ui_ready: true,
+          appId: data.appId,
+        }, '*');
       } catch (error) {
         window.parent.postMessage({
           _airglow_app_error: true,

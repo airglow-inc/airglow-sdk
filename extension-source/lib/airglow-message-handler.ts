@@ -5,8 +5,15 @@
 
 import type { AppSource, SourcedManifest } from './app-loader';
 import { logger } from './logger';
-import { buildIdentityHeaders, getAirglowIdentity, USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
+import {
+  buildIdentityHeaders,
+  getAirglowIdentity,
+  getAirglowIdentityHeaders,
+  USER_EMAIL_KEY,
+  normalizeUserEmail,
+} from './airglow-identity';
 import { trackIdentified } from './analytics';
+import { airglowUserScriptWorldId } from './airglow-world-id';
 
 const STORAGE_PREFIX = 'airglow:app:';
 const USER_SECRET_PREFIX = 'airglow:secret:';
@@ -18,23 +25,67 @@ const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
 const LLM_TIMEOUT_MS = 60000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
+const RUNTIME_USER_APPROVAL_FLAG = '_airglowRuntimeUserApproved';
+
+export const RUNTIME_UX_CAPABILITIES = {
+  fetchIncludeCookies: 'fetch.includeCookies',
+  identityLaunchWebAuthFlow: 'identity.launchWebAuthFlow',
+  openWindow: 'browser.openWindow',
+  openTab: 'browser.openTab',
+  captureTab: 'browser.captureTab',
+  registerRedirects: 'platform.registerRedirects',
+  allowIframes: 'platform.allowIframes',
+} as const;
+
+export type RuntimeUxCapability = typeof RUNTIME_UX_CAPABILITIES[keyof typeof RUNTIME_UX_CAPABILITIES];
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function shouldRetryHttpStatus(status: number): boolean {
+export function shouldRetryHttpStatus(status: number): boolean {
   return status === 408 || status === 409 || status === 425 || status === 429 || (status >= 500 && status <= 599);
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+export function appStorageKey(appId: string, key: string): string {
+  return `${STORAGE_PREFIX}${appId}:${key}`;
+}
+
+export async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const timeout = setTimeout(() => {
+    controller.abort(new Error(`Airglow request timed out after ${timeoutMs}ms`));
+  }, timeoutMs);
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function errorMessageFromEnvelope(envelope: Record<string, any>, fallback: string): string {
+  if (typeof envelope.error === 'string') return envelope.error;
+  if (envelope.error && typeof envelope.error === 'object' && typeof envelope.error.message === 'string') {
+    return envelope.error.message;
+  }
+  if (typeof envelope.message === 'string') return envelope.message;
+  return fallback;
+}
+
+function errorCodeFromEnvelope(envelope: Record<string, any>, fallback: string): string {
+  if (typeof envelope.code === 'string') return envelope.code;
+  if (envelope.error && typeof envelope.error === 'object' && typeof envelope.error.code === 'string') {
+    return envelope.error.code;
+  }
+  return fallback;
+}
+
+function requestIdFromEnvelope(envelope: Record<string, any>): string | undefined {
+  if (typeof envelope.requestId === 'string') return envelope.requestId;
+  if (envelope.error && typeof envelope.error === 'object' && typeof envelope.error.requestId === 'string') {
+    return envelope.error.requestId;
+  }
+  return undefined;
 }
 
 type RemoteRpcError = Error & {
@@ -87,14 +138,16 @@ async function executeRemoteRpc(
   functionName: string,
   payload: unknown,
 ): Promise<unknown> {
-  const identity = await getAirglowIdentity();
+  const identityHeaders = source.type === 'cloud'
+    ? await getAirglowIdentityHeaders({ requireSession: true })
+    : buildIdentityHeaders(await getAirglowIdentity());
   const baseUrl = source.url.replace(/\/+$/, '');
   const url = `${baseUrl}/api/apps/${encodeURIComponent(appId)}/rpc/${encodeURIComponent(functionName)}`;
   const requestInit: RequestInit = {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      ...buildIdentityHeaders(identity),
+      ...identityHeaders,
     },
     body: JSON.stringify(payload),
   };
@@ -264,6 +317,103 @@ function isUrlAllowedForFetch(appId: string, url: string): boolean {
   return manifest.host_permissions.some((p) => matchesPattern(p, url));
 }
 
+export function requiredRuntimeUxCapabilityForMessage(msg: any): RuntimeUxCapability | undefined {
+  switch (msg?.type) {
+    case 'airglow:fetch':
+      return msg.includeCookies ? RUNTIME_UX_CAPABILITIES.fetchIncludeCookies : undefined;
+    case 'airglow:identity:launchWebAuthFlow':
+      return RUNTIME_UX_CAPABILITIES.identityLaunchWebAuthFlow;
+    case 'airglow:openWindow':
+      return RUNTIME_UX_CAPABILITIES.openWindow;
+    case 'airglow:openTab':
+      return RUNTIME_UX_CAPABILITIES.openTab;
+    case 'airglow:captureTab':
+      return RUNTIME_UX_CAPABILITIES.captureTab;
+    case 'airglow:platform:registerRedirects':
+      return RUNTIME_UX_CAPABILITIES.registerRedirects;
+    case 'airglow:platform:allowIframes':
+      return RUNTIME_UX_CAPABILITIES.allowIframes;
+    default:
+      return undefined;
+  }
+}
+
+export function requiredRuntimeUserApprovalCapabilityForMessage(msg: any): RuntimeUxCapability | undefined {
+  switch (msg?.type) {
+    case 'airglow:identity:launchWebAuthFlow':
+      return RUNTIME_UX_CAPABILITIES.identityLaunchWebAuthFlow;
+    case 'airglow:openWindow':
+      return RUNTIME_UX_CAPABILITIES.openWindow;
+    case 'airglow:openTab':
+      return RUNTIME_UX_CAPABILITIES.openTab;
+    default:
+      return undefined;
+  }
+}
+
+function appHasRuntimeUxCapability(appId: string, capability: RuntimeUxCapability): boolean {
+  const manifest = appManifests.find((m) => m.id === appId);
+  if (!manifest) return false;
+  return Array.isArray(manifest.capabilities) && manifest.capabilities.includes(capability);
+}
+
+function senderHasTrustedRuntimeApproval(sender: chrome.runtime.MessageSender, appId: string): boolean {
+  if (!sender.url) return false;
+  try {
+    const url = new URL(sender.url);
+    return url.protocol === 'chrome-extension:'
+      && url.pathname.endsWith('/app-shell.html')
+      && url.searchParams.get('app') === appId;
+  } catch {
+    return false;
+  }
+}
+
+function hasTrustedRuntimeUserApproval(msg: any, appId: string, sender: chrome.runtime.MessageSender): boolean {
+  return msg?.[RUNTIME_USER_APPROVAL_FLAG] === true && senderHasTrustedRuntimeApproval(sender, appId);
+}
+
+function targetFromMessage(msg: any): string {
+  const value = typeof msg?.url === 'string' ? msg.url : '';
+  if (!value) return '';
+  try {
+    const url = new URL(value);
+    return url.hostname ? ` for ${url.hostname}` : '';
+  } catch {
+    return '';
+  }
+}
+
+function runtimeApprovalPrompt(appId: string, msg: any, capability: RuntimeUxCapability): string {
+  const action = capability === RUNTIME_UX_CAPABILITIES.openTab
+    ? 'open a browser tab'
+    : capability === RUNTIME_UX_CAPABILITIES.openWindow
+      ? 'open a browser window'
+      : 'open an authentication window';
+  return `Airglow app "${appId}" wants to ${action}${targetFromMessage(msg)}. Allow this action?`;
+}
+
+async function requestRuntimeUserApproval(
+  appId: string,
+  msg: any,
+  capability: RuntimeUxCapability,
+  sender: chrome.runtime.MessageSender,
+): Promise<boolean> {
+  const tabId = sender.tab?.id;
+  if (tabId == null) return false;
+  try {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (text: string) => window.confirm(text),
+      args: [runtimeApprovalPrompt(appId, msg, capability)],
+    });
+    return results.some((result) => result.result === true);
+  } catch (error) {
+    logger.warn(appId, `runtime approval prompt failed: ${error instanceof Error ? error.message : String(error)}`);
+    return false;
+  }
+}
+
 export type OnAppLog = (appId: string, level: 'info' | 'warn' | 'error', sender: chrome.runtime.MessageSender) => void;
 let _onAppLog: OnAppLog | undefined;
 export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
@@ -301,15 +451,14 @@ export function handleAirglowMessage(
 
     const senderWorldId = (_sender as any).userScriptWorldId as string | undefined;
     if (senderWorldId) {
-      const expectedWorldId = `airglow:${appId}`;
+      const expectedWorldId = airglowUserScriptWorldId(appId);
       if (senderWorldId !== expectedWorldId) {
         sendResponse({ error: `appId mismatch: claimed ${appId}, world is ${senderWorldId}` });
         return;
       }
     }
 
-    const storageKey = (key: string) => `${STORAGE_PREFIX}${appId}:${key}`;
-    const handled = dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse);
+    const handled = dispatchAirglowMessage(msg, appId, (key) => appStorageKey(appId, key), _sender, sendResponse);
     if (!handled) sendResponse({ error: `unknown message type: ${msg.type}`, code: 'UNKNOWN_MESSAGE_TYPE' });
   };
 
@@ -333,9 +482,47 @@ function dispatchAirglowMessage(
   storageKey: (key: string) => string,
   _sender: chrome.runtime.MessageSender,
   sendResponse: (response: any) => void,
+  runtimeApprovalAlreadyGranted = false,
 ): boolean {
 
   try {
+    const requiredCapability = requiredRuntimeUxCapabilityForMessage(msg);
+    if (requiredCapability && !appHasRuntimeUxCapability(appId, requiredCapability)) {
+      sendResponse({
+        error: `app "${appId}" lacks manifest capability "${requiredCapability}" for ${msg.type}`,
+        code: 'CAPABILITY_DENIED',
+        capability: requiredCapability,
+      });
+      return true;
+    }
+    const requiredApprovalCapability = requiredRuntimeUserApprovalCapabilityForMessage(msg);
+    if (
+      requiredApprovalCapability
+      && !runtimeApprovalAlreadyGranted
+      && !hasTrustedRuntimeUserApproval(msg, appId, _sender)
+    ) {
+      requestRuntimeUserApproval(appId, msg, requiredApprovalCapability, _sender)
+        .then((approved) => {
+          if (!approved) {
+            sendResponse({
+              error: `User approval is required for ${msg.type}`,
+              code: 'RUNTIME_USER_APPROVAL_DENIED',
+              capability: requiredApprovalCapability,
+            });
+            return;
+          }
+          dispatchAirglowMessage(msg, appId, storageKey, _sender, sendResponse, true);
+        })
+        .catch((error) => {
+          sendResponse({
+            error: error instanceof Error ? error.message : String(error),
+            code: 'RUNTIME_USER_APPROVAL_ERROR',
+            capability: requiredApprovalCapability,
+          });
+        });
+      return true;
+    }
+
   switch (msg.type) {
     case 'airglow:storage:get': {
       if (isClientSetting(appId, msg.key)) {
@@ -462,13 +649,15 @@ function dispatchAirglowMessage(
       const baseUrl = source.url.replace(/\/+$/, '');
       const url = `${baseUrl}/api/llm/anthropic/messages`;
       (async () => {
-        const identity = await getAirglowIdentity();
+        const identityHeaders = source.type === 'cloud'
+          ? await getAirglowIdentityHeaders({ requireSession: true })
+          : buildIdentityHeaders(await getAirglowIdentity());
         const requestInit: RequestInit = {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'X-Airglow-App-Id': appId,
-            ...buildIdentityHeaders(identity),
+            ...identityHeaders,
           },
           body: JSON.stringify(msg.payload),
         };
@@ -483,13 +672,11 @@ function dispatchAirglowMessage(
             if (!res.ok) {
               const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
               const error = new Error(
-                typeof envelope.error === 'string'
-                  ? envelope.error
-                  : `LLM request failed with HTTP ${res.status}`,
+                errorMessageFromEnvelope(envelope, `LLM request failed with HTTP ${res.status}`),
               ) as Error & { code?: string; status?: number; requestId?: string; details?: unknown };
-              error.code = typeof envelope.code === 'string' ? envelope.code : 'LLM_HTTP_ERROR';
+              error.code = errorCodeFromEnvelope(envelope, 'LLM_HTTP_ERROR');
               error.status = res.status;
-              error.requestId = typeof envelope.requestId === 'string' ? envelope.requestId : undefined;
+              error.requestId = requestIdFromEnvelope(envelope);
               error.details = result;
               lastError = error;
               if (shouldRetryHttpStatus(res.status) && attempt < LLM_RETRY_DELAYS_MS.length) {

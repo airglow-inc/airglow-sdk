@@ -66,7 +66,7 @@ async function getFeedbackEndpoint(): Promise<string> {
   return new URL(endpoint, `${endpointBase}/`).toString();
 }
 
-type AppVisibility = 'public' | 'development' | 'hidden';
+type AppVisibility = 'public' | 'development' | 'private' | 'hidden';
 
 type AppSourceType = 'local' | 'cloud';
 
@@ -95,6 +95,10 @@ function isVisibleApp(app: AppManifest): boolean {
 
 function isCloudApp(app: AppManifest): boolean {
   return app._sourceType === 'cloud';
+}
+
+function isPrivateApp(app: AppManifest): boolean {
+  return app.visibility === 'private';
 }
 
 // Inventory keys both copies of an app that exists in local + cloud sources.
@@ -708,6 +712,9 @@ export default function App() {
               {disabled && (
                 <Badge color="var(--error)">Disabled</Badge>
               )}
+              {isPrivateApp(app) && (
+                <Badge color="var(--olive)">Private</Badge>
+              )}
               {!disabled && !shadowed && missing.length > 0 && (
                 <Tooltip content={<span><strong>Missing secrets:</strong><br/>{missing.map(m => <span key={m}>&nbsp;&bull; {m}<br/></span>)}</span>}>
                   <Badge color="var(--error)" hoverable>
@@ -798,7 +805,9 @@ export default function App() {
     );
   }
 
-  const published = apps?.filter(isCloudApp) || [];
+  const cloud = apps?.filter(isCloudApp) || [];
+  const privateApps = cloud.filter(isPrivateApp);
+  const published = cloud.filter((app) => !isPrivateApp(app));
   const local = apps?.filter((a) => a._sourceType === 'local') || [];
 
   return (
@@ -844,9 +853,29 @@ export default function App() {
               </div>
             )}
 
+            {privateApps.length > 0 && (
+              <div className="mb-3">
+                <div className="px-1 py-2 text-sm font-bold" style={{ color: 'var(--olive)' }}>
+                  My Apps
+                </div>
+                {sortByOrder(privateApps, 'private').map((app, i) => (
+                  <a
+                    key={appIdentityKey(app)}
+                    href={appUrl(app.id)} target="_blank"
+                    className="block px-2 py-2.5 text-base cursor-pointer transition-colors font-medium no-underline"
+                    style={{ color: 'var(--olive)', borderBottom: i < privateApps.length - 1 ? '1px solid var(--border-tertiary)' : 'none' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
+                    onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--olive)'; }}
+                  >
+                    {app.name}
+                  </a>
+                ))}
+              </div>
+            )}
+
             {published.length === 0 && apps !== null && !error && (
               <div className="px-1 py-3 text-sm" style={{ color: 'var(--fg-tertiary)' }}>
-                No cloud apps available
+                {privateApps.length > 0 ? 'No shared cloud apps available' : 'No cloud apps available'}
               </div>
             )}
 
@@ -932,6 +961,37 @@ export default function App() {
                 </span>
               </div>
             </div>
+            <div className="px-1 pt-3">
+              <label className="text-base font-medium flex items-center gap-1.5" style={{ color: 'var(--fg-tertiary)' }}>
+                <Mail size={14} />
+                <span style={{ color: 'var(--olive)', fontWeight: 600 }}>Identity</span> email
+              </label>
+              <div className="flex items-center gap-2 mt-1">
+                <input
+                  type="email"
+                  value={emailInput}
+                  onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') saveUserEmail(); }}
+                  placeholder="you@example.com"
+                  className="min-w-0 flex-1 h-8 px-2 text-base rounded-sm border outline-none"
+                  style={{ borderColor: emailError ? 'var(--error)' : 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+                  data-testid="user-email-input"
+                />
+                <button
+                  onClick={saveUserEmail}
+                  className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                  style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+                  data-testid="save-user-email-button"
+                >
+                  Save
+                </button>
+              </div>
+              {emailError && (
+                <div className="text-sm mt-1" style={{ color: 'var(--error)' }}>{emailError}</div>
+              )}
+            </div>
             {/* Only surfaced when the debug bridge is down; silent when connected or disabled. */}
             {nativeHostConnected === false && (
               <div className="px-1 pt-2.5" data-testid="native-host-status">
@@ -998,52 +1058,6 @@ Airglow — for those who create
         {!identityLoaded ? (
           <div className="p-5 rounded-[var(--radius-md)] border text-base" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', color: 'var(--fg-secondary)', boxShadow: 'var(--shadow-card)' }}>
             Loading Airglow setup…
-          </div>
-        ) : !userEmail ? (
-          <div className="min-h-[calc(100vh-64px)] flex items-center justify-center">
-            <div
-              className="w-full max-w-[520px] p-6 rounded-[var(--radius-md)] border"
-              style={{
-                background: 'var(--bg-white)',
-                borderColor: 'var(--border-tertiary)',
-                boxShadow: 'var(--shadow-card)',
-              }}
-              data-testid="banner-email-onboarding"
-            >
-              <div className="text-lg font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
-                <Mail size={20} style={{ color: 'var(--clay)' }} />
-                Enter your email
-              </div>
-              <p className="text-base mt-2 mb-4" style={{ color: 'var(--fg-secondary)' }}>
-                Airglow asks for an email to identify its users. We promise to never send any spam.
-              </p>
-              <div className="flex flex-col gap-3">
-                <input
-                  type="email"
-                  value={emailInput}
-                  onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') saveUserEmail(); }}
-                  placeholder="you@example.com"
-                  className="w-full h-11 px-3 text-base rounded-sm border outline-none"
-                  style={{ borderColor: emailError ? 'var(--error)' : 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
-                  data-testid="user-email-input"
-                  autoFocus
-                />
-                {emailError && (
-                  <div className="text-sm" style={{ color: 'var(--error)' }}>{emailError}</div>
-                )}
-                <button
-                  onClick={saveUserEmail}
-                  className="h-11 px-5 rounded-md text-base font-medium cursor-pointer transition-all border"
-                  style={{ color: 'var(--bg-white)', borderColor: 'var(--clay)', background: 'var(--clay)' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-                  data-testid="save-user-email-button"
-                >
-                  Continue
-                </button>
-              </div>
-            </div>
           </div>
         ) : page === 'logs' ? (
           <LogsPage />
@@ -1275,6 +1289,18 @@ Airglow — for those who create
         <div className="grid grid-cols-2 gap-8 items-start">
           {/* Apps column */}
           <div>
+            {privateApps.length > 0 && (
+              <div className="mb-8">
+                <h2 className="text-2xl font-bold tracking-tight mb-4" style={{ color: 'var(--olive)' }}>
+                  My Apps
+                </h2>
+                <div className="flex flex-col gap-4">
+                  {sortByOrder(privateApps, 'private').map((app, i) => (
+                    <AppCard key={appIdentityKey(app)} app={app} section="private" index={i} list={privateApps} />
+                  ))}
+                </div>
+              </div>
+            )}
             <h2 className="text-2xl font-bold tracking-tight mb-4" style={{ color: 'var(--fg-primary)' }}>
               Cloud Apps
             </h2>
@@ -1285,7 +1311,7 @@ Airglow — for those who create
             )}
             {published.length === 0 && apps !== null ? (
               <div className="text-base py-8 text-center rounded-[var(--radius-md)]" style={{ color: 'var(--fg-tertiary)', border: '1px dashed var(--border-secondary)' }}>
-                No cloud apps available
+                {privateApps.length > 0 ? 'No shared cloud apps available' : 'No cloud apps available'}
               </div>
             ) : (
               <div className="flex flex-col gap-4">

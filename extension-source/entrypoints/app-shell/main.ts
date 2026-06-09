@@ -20,6 +20,7 @@ const UI_LOAD_TIMEOUT_MS = 12000;
 const UI_BUNDLE_FETCH_TIMEOUT_MS = 8000;
 const AUTO_RETRY_DELAYS_MS = [1000, 3000];
 const UI_BUNDLE_RETRY_DELAYS_MS = [500, 1500];
+const RUNTIME_USER_APPROVAL_FLAG = '_airglowRuntimeUserApproved';
 type AppSource = { url: string; type: 'local' | 'cloud' };
 
 const params = new URLSearchParams(window.location.search);
@@ -174,7 +175,7 @@ function mountApp(appId: string, source: AppSource) {
 
   async function fetchUiBundle(url: string): Promise<Response> {
     let lastError = '';
-    const headers = source.type === 'cloud' ? await getAirglowIdentityHeaders() : {};
+    const headers = source.type === 'cloud' ? await getAirglowIdentityHeaders({ requireSession: true }) : {};
     for (let attempt = 0; attempt <= UI_BUNDLE_RETRY_DELAYS_MS.length; attempt++) {
       try {
         const res = await fetch(url, {
@@ -329,25 +330,50 @@ function mountApp(appId: string, source: AppSource) {
     iframe.src = buildSandboxUrl(cacheBust);
   }
 
-  // Bridge all SDK calls and runtime crash notifications from sandbox iframe.
-  // App-shell stamps _appId — background validates via sender.url (?app= param).
-  window.addEventListener('message', (e) => {
-    if (!iframe || e.source !== iframe.contentWindow) return;
-    const sourceWindow = e.source;
-    const data = e.data;
-    if (data?._airglow_app_error && data.appId === appId) {
-      if (!runtimeCrashVisible) {
-        showCrashOverlay(
-          `App '${appId}' hit an unhandled error`,
-          'The app iframe is still isolated. You can reload only this app without restarting the extension.',
-          data,
-        );
-      }
+  function targetFromSdkMessage(data: any): string {
+    const value = typeof data?.url === 'string' ? data.url : '';
+    if (!value) return '';
+    try {
+      const url = new URL(value);
+      return url.hostname ? ` for ${url.hostname}` : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function runtimeApprovalPrompt(data: any): string | null {
+    switch (data?.type) {
+      case 'airglow:openTab':
+        return `Airglow app "${appId}" wants to open a browser tab${targetFromSdkMessage(data)}. Allow this action?`;
+      case 'airglow:openWindow':
+        return `Airglow app "${appId}" wants to open a browser window${targetFromSdkMessage(data)}. Allow this action?`;
+      case 'airglow:identity:launchWebAuthFlow':
+        return `Airglow app "${appId}" wants to open an authentication window${targetFromSdkMessage(data)}. Allow this action?`;
+      default:
+        return null;
+    }
+  }
+
+  function forwardSdkMessage(sourceWindow: Window | null, data: any) {
+    const prompt = runtimeApprovalPrompt(data);
+    if (prompt && !window.confirm(prompt)) {
+      sourceWindow?.postMessage(
+        {
+          _airglow_response: true,
+          _callId: data._callId,
+          error: 'User approval is required for this action',
+          code: 'RUNTIME_USER_APPROVAL_DENIED',
+        },
+        '*',
+      );
       return;
     }
-    if (!data?._airglow) return;
 
-    const msg = { ...data, _appId: appId };
+    const msg = {
+      ...data,
+      _appId: appId,
+      ...(prompt ? { [RUNTIME_USER_APPROVAL_FLAG]: true } : {}),
+    };
     chrome.runtime.sendMessage(msg, (response: any) => {
       const payload = chrome.runtime.lastError
         ? {
@@ -360,6 +386,30 @@ function mountApp(appId: string, source: AppSource) {
         '*',
       );
     });
+  }
+
+  // Bridge all SDK calls and runtime crash notifications from sandbox iframe.
+  // App-shell stamps _appId — background validates via sender.url (?app= param).
+  window.addEventListener('message', (e) => {
+    if (!iframe || e.source !== iframe.contentWindow) return;
+    const sourceWindow = e.source;
+    const data = e.data;
+    if (data?._airglow_ui_ready && data.appId === appId) {
+      document.body.dataset.airglowAppUiReady = 'true';
+      return;
+    }
+    if (data?._airglow_app_error && data.appId === appId) {
+      if (!runtimeCrashVisible) {
+        showCrashOverlay(
+          `App '${appId}' hit an unhandled error`,
+          'The app iframe is still isolated. You can reload only this app without restarting the extension.',
+          data,
+        );
+      }
+      return;
+    }
+    if (!data?._airglow) return;
+    forwardSdkMessage(sourceWindow, data);
   });
 
   // Create sandboxed iframe that loads the app UI

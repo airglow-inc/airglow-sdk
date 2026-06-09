@@ -258,6 +258,7 @@ export function createEdgeButton() {
     document.addEventListener('DOMContentLoaded', () => createEdgeButton());
     return;
   }
+  if (document.querySelector('[data-airglow-edge-button-root="true"]')) return;
 
   const W = 40, H = 56, ICON_SIZE = 22;
   const FULLY_HIDDEN = W + 2, PEEK = W * 0.88, PARTIAL = W * 0.22;
@@ -281,6 +282,7 @@ export function createEdgeButton() {
   // Without this, the 40px-wide button blocks clicks near the right edge.
   const PAD = 16; // extra space left/top/bottom for shadow bleed
   const clip = document.createElement('div');
+  clip.setAttribute('data-airglow-edge-button-root', 'true');
   Object.assign(clip.style, {
     position: 'fixed',
     right: '0px',

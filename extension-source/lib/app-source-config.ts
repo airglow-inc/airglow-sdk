@@ -1,4 +1,4 @@
-const DEFAULT_CLOUD_APP_SOURCE_URL = 'https://api.airglow.dev';
+const DEFAULT_CLOUD_APP_SOURCE_URL = 'https://mvp-api.airglow.dev';
 // WXT_OFFICIAL_APP_SOURCE_URL kept as backward-compat alias (was the original
 // env var name). New code should set WXT_CLOUD_APP_SOURCE_URL.
 const CLOUD_APP_SOURCE_URL = import.meta.env.WXT_CLOUD_APP_SOURCE_URL
