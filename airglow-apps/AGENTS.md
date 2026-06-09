@@ -31,6 +31,30 @@ A clean tool output is **not** a signal that the change worked. If either stream
 
 - **One app per directory.** Each app lives in its own directory at the workspace root, with a `manifest.json` whose `id` matches the directory name. Apps shouldn't import from each other — shared code goes in `shared/`.
 
+- **Every app ships an app page.** `ui/App.tsx` is required — it's what users see when they click the app in the extension dashboard (without it they get a blank `no UI entry found` error page). Build it with the shared layout so all apps look native to Airglow:
+
+  ```tsx
+  import { AppPage, SettingsSection, SettingField } from '../../shared/components';
+
+  <AppPage
+    appId="my-app"                       // must equal the manifest id
+    name="My App"
+    description="One or two sentences on what the app does."
+    preview={<MyInjectedWidgetMock />}   // optional — see below
+    secrets={[{ name: 'ANTHROPIC_API_KEY' }]}  // optional — see below
+  >
+    {/* app-specific settings/content */}
+  </AppPage>
+  ```
+
+  `AppPage` renders the standard dashboard-style sidebar (Airglow logo, Cloud Apps, Local Apps, Settings) plus your content. The page must include:
+  - the **app name** and a **description** of what the app does;
+  - a **preview** when the app injects UI into websites: a small *static* JSX mock — no live logic. Copy the styles verbatim from the userscript so it matches the real thing. Always show the **entry point** (button/pill) when one exists — that's what users must find on the page — and optionally a compact glimpse of what it opens when that UI is the app's real substance. Apps with no entry point (shortcut- or CSS-triggered) show their injected UI directly;
+  - **settings for every app-specific constant** (thresholds, URLs, domain lists, …), persisted via `airglow.storage` so the userscripts pick them up — use `SettingsSection`/`SettingField`;
+  - required client secrets listed in the **`secrets` prop** — they render as read-only callouts (secrets are managed in the extension's Secrets page, never stored by the page itself). Server-only keys (e.g. a Composio key) get a callout with a note that they live in `.env`.
+
+  `ui/globals.css` must import `tailwindcss` and `../../shared/theme/tailwind-theme.css`.
+
 - **`airglow.*` SDK only.** All app code talks to the extension through the SDK. There is no `chrome.*` access.
 
 - **Secrets in `.env`.** `CLIENT_*` keys are exposed to browser code through `airglow.storage`; unprefixed keys are server-only, available as `process.env.FOO` inside `server/*.ts`. A per-app `<app-id>/.env` overrides the workspace one.
@@ -68,6 +92,7 @@ A clean tool output is **not** a signal that the change worked. If either stream
   - If server is still down, **immediately notify the user, do not report success**.
 - **Confirm the manifests endpoint works.** Run `curl -sf http://127.0.0.1:3222/api/apps/manifests` and verify your app appears in the response. If it doesn't, **it's a failure**.
 - `manifest.json` is valid; `id` matches the directory; every referenced file exists.
+- **The app page works.** `curl -sf http://127.0.0.1:3222/api/apps/<app-id>/ui` returns HTML (not the `no UI entry found` error), and the page's settings read/write through `airglow.storage` when opened via the extension (app-shell).
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No API keys or tokens are hardcoded in `userscripts/` or `ui/`.
 - The app has been tested in the real browser, not just through `curl`.

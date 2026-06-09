@@ -11,6 +11,9 @@ importers:
       '@tailwindcss/cli':
         specifier: ^4.0.0
         version: 4.3.0
+      lucide-react:
+        specifier: ^0.460.0
+        version: 0.460.0(react@19.2.6)
       react:
         specifier: ^19.0.0
         version: 19.2.6
@@ -68,6 +71,8 @@ importers:
         specifier: ^5.6.3
         version: 5.9.3
 
+  deadlockmoves-tracker: {}
+
   focus-hider:
     dependencies:
       lucide-react:
@@ -120,72 +125,7 @@ importers:
         specifier: ^18.0.2
         version: 18.0.3
 
-  local/ads-helper: {}
-
-  local/bookkeeping:
-    dependencies:
-      '@composio/core':
-        specifier: ^0.8.0
-        version: 0.8.1(zod@4.4.3)
-
-  local/gmail-editor:
-    dependencies:
-      react:
-        specifier: ^19.0.0
-        version: 19.2.6
-      react-dom:
-        specifier: ^19.0.0
-        version: 19.2.6(react@19.2.6)
-    devDependencies:
-      '@types/react':
-        specifier: ^19.0.0
-        version: 19.0.0
-      '@types/react-dom':
-        specifier: ^19.0.0
-        version: 19.0.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
-
-  local/wallet-notion:
-    dependencies:
-      '@anthropic-ai/sdk':
-        specifier: ^0.88.0
-        version: 0.88.0(zod@4.4.3)
-      '@composio/core':
-        specifier: ^0.6.10
-        version: 0.6.11(zod@4.4.3)
-      clsx:
-        specifier: ^2.1.0
-        version: 2.1.1
-      lucide-react:
-        specifier: ^0.460.0
-        version: 0.460.0(react@19.2.6)
-      react:
-        specifier: ^19.0.0
-        version: 19.2.6
-      react-dom:
-        specifier: ^19.0.0
-        version: 19.2.6(react@19.2.6)
-      tailwind-merge:
-        specifier: ^2.6.0
-        version: 2.6.1
-    devDependencies:
-      '@tailwindcss/cli':
-        specifier: ^4.2.2
-        version: 4.3.0
-      '@types/react':
-        specifier: ^19.0.0
-        version: 19.0.0
-      '@types/react-dom':
-        specifier: ^19.0.0
-        version: 19.0.0
-      tailwindcss:
-        specifier: ^4.0.0
-        version: 4.3.0
-      typescript:
-        specifier: ^5.6.3
-        version: 5.9.3
+  x-crosspost: {}
 
 packages:
 
@@ -205,27 +145,11 @@ packages:
     resolution: {integrity: sha512-JiDShH45zKHWyGe4ZNVRrCjBz8Nh9TMmZG1kh4QTK8hCBTWBi8Da+i7s1fJw7/lYpM4ccepSNfqzZ/QvABBi5g==}
     engines: {node: '>=6.9.0'}
 
-  '@composio/client@0.1.0-alpha.66':
-    resolution: {integrity: sha512-SDHcTWzz2dgdYAew/gQsRpjHpEzHKm6sW7KM4wCoJWNJuuMuey9Ahje91ZucNjfaqpI8CFW+pXY4nWkZf5LD7Q==}
-
-  '@composio/client@0.1.0-alpha.68':
-    resolution: {integrity: sha512-hym21PsIELzlF0Fc9RASr3PfGR1alpGE8IlbRJU3ED6UllMZz7VzREsKUZfojG4yHjZMBlVXG5QGMBzuPEue3Q==}
-
   '@composio/client@0.1.0-alpha.72':
     resolution: {integrity: sha512-2WYXgdlMvhoaJCsaSfyMAYGQ2tS5l2Fqdh2cMRqNi8NybIoOkFZy2ApBJJOoQwqfpUr41VymMW6FtiNQm7JavQ==}
 
   '@composio/core@0.10.0':
     resolution: {integrity: sha512-dG2BKF4NRiE8HHDzWLLgjMMo3FU4NJ6SxR961EpdLWWEKhkl+yP/mZlIN7p/4WnCR/fuDBKH1Qh+7kBdcHmEHA==}
-    peerDependencies:
-      zod: ^3.25 || ^4
-
-  '@composio/core@0.6.11':
-    resolution: {integrity: sha512-0uNA1DhHF0l3d51GVRw4CA8oYgqsps+aGMW6J4jA6Ut53HfBHwHJ4JAa9HU/2Psho8tCoprM6NR5DxWGD50H+A==}
-    peerDependencies:
-      zod: ^3.25 || ^4
-
-  '@composio/core@0.8.1':
-    resolution: {integrity: sha512-jgnpri5gVp8EbkbaoZxCWCHK4U2nPqq4LYK+JDHljme1Ruhtr0jFc/nV2hZwoquaIfvnLoNKMyADNBcDLf84Hw==}
     peerDependencies:
       zod: ^3.25 || ^4
 
@@ -917,9 +841,6 @@ packages:
     resolution: {integrity: sha512-qpCAvRl9stuOHveKsn7HncJRvv501qIacKzQlO/+Lwxc9+0q2wLyv4Dfvt80/DPn2pqOBsJdDiogXGR9+OvwRw==}
     engines: {node: '>=8'}
 
-  tailwind-merge@2.6.1:
-    resolution: {integrity: sha512-Oo6tHdpZsGpkKG88HJ8RR1rg/RdnEkQEfMoEk2x1XRI3F1AxeU+ijRXpiVUF4UbLfcxxRGw6TbUINKYdWVsQTQ==}
-
   tailwind-merge@3.6.0:
     resolution: {integrity: sha512-uxL7qAVQriqRQPAyK3pj66VqskWqoZ37PW94jwOTwNfq/z9oyu1V+eqrZqtR2+fCiXdYOZe/Modt8GtvqNzu+w==}
 
@@ -995,43 +916,11 @@ snapshots:
 
   '@babel/runtime@7.29.2': {}
 
-  '@composio/client@0.1.0-alpha.66': {}
-
-  '@composio/client@0.1.0-alpha.68': {}
-
   '@composio/client@0.1.0-alpha.72': {}
 
   '@composio/core@0.10.0(zod@4.4.3)':
     dependencies:
       '@composio/client': 0.1.0-alpha.72
-      '@composio/json-schema-to-zod': 0.1.20(zod@4.4.3)
-      '@types/json-schema': 7.0.15
-      chalk: 4.1.2
-      openai: 6.38.0(zod@4.4.3)
-      pusher-js: 8.5.0
-      semver: 7.8.0
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
-    transitivePeerDependencies:
-      - ws
-
-  '@composio/core@0.6.11(zod@4.4.3)':
-    dependencies:
-      '@composio/client': 0.1.0-alpha.66
-      '@composio/json-schema-to-zod': 0.1.20(zod@4.4.3)
-      '@types/json-schema': 7.0.15
-      chalk: 4.1.2
-      openai: 6.38.0(zod@4.4.3)
-      pusher-js: 8.5.0
-      semver: 7.8.0
-      zod: 4.4.3
-      zod-to-json-schema: 3.25.2(zod@4.4.3)
-    transitivePeerDependencies:
-      - ws
-
-  '@composio/core@0.8.1(zod@4.4.3)':
-    dependencies:
-      '@composio/client': 0.1.0-alpha.68
       '@composio/json-schema-to-zod': 0.1.20(zod@4.4.3)
       '@types/json-schema': 7.0.15
       chalk: 4.1.2
@@ -1579,8 +1468,6 @@ snapshots:
   supports-color@7.2.0:
     dependencies:
       has-flag: 4.0.0
-
-  tailwind-merge@2.6.1: {}
 
   tailwind-merge@3.6.0: {}
 

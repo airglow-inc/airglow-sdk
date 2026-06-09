@@ -1,6 +1,48 @@
 import { useState, useEffect, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
+import { AppPage, SettingsSection } from '../../shared/components';
+// the exact brand icon the userscript renders inside the button
+import iconSvg from '../../shared/assets/icon.svg';
 declare const airglow: any;
+
+// The "Create Meeting" button, styled exactly as the userscript builds it
+// (gmail-calendar/userscripts/gmail.ts — blue outline pill with the brand
+// icon, Gmail's Google Sans), plus the flow it triggers.
+function GmailFlowPreview() {
+  return (
+    <div className="flex items-center gap-3 flex-wrap text-sm" style={{ color: 'var(--fg-secondary)' }}>
+      <span
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          height: 36,
+          padding: '0 16px 0 11px',
+          border: '2px solid #2563eb',
+          borderRadius: 18,
+          color: '#2563eb',
+          fontFamily: "'Google Sans', Roboto, RobotoDraft, Helvetica, Arial, sans-serif",
+          fontSize: 14,
+          fontWeight: 500,
+          background: 'transparent',
+          lineHeight: 1,
+          cursor: 'pointer',
+          userSelect: 'none',
+        }}
+      >
+        <span
+          style={{ display: 'inline-flex', width: 20, height: 20, marginRight: 8, alignItems: 'center', justifyContent: 'center' }}
+          dangerouslySetInnerHTML={{ __html: iconSvg }}
+        />
+        Create Meeting
+      </span>
+      <span style={{ color: 'var(--fg-tertiary)' }}>added next to Reply/Forward in Gmail</span>
+      <span aria-hidden>→</span>
+      <span>AI extracts title, time &amp; attendees</span>
+      <span aria-hidden>→</span>
+      <span>Google Calendar opens pre-filled</span>
+    </div>
+  );
+}
 
 /* ── Inline components (no shared dep) ── */
 function Button({ className = '', variant = 'primary', size = 'md', ...p }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string }) {
@@ -68,22 +110,18 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-stone-50 px-6 py-16">
-      <div className="max-w-3xl mx-auto">
-        {/* Header card */}
-        <Card className="rounded-[0.75rem] px-6 py-5 mb-8">
-          <h1 className="text-2xl font-bold tracking-tight text-stone-900">Gmail Calendar</h1>
-          <p className="text-sm text-stone-600 mt-1">
-            Reads email conversations and uses AI to pre-fill Google Calendar events.
-          </p>
-          <p className="text-sm text-stone-600 mt-3">
-            Click <strong className="text-stone-700">Create Meeting</strong> next to Reply/Forward in Gmail to extract meeting details.
-          </p>
-        </Card>
-
-        {/* Log section header */}
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-semibold text-stone-900">Extraction Log</h2>
+    <AppPage
+      appId="gmail-calendar"
+      name="Gmail Calendar"
+      description="Reads email conversations and uses AI to pre-fill Google Calendar events. Click “Create Meeting” next to Reply/Forward in Gmail to extract meeting details."
+      preview={<GmailFlowPreview />}
+      secrets={[{
+        name: 'COMPOSIO_API_KEY',
+        note: 'server-side key — set it in the workspace .env (not in the extension); the dev server warns at startup when it is missing.',
+      }]}
+    >
+      <SettingsSection title="Extraction Log">
+        <div className="flex justify-end mb-4 -mt-12">
           <Button variant="secondary" size="sm" onClick={fetchLogs} disabled={loading}>
             {loading ? 'Loading...' : 'Refresh'}
           </Button>
@@ -187,8 +225,8 @@ function App() {
             })}
           </div>
         )}
-      </div>
-    </div>
+      </SettingsSection>
+    </AppPage>
   );
 }
 

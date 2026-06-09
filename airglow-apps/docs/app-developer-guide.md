@@ -80,7 +80,7 @@ The user must have "Allow User Scripts" enabled on the extension detail page (Ch
 
 ## UI
 
-A React + Tailwind SPA that runs inside a sandboxed iframe at `app-shell.html?app=<id>`, opened from the extension toolbar.
+A React + Tailwind SPA that runs inside a sandboxed iframe at `app-shell.html?app=<id>`, opened from the extension toolbar. Every app must ship one, built on the shared `AppPage` layout (`shared/components`) — see the "Every app ships an app page" rule in `AGENTS.md` for the required structure (name, description, injected-UI preview, settings).
 
 ```
 package.json     # react, react-dom, tailwindcss, @tailwindcss/cli

@@ -1,8 +1,172 @@
 import { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import Anthropic from '@anthropic-ai/sdk';
+import { AppPage, SettingsSection, SettingField } from '../../shared/components';
+// the exact brand icon the userscript renders inside the Research button
+import iconSvg from '../../shared/assets/icon.svg';
 
 declare const airglow: any;
+
+// Entry point + what it opens, styled exactly as the userscript builds them
+// (linkedin-researcher/userscripts/linkedin.ts): the "Research User" tab
+// pinned to the screen's right edge, and the side panel it opens — light
+// .panel-bg with a clay left border, white header with the search-icon title
+// and ↻ Refresh pill, section labels with colored dots.
+function PanelPreview() {
+  const sections: [string, string][] = [
+    ['Background', 'var(--olive)'],
+    ['Notable', 'var(--fig)'],
+    ['Talking Points', 'var(--sky)'],
+  ];
+  return (
+    <div className="max-w-sm">
+      {/* the "Research User" tab (entry point — pinned to the right screen edge) */}
+      <div className="flex justify-end mb-3">
+        <span
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            padding: '10px 16px 10px 12px',
+            background: 'linear-gradient(135deg, #f8bb5b 0%, #e8a050 100%)',
+            borderRadius: '12px 0 0 12px',
+            boxShadow: '-2px 0 12px rgba(232,160,80,0.3), 0 0 0 1px rgba(232,160,80,0.2)',
+            cursor: 'pointer',
+          }}
+        >
+          <span
+            style={{ flexShrink: 0, width: 22, height: 22, display: 'flex', alignItems: 'center', borderRadius: 4, overflow: 'hidden' }}
+            dangerouslySetInnerHTML={{
+              __html: iconSvg.replace(/<svg /, '<svg width="22" height="22" style="border-radius:3px;" '),
+            }}
+          />
+          <span style={{ fontSize: 14, color: '#1a1a1a', fontWeight: 500, whiteSpace: 'nowrap' }}>Research User</span>
+        </span>
+      </div>
+
+      {/* the side panel it opens */}
+      <div
+        className="overflow-hidden"
+        style={{
+          background: 'var(--bg-secondary)',
+          borderLeft: '3px solid var(--clay)',
+          boxShadow: '-4px 0 20px rgba(0,0,0,0.08)',
+        }}
+      >
+      {/* header */}
+      <div
+        className="flex items-center justify-between"
+        style={{ background: 'var(--bg-white)', borderBottom: '2px solid var(--border-primary)', padding: '14px 20px' }}
+      >
+        <span className="flex items-center gap-2" style={{ fontSize: 20, fontWeight: 700, color: 'var(--fg-primary)' }}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.8 }}>
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.3-4.3" />
+          </svg>
+          Research
+        </span>
+        <span
+          style={{
+            fontSize: 'var(--text-small)', fontWeight: 500, padding: '5px 16px',
+            borderRadius: 'var(--radius-full)', border: '1px solid var(--border-secondary)',
+            background: 'var(--bg-white)', color: 'var(--fg-secondary)',
+          }}
+        >
+          ↻ Refresh
+        </span>
+      </div>
+      {/* hero */}
+      <div style={{ padding: '20px 20px 8px' }}>
+        <p className="m-0 flex items-center gap-2" style={{ fontSize: 20, fontWeight: 700, color: 'var(--fg-primary)' }}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7 }}>
+            <path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2" />
+            <circle cx="12" cy="7" r="4" />
+          </svg>
+          Jane Example
+        </p>
+        <ul className="mt-3 mb-0" style={{ fontSize: 'var(--text-small)', color: 'var(--fg-secondary)', paddingLeft: 20, lineHeight: 1.6 }}>
+          <li>Staff engineer turned founder; 10y in dev tools</li>
+          <li>Recently raised a seed round</li>
+        </ul>
+      </div>
+      {/* sections */}
+      <div style={{ padding: '12px 20px 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+        {sections.map(([label, color]) => (
+          <span key={label} className="flex items-center gap-2">
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
+            <span style={{ fontSize: 'var(--text-caption)', fontWeight: 600, color: 'var(--fg-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+              {label}
+            </span>
+          </span>
+        ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Research-context settings stored by the userscript panel; surfaced here too.
+function ContextSettings() {
+  const [iam, setIam] = useState('');
+  const [goal, setGoal] = useState('');
+  const [notes, setNotes] = useState('');
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    Promise.all([
+      airglow.storage.get('linkedin_user_iam'),
+      airglow.storage.get('linkedin_user_goal'),
+      airglow.storage.get('linkedin_user_notes'),
+    ]).then(([a, b, c]: any[]) => {
+      setIam(a || ''); setGoal(b || ''); setNotes(c || '');
+      setLoaded(true);
+    }).catch(() => setLoaded(true));
+  }, []);
+
+  const save = (key: string, value: string) => {
+    airglow.storage.set(key, value).catch(() => {});
+  };
+
+  if (!loaded) return null;
+  const inputStyle: React.CSSProperties = {
+    background: 'var(--bg-secondary)',
+    border: '1px solid var(--border-secondary)',
+    color: 'var(--fg-primary)',
+  };
+
+  return (
+    <SettingsSection title="Research context">
+      <SettingField label="I am" hint="Who you are — shapes the research angle.">
+        <input
+          value={iam}
+          onChange={(e) => { setIam(e.target.value); save('linkedin_user_iam', e.target.value); }}
+          className="w-full px-3 py-2 text-sm rounded-sm outline-none"
+          style={inputStyle}
+          data-testid="ctx-iam"
+        />
+      </SettingField>
+      <SettingField label="Looking for" hint="What you want out of profiles you research.">
+        <input
+          value={goal}
+          onChange={(e) => { setGoal(e.target.value); save('linkedin_user_goal', e.target.value); }}
+          className="w-full px-3 py-2 text-sm rounded-sm outline-none"
+          style={inputStyle}
+          data-testid="ctx-goal"
+        />
+      </SettingField>
+      <SettingField label="Notes">
+        <textarea
+          value={notes}
+          onChange={(e) => { setNotes(e.target.value); save('linkedin_user_notes', e.target.value); }}
+          rows={3}
+          className="w-full px-3 py-2 text-sm rounded-sm outline-none resize-y"
+          style={inputStyle}
+          data-testid="ctx-notes"
+        />
+      </SettingField>
+    </SettingsSection>
+  );
+}
 
 // ── Types ──
 
@@ -410,26 +574,27 @@ function App() {
   }
 
   return (
-    <div className="min-h-screen bg-stone-50 text-stone-900 font-sans">
-      {/* Header */}
-      <header className="sticky top-0 z-10 bg-stone-50 border-b border-stone-200 px-5 py-3 flex items-center justify-between">
-        <h2 className="text-base font-semibold text-stone-800">
-          Research{profile ? ` · ${profile.name}` : ''}
-        </h2>
-        <div className="flex items-center gap-2">
-          {!loading && result && (
+    <AppPage
+      appId="linkedin-researcher"
+      name="LinkedIn Researcher"
+      description="AI-powered research for LinkedIn profiles using web search — open a profile on LinkedIn and the research panel appears with a structured summary."
+      preview={<PanelPreview />}
+      secrets={[{ name: 'ANTHROPIC_API_KEY' }]}
+    >
+      <ContextSettings />
+
+      <SettingsSection title={`Research${profile ? ` · ${profile.name}` : ''}`}>
+        {!loading && result && (
+          <div className="flex justify-end -mt-10 mb-3">
             <button
               onClick={handleRefresh}
               className="text-xs text-stone-500 border border-stone-200 rounded-full px-3 py-1 hover:bg-stone-100 cursor-pointer font-medium"
             >
               ↻ Refresh
             </button>
-          )}
-        </div>
-      </header>
+          </div>
+        )}
 
-      {/* Content */}
-      <main className="p-5">
         {loading && (
           <div className="flex items-center gap-3 py-8 justify-center">
             <Spinner />
@@ -444,8 +609,8 @@ function App() {
         {!loading && result && profile && (
           <ResearchContent result={result} profile={profile} />
         )}
-      </main>
-    </div>
+      </SettingsSection>
+    </AppPage>
   );
 }
 

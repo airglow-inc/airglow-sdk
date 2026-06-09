@@ -292,6 +292,18 @@ export function handleAirglowMessage(
   sendResponse: (response: any) => void,
 ): boolean {
   if (!msg?._airglow) return false;
+
+  // Dashboard/app-management types are handled by background.ts's own
+  // onMessage branches; return false so bridged calls from app UIs fall
+  // through to them instead of dying here with UNKNOWN_MESSAGE_TYPE. They
+  // need no per-app validation — they don't touch app-scoped state.
+  const BRIDGE_PASSTHROUGH_TYPES = new Set([
+    'airglow:get-dashboard-manifests',
+    'airglow:open-app',
+    'airglow:open-dashboard',
+  ]);
+  if (BRIDGE_PASSTHROUGH_TYPES.has(msg?.type)) return false;
+
   const appId = msg._appId;
   if (!appId) {
     sendResponse({ error: 'missing _appId' });

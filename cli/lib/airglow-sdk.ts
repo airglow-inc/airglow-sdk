@@ -2,9 +2,12 @@
  * Airglow SDK — injected into app contexts before app code runs.
  * Provides airglow.fetch, airglow.storage, airglow.log, airglow.rpc, airglow.llm, and airglow.platform.
  *
- * Auto-detects environment:
- * - Userscripts/extension pages: uses chrome.runtime.sendMessage
- * - Sandboxed iframes (UI): uses window.parent.postMessage
+ * Transport selection:
+ * - app_ui context: ALWAYS window.parent.postMessage (the app-shell bridge).
+ *   App UIs load at the dev-server web origin where chrome.runtime.sendMessage
+ *   exists but requires an extension id — calling it there throws.
+ * - Userscripts/startup/extension pages: chrome.runtime.sendMessage, with a
+ *   postMessage fallback when chrome.runtime is absent (sandboxed iframes).
  *
  * Disable/delete safety:
  * `storage` is app-scoped key-value — background doesn't act on it, safe to ignore.
@@ -23,7 +26,8 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
   const APP_ID = ${JSON.stringify(appId)};
   const SDK_VERSION = ${JSON.stringify(AIRGLOW_SDK_CONTRACT_VERSION)};
   const SDK_CONTEXT = ${JSON.stringify(context)};
-  const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
+  const usePostMessage = SDK_CONTEXT === 'app_ui'
+    || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
 
   let callCounter = 0;
   const pendingCalls = {};

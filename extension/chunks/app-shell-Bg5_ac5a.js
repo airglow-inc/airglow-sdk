@@ -3,7 +3,8 @@ import"./_virtual_wxt-html-plugins-Ch_nAHUK.js";var e=`__airglow_logs`,t=1e3;fun
   const APP_ID = ${JSON.stringify(e)};
   const SDK_VERSION = ${JSON.stringify(u)};
   const SDK_CONTEXT = ${JSON.stringify(t)};
-  const usePostMessage = typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
+  const usePostMessage = SDK_CONTEXT === 'app_ui'
+    || typeof chrome === 'undefined' || !chrome.runtime?.sendMessage;
 
   let callCounter = 0;
   const pendingCalls = {};

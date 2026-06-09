@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Keyboard, MessageSquare, Trash2, Plus, Settings, ExternalLink, RefreshCw } from 'lucide-react';
+import { Keyboard, MessageSquare, Trash2, Plus, ExternalLink, RefreshCw } from 'lucide-react';
 import { Card } from '../../shared/components/Card';
 import { Input } from '../../shared/components/Input';
 import { Textarea } from '../../shared/components/Textarea';
-import { Sidebar, NavItem } from '../../shared/components/Sidebar';
+import { AppPage } from '../../shared/components';
 import Anthropic from '@anthropic-ai/sdk';
 import { marked } from 'marked';
 import Chat, { PROSE_CSS } from './chat';
@@ -343,6 +343,79 @@ function Dashboard() {
     airglow.openWindow(url, { width: 840, height: 600, popup: true });
   }
 
+  // The search bar, styled exactly as the userscript builds it
+  // (askme-anything/userscripts/global.ts — same pill, textarea, and footer styles).
+  const SearchBarPreview = (
+    <div
+      style={{
+        background: 'rgba(255,255,255,0.95)',
+        border: '1px solid rgba(0,0,0,0.08)',
+        borderRadius: 16,
+        boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
+        padding: 16,
+        fontFamily: "'Inter', system-ui, -apple-system, sans-serif",
+      }}
+    >
+      <div className="flex gap-2 mb-3 flex-wrap">
+        {modes.slice(0, 3).map((m, i) => {
+          const isActive = i === 0;
+          return (
+            <span
+              key={m.name + i}
+              style={{
+                height: 36,
+                padding: '0 16px',
+                borderRadius: 9999,
+                border: isActive ? '2px solid #c87830' : '1.5px solid rgba(0,0,0,0.13)',
+                background: isActive ? 'rgba(200,120,48,0.12)' : '#fff',
+                color: isActive ? '#c06a20' : '#1a1a1a',
+                fontSize: 15,
+                fontWeight: isActive ? 600 : 500,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                boxSizing: 'border-box',
+              }}
+            >
+              <span style={{ fontSize: 13, opacity: 0.5, fontFamily: "'JetBrains Mono', ui-monospace, monospace", fontWeight: 400 }}>
+                <span style={{ fontSize: '0.85em' }}>Ctrl</span>+{i + 1}
+              </span>
+              {m.name}
+            </span>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 16, fontWeight: 600, color: '#1a1a1a', marginBottom: 8 }}>Input</div>
+      <div
+        style={{
+          minHeight: 48,
+          border: '1.5px solid rgba(0,0,0,0.06)',
+          borderRadius: 12,
+          background: 'rgba(0,0,0,0.025)',
+          padding: '10px 12px',
+          fontSize: 15,
+          color: '#9a958e',
+        }}
+      >
+        What does this mean?
+      </div>
+      <div className="flex items-center justify-between" style={{ marginTop: 10 }}>
+        <span style={{ fontSize: 11, color: 'rgba(0,0,0,0.3)' }}>Esc to close · Enter to submit</span>
+        <span
+          style={{
+            width: 34, height: 34, borderRadius: 9, background: '#d08030', color: '#fff',
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="5" y1="12" x2="19" y2="12" />
+            <polyline points="12 5 19 12 12 19" />
+          </svg>
+        </span>
+      </div>
+    </div>
+  );
+
   const Kbd = ({ children }: { children: React.ReactNode }) => (
     <kbd className="inline-flex items-center justify-center font-mono text-base px-2 py-0.5 rounded border border-stone-300 bg-stone-100 text-stone-600 whitespace-nowrap">
       {children}
@@ -350,20 +423,31 @@ function Dashboard() {
   );
 
   return (
-    <div className="flex min-h-screen font-sans" style={{ background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}>
-      <Sidebar title="Ask Me Anything">
-        <NavItem icon={Settings} label="Settings" active />
-        <NavItem
-          icon={MessageSquare}
-          label="Chat"
+    <AppPage
+      appId="askme-anything"
+      name="Ask Me Anything"
+      description="Highlight text on any page and press the trigger shortcut to get AI-powered explanations, translations, or rephrasings — with follow-up chat."
+      preview={SearchBarPreview}
+      secrets={[{ name: 'ANTHROPIC_API_KEY' }]}
+    >
+      <div className="mb-6">
+        <button
           onClick={openChat}
-          trailing={<ExternalLink size={12} style={{ opacity: 0.4 }} />}
-        />
-      </Sidebar>
+          data-testid="open-chat"
+          className="h-9 px-4 rounded-full text-base font-medium cursor-pointer transition-all inline-flex items-center gap-2"
+          style={{
+            background: 'var(--bg-white)',
+            color: 'var(--fg-secondary)',
+            border: '1px solid var(--border-secondary)',
+          }}
+        >
+          <MessageSquare size={16} />
+          Open Chat
+          <ExternalLink size={12} style={{ opacity: 0.4 }} />
+        </button>
+      </div>
 
-      <div className="flex-1 flex flex-col min-h-0">
-        <main className="flex-1 overflow-y-auto p-6 pb-0 thin-scroll">
-          <div className="grid gap-8 min-h-full" style={{ gridTemplateColumns: '2fr 3fr' }}>
+      <div className="grid gap-8" style={{ gridTemplateColumns: '2fr 3fr' }}>
             {/* Left column */}
             <div className="space-y-6">
               {/* How it works */}
@@ -502,10 +586,7 @@ function Dashboard() {
               />
             </div>
           </div>
-        </main>
-
-      </div>
-    </div>
+    </AppPage>
   );
 }
 
