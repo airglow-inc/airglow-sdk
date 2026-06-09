@@ -62,6 +62,17 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   let needsRefresh = false;
   const result: ReturnType<typeof createPopup> = { el: popup, show, hide };
 
+  function makeFooterButton(label: string, testId?: string) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (testId) b.setAttribute('data-testid', testId);
+    b.style.cssText = 'font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid rgba(0,0,0,0.12); background:#fff; cursor:pointer; font-family:inherit; font-weight:500; flex-shrink:0;';
+    b.style.setProperty('color', '#0D3B6E', 'important');
+    b.addEventListener('mouseenter', () => { b.style.borderColor = 'rgba(0,0,0,0.2)'; });
+    b.addEventListener('mouseleave', () => { b.style.borderColor = 'rgba(0,0,0,0.12)'; });
+    return b;
+  }
+
   function renderFooter() {
     const footer = document.createElement('div');
     footer.setAttribute('data-testid', 'popup-footer');
@@ -71,41 +82,29 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
       borderTop: '1px solid rgba(0,0,0,0.08)',
       display: 'flex',
       alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: '8px',
     });
 
+    // Left slot: Refresh (only when a toggle made the page state stale).
     if (needsRefresh) {
-      Object.assign(footer.style, { justifyContent: 'space-between', gap: '8px', paddingTop: '6px', marginTop: '6px' });
-
-      const text = document.createElement('span');
-      text.textContent = 'Refresh to apply';
-      Object.assign(text.style, { fontSize: '12px', color: '#888', whiteSpace: 'nowrap' });
-
-      const btn = document.createElement('button');
-      btn.textContent = 'Refresh';
-      Object.assign(btn.style, {
-        fontSize: '12px', padding: '3px 8px', borderRadius: '6px',
-        border: '1px solid rgba(0,0,0,0.12)', background: '#fff',
-        cursor: 'pointer', color: '#0D3B6E', fontWeight: '500', flexShrink: '0', fontFamily: 'inherit',
-      });
-      btn.addEventListener('click', (e) => { e.stopPropagation(); location.reload(); });
-
-      footer.appendChild(text);
-      footer.appendChild(btn);
+      const refreshBtn = makeFooterButton('Refresh');
+      refreshBtn.addEventListener('click', (e) => { e.stopPropagation(); location.reload(); });
+      footer.appendChild(refreshBtn);
     } else {
-      const hideBtn = document.createElement('button');
-      hideBtn.textContent = 'Hide';
-      hideBtn.setAttribute('data-testid', 'airglow-hide-button');
-      hideBtn.style.cssText = 'font-size:12px; padding:3px 8px; border-radius:6px; border:1px solid rgba(0,0,0,0.12); background:#fff; cursor:pointer; font-family:inherit; font-weight:500;';
-      hideBtn.style.setProperty('color', '#0D3B6E', 'important');
-      hideBtn.addEventListener('mouseenter', () => { hideBtn.style.borderColor = 'rgba(0,0,0,0.2)'; });
-      hideBtn.addEventListener('mouseleave', () => { hideBtn.style.borderColor = 'rgba(0,0,0,0.12)'; });
-      hideBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        hide();
-        result.onHideAll?.();
-      });
-      footer.appendChild(hideBtn);
+      // Spacer keeps Hide pinned right even when no left-slot button.
+      const spacer = document.createElement('span');
+      footer.appendChild(spacer);
     }
+
+    // Right slot: Hide is always present.
+    const hideBtn = makeFooterButton('Hide', 'airglow-hide-button');
+    hideBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      hide();
+      result.onHideAll?.();
+    });
+    footer.appendChild(hideBtn);
 
     return footer;
   }
@@ -250,19 +249,75 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   return result;
 }
 
+// Critically-damped vanilla spring, modeled on Framer Motion's defaults (mass=1).
+// Used so the edge button glides like Dex's instead of snapping per CSS transition.
+class Spring {
+  private value: number;
+  private target: number;
+  private vel = 0;
+  private lastTime = 0;
+  private rafId: number | null = null;
+
+  constructor(
+    initial: number,
+    private stiffness: number,
+    private damping: number,
+    private onUpdate: (v: number) => void,
+  ) {
+    this.value = initial;
+    this.target = initial;
+  }
+
+  set(target: number) {
+    if (target === this.target && this.rafId == null) return;
+    this.target = target;
+    if (this.rafId == null) {
+      this.lastTime = performance.now();
+      this.rafId = requestAnimationFrame(this.tick);
+    }
+  }
+
+  private tick = () => {
+    const now = performance.now();
+    const dt = Math.min(0.032, (now - this.lastTime) / 1000);
+    this.lastTime = now;
+
+    const acc = -this.stiffness * (this.value - this.target) - this.damping * this.vel;
+    this.vel += acc * dt;
+    this.value += this.vel * dt;
+
+    if (Math.abs(this.vel) < 0.05 && Math.abs(this.value - this.target) < 0.05) {
+      this.value = this.target;
+      this.vel = 0;
+      this.rafId = null;
+      this.onUpdate(this.value);
+      return;
+    }
+    this.onUpdate(this.value);
+    this.rafId = requestAnimationFrame(this.tick);
+  };
+}
+
 /**
  * Edge-peek button for normal web pages.
  * Reveals progressively as mouse approaches the right edge.
+ * Returns a destroy() so the content script can hot-swap when the user
+ * flips the `__side_button_enabled` preference.
  */
-export function createEdgeButton() {
+export function createEdgeButton(): { destroy: () => void } {
   if (!document.body) {
-    document.addEventListener('DOMContentLoaded', () => createEdgeButton());
-    return;
+    let inner: { destroy: () => void } | null = null;
+    document.addEventListener('DOMContentLoaded', () => { inner = createEdgeButton(); }, { once: true });
+    return { destroy: () => inner?.destroy() };
   }
 
   const W = 40, H = 56, ICON_SIZE = 22;
-  const FULLY_HIDDEN = W + 2, PEEK = W * 0.88, PARTIAL = W * 0.22;
-  const OUTER = 0.10, INNER = 0.05;
+  const FULLY_HIDDEN = W + 2;
+  const PEEK_OFFSET = W * 0.78;        // ~22% of button peeks out when in the right strip
+  const RIGHT_STRIP = 5 / 6;           // mouseX must be in the right 1/6 to trigger peek
+  const DECAY_RADIUS = 400;            // px from button center where proximity fades to 0
+  const ICON_DIM = 0.3;                // icon opacity when not focused
+  const ICON_INTENSITY = 0.7;          // proximity-driven opacity boost (matches Dex)
 
   const btn = document.createElement('div');
   btn.setAttribute('data-testid', 'airglow-edge-button');
@@ -275,7 +330,7 @@ export function createEdgeButton() {
       display: flex; align-items: center; justify-content: center;
       cursor: pointer;
     ">
-      <div data-airglow-icon style="width: ${ICON_SIZE}px; height: ${ICON_SIZE}px; border-radius: 4px; overflow: hidden;">${ICON_SVG}</div>
+      <div data-airglow-icon style="width: ${ICON_SIZE}px; height: ${ICON_SIZE}px; border-radius: 4px; overflow: hidden; opacity: ${ICON_DIM};">${ICON_SVG}</div>
     </div>`;
 
   // Clip container — only the visible portion of the button receives events.
@@ -298,7 +353,7 @@ export function createEdgeButton() {
     marginLeft: `${PAD}px`,
     marginTop: `${PAD}px`,
     transform: `translateX(${FULLY_HIDDEN}px)`,
-    transition: 'transform 0.18s ease-out',
+    willChange: 'transform',
   });
 
   clip.appendChild(btn);
@@ -314,43 +369,54 @@ export function createEdgeButton() {
   });
   // Clear the outline as soon as the user reads /logs — the next hover would
   // recompute it anyway, but doing it live avoids stale red on idle tabs.
-  chrome.storage.onChanged.addListener((changes) => {
+  const onLogsSeen = (changes: Record<string, chrome.storage.StorageChange>) => {
     if ('__logs_last_seen_ts' in changes) iconEl.style.boxShadow = '';
-  });
+  };
+  chrome.storage.onChanged.addListener(onLogsSeen);
   const { el: popupEl, show: showPopup, hide: hidePopup } = popup;
+
+  // Two springs matching Dex's Framer Motion config.
+  const posSpring = new Spring(FULLY_HIDDEN, 280, 35, (v) => {
+    btn.style.transform = `translateX(${v}px)`;
+    clip.style.pointerEvents = v < FULLY_HIDDEN - 1 ? 'auto' : 'none';
+  });
+  const opacitySpring = new Spring(ICON_DIM, 180, 30, (v) => {
+    iconEl.style.opacity = String(v);
+  });
 
   let hovering = false;
   let popupVisible = false;
   let hidden = false;
   let hideTimeout: ReturnType<typeof setTimeout> | null = null;
-  let curOffset = FULLY_HIDDEN;
 
   popup.onHideAll = () => {
     hidden = true;
     hovering = false;
     popupVisible = false;
-    setOffset(FULLY_HIDDEN);
+    posSpring.set(FULLY_HIDDEN);
+    opacitySpring.set(ICON_DIM);
   };
-
-  function setOffset(px: number) {
-    if (px === curOffset) return;
-    curOffset = px;
-    btn.style.transform = `translateX(${px}px)`;
-    clip.style.pointerEvents = px < FULLY_HIDDEN ? 'auto' : 'none';
-  }
 
   function onMouseMove(e: MouseEvent) {
     if (hidden || hovering || popupVisible) return;
     const vw = window.innerWidth;
-    const frac = (vw - e.clientX) / vw;
-
-    if (frac > OUTER) {
-      setOffset(FULLY_HIDDEN);
+    if (e.clientX < vw * RIGHT_STRIP) {
+      posSpring.set(FULLY_HIDDEN);
+      opacitySpring.set(ICON_DIM);
       return;
     }
-
-    const t = Math.min(1, (OUTER - frac) / (OUTER - INNER));
-    setOffset(PEEK + (PARTIAL - PEEK) * t);
+    const btnCenterX = vw - W / 2;
+    const dist = Math.abs(e.clientX - btnCenterX);
+    if (dist > DECAY_RADIUS) {
+      posSpring.set(PEEK_OFFSET);
+      opacitySpring.set(ICON_DIM);
+      return;
+    }
+    // Dex uses (1 - dist/radius)^8 — sharp falloff so most of the reveal
+    // happens within the last ~150px before the button.
+    const decay = Math.pow(1 - dist / DECAY_RADIUS, 8);
+    posSpring.set(PEEK_OFFSET * (1 - decay));
+    opacitySpring.set(ICON_DIM + (1 - ICON_DIM) * ICON_INTENSITY * decay);
   }
 
   // mouseout with null relatedTarget fires reliably when cursor leaves
@@ -361,7 +427,8 @@ export function createEdgeButton() {
     popupVisible = false;
     if (hideTimeout) clearTimeout(hideTimeout);
     hidePopup();
-    setOffset(FULLY_HIDDEN);
+    posSpring.set(FULLY_HIDDEN);
+    opacitySpring.set(ICON_DIM);
   }
 
   function scheduleHide() {
@@ -369,7 +436,8 @@ export function createEdgeButton() {
     hideTimeout = setTimeout(() => {
       if (!hovering && !popupVisible) {
         hidePopup();
-        setOffset(FULLY_HIDDEN);
+        posSpring.set(FULLY_HIDDEN);
+        opacitySpring.set(ICON_DIM);
       }
     }, 200);
   }
@@ -377,7 +445,8 @@ export function createEdgeButton() {
   clip.addEventListener('mouseenter', () => {
     hovering = true;
     if (hideTimeout) clearTimeout(hideTimeout);
-    setOffset(0);
+    posSpring.set(0);
+    opacitySpring.set(1);
     showPopup();
   });
   clip.addEventListener('mouseleave', () => {
@@ -401,6 +470,17 @@ export function createEdgeButton() {
 
   document.addEventListener('mousemove', onMouseMove, { passive: true });
   document.addEventListener('mouseout', onMouseOut);
+
+  return {
+    destroy() {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseout', onMouseOut);
+      chrome.storage.onChanged.removeListener(onLogsSeen);
+      if (hideTimeout) clearTimeout(hideTimeout);
+      clip.remove();
+      popupEl.remove();
+    },
+  };
 }
 
 /**

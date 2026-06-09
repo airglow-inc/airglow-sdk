@@ -1,5 +1,5 @@
 import { type FormEvent, useState, useEffect, useRef } from 'react';
-import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, MessageSquare, Send, X } from 'lucide-react';
+import { Trash2, RefreshCw, Power, Settings, SlidersHorizontal, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, MessageSquare, Send, X } from 'lucide-react';
 import logoUrl from '../../lib/branding/logo.svg';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
@@ -18,6 +18,7 @@ import { getCloudAppSourceUrl } from '../../lib/app-source-config';
 const DEV_PORT_KEY = '__dev_port';
 const APP_ORDER_KEY = '__app_order';
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
+const SIDE_BUTTON_KEY = '__side_button_enabled';
 const FEEDBACK_VISITOR_ID_KEY = '__airglow_feedback_visitor_id';
 const DEFAULT_DEV_PORT = 3222;
 const FEEDBACK_TIMEOUT_MS = 8000;
@@ -160,6 +161,10 @@ export default function App() {
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackStatus, setFeedbackStatus] = useState<FeedbackStatus | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+
+  // Settings modal state
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [sideButtonEnabled, setSideButtonEnabled] = useState(false);
 
   // Secrets state
   const [secretsOpen, setSecretsOpen] = useState(false);
@@ -344,7 +349,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
+    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote', SIDE_BUTTON_KEY], (result) => {
       const port = (result[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT;
       const savedEmail = normalizeUserEmail(result[USER_EMAIL_KEY]) || '';
       const nh = result['__native_host_connected'];
@@ -357,6 +362,7 @@ export default function App() {
       setEmailInput(savedEmail);
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setGitPullDueRemote(!!result['__git_pull_due_remote']);
+      setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
       setIdentityLoaded(true);
       // Initial mount = page (re)load: force a fresh upstream check on both
       // sides (SW for gitPullDueRemote, dev server for behindUpstream) so a
@@ -399,6 +405,9 @@ export default function App() {
       if ('__git_pull_due_remote' in changes) {
         setGitPullDueRemote(!!changes['__git_pull_due_remote'].newValue);
       }
+      if (SIDE_BUTTON_KEY in changes) {
+        setSideButtonEnabled(!!changes[SIDE_BUTTON_KEY].newValue);
+      }
     };
     chrome.storage.local.onChanged.addListener(onChange);
     return () => chrome.storage.local.onChanged.removeListener(onChange);
@@ -430,6 +439,11 @@ export default function App() {
     const id = setInterval(tick, 5000);
     return () => { cancelled = true; clearInterval(id); };
   }, [localOnline, devPort]);
+
+  function setSideButton(next: boolean) {
+    setSideButtonEnabled(next);
+    chrome.storage.local.set({ [SIDE_BUTTON_KEY]: next });
+  }
 
   function saveUserEmail() {
     const trimmed = normalizeUserEmail(emailInput);
@@ -974,6 +988,17 @@ export default function App() {
             )}
             <div className="px-1 pt-3 flex flex-col gap-1.5">
               <button
+                onClick={() => setSettingsOpen(true)}
+                className="w-full h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border flex items-center gap-1.5"
+                style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+                data-testid="settings-button"
+              >
+                <SlidersHorizontal size={14} />
+                Settings
+              </button>
+              <button
                 onClick={openSecrets}
                 className="w-full h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border flex items-center gap-1.5"
                 style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
@@ -1471,6 +1496,73 @@ Airglow — for those who create
               {feedbackSubmitting ? 'Sending…' : 'Send feedback'}
             </button>
           </form>
+        </div>
+      )}
+
+      {/* Settings modal */}
+      {settingsOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.4)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setSettingsOpen(false); }}
+          data-testid="settings-modal-backdrop"
+        >
+          <div
+            className="w-[420px] rounded-lg p-6"
+            style={{ background: 'var(--bg-white)', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}
+            data-testid="settings-modal"
+          >
+            <div className="mb-5 flex items-start justify-between gap-3">
+              <h3 className="text-2xl font-bold" style={{ color: 'var(--fg-primary)' }}>Settings</h3>
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(false)}
+                className="h-8 w-8 rounded-md cursor-pointer inline-flex items-center justify-center"
+                style={{ color: 'var(--fg-tertiary)', background: 'transparent', border: 0 }}
+                aria-label="Close settings"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <label
+              className="flex items-center justify-between gap-4 py-2 cursor-pointer"
+              data-testid="settings-side-button-row"
+            >
+              <div>
+                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Side button</div>
+                <div className="text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                  Show the edge button on the right side of every web page.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={sideButtonEnabled}
+                onClick={() => setSideButton(!sideButtonEnabled)}
+                className="relative shrink-0 transition-colors cursor-pointer rounded-full border"
+                style={{
+                  // box-sizing: border-box from Tailwind preflight means content
+                  // width = 44 - 2*1 = 42px. Knob is 18px; left positions of
+                  // 2 (off) and 22 (on) give a symmetric 2px gap on each side.
+                  boxSizing: 'border-box',
+                  width: 44, height: 24,
+                  background: sideButtonEnabled ? 'var(--olive)' : 'var(--bg-tertiary)',
+                  borderColor: sideButtonEnabled ? 'var(--olive)' : 'var(--border-secondary)',
+                }}
+                data-testid="settings-side-button-toggle"
+              >
+                <span
+                  className="absolute top-1/2 -translate-y-1/2 rounded-full transition-all"
+                  style={{
+                    width: 18, height: 18,
+                    left: sideButtonEnabled ? 22 : 2,
+                    background: 'var(--bg-white)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </label>
+          </div>
         </div>
       )}
 
