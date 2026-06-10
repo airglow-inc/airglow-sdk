@@ -8,7 +8,6 @@ import {
   appendDraftUserMessage,
   createAppDraft,
 } from '../../lib/sidepanel-model';
-import logoUrl from '../../lib/branding/logo.svg';
 
 type TargetResponse = {
   target?: SidePanelTargetTab | null;
@@ -336,13 +335,6 @@ function App() {
 
   return (
     <main className="sidepanel">
-      <header className="topbar">
-        <img src={logoUrl} alt="" />
-        <div>
-          <h1>Airglow</h1>
-        </div>
-      </header>
-
       <section className="chat-panel">
         <div className="chat-log" ref={chatLogRef} aria-live="polite">
           <TargetContextMessage
