@@ -576,7 +576,7 @@ function App() {
             }
           })
           .catch(() => {
-            // Polling is best-effort; the execute response below carries the authoritative final snapshot.
+            // Polling is best-effort; the next tick can pick up the durable server-side run state.
           });
       }, 900);
 
