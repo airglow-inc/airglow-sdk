@@ -1137,6 +1137,7 @@ export default defineBackground(() => {
   const SIDEPANEL_SAVE_TIMEOUT_MS = 120000;
   const SIDEPANEL_SAVE_RETRY_DELAYS_MS = [500, 1500];
   const SIDEPANEL_INITIAL_CONTEXT_KEY = 'latestPageContext';
+  const PRIVATE_APP_MUTATION_TIMEOUT_MS = 30000;
 
   type SidePanelCloudSaveResult = {
     appId: string;
@@ -1160,6 +1161,13 @@ export default defineBackground(() => {
     status?: number;
     requestId?: string;
     details?: unknown;
+  };
+
+  type PrivateAppProductMetadataUpdate = {
+    name?: string;
+    description?: string;
+    summary?: string;
+    tags?: string[];
   };
 
   type SidePanelInitialPageContext = {
@@ -1406,6 +1414,74 @@ export default defineBackground(() => {
     throw saveNetworkError(lastError);
   }
 
+  async function requestPrivateAppMutation<T>(
+    appId: string,
+    method: 'PATCH' | 'DELETE',
+    payload?: PrivateAppProductMetadataUpdate,
+  ): Promise<T> {
+    const url = `${getCloudAppSourceUrl()}/api/apps/private/${encodeURIComponent(appId)}`;
+    const res = await fetchWithTimeout(url, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...(method === 'PATCH' ? { 'Content-Type': 'application/json' } : {}),
+        ...await getAirglowIdentityHeaders({ requireSession: true }),
+      },
+      ...(method === 'PATCH' ? { body: JSON.stringify(payload || {}) } : {}),
+    }, PRIVATE_APP_MUTATION_TIMEOUT_MS);
+    const result = parseJson(await res.text());
+    if (!res.ok) throw saveErrorFromResponse(res, result);
+    return result as T;
+  }
+
+  async function unregisterAppUserscripts(appId: string): Promise<void> {
+    if (!userScriptsAllowed) return;
+    try {
+      const scripts = await chrome.userScripts.getScripts();
+      const ids = scripts
+        .filter((script) => typeof script.id === 'string' && script.id.startsWith(`${appId}__`))
+        .map((script) => script.id as string);
+      if (ids.length > 0) await chrome.userScripts.unregister({ ids });
+    } catch (error) {
+      logger.warn('airglow', `unregister scripts for deleted app ${appId} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  async function removeDeletedPrivateAppLocalState(appId: string): Promise<void> {
+    const stored = await chrome.storage.local.get(null);
+    const disabled = new Set((stored.__disabled_apps || []) as string[]);
+    const seen = new Set((stored[SEEN_APPS_KEY] || []) as string[]);
+    const sourceOverrides = { ...((stored[APP_SOURCE_OVERRIDE_KEY] || {}) as AppSourceOverrides) };
+    const appStoragePrefix = appStorageKey(appId, '');
+    const keysToRemove = Object.keys(stored).filter((key) => key.startsWith(appStoragePrefix));
+
+    disabled.delete(appId);
+    seen.delete(appId);
+    delete sourceOverrides[appId];
+
+    await chrome.storage.local.set({
+      __disabled_apps: Array.from(disabled),
+      [SEEN_APPS_KEY]: Array.from(seen),
+      [APP_SOURCE_OVERRIDE_KEY]: sourceOverrides,
+    });
+    if (keysToRemove.length > 0) await chrome.storage.local.remove(keysToRemove);
+  }
+
+  async function updatePrivateAppProductMetadata(appId: string, payload: PrivateAppProductMetadataUpdate) {
+    const result = await requestPrivateAppMutation<{ ok?: boolean; manifest?: AppManifest }>(appId, 'PATCH', payload);
+    await loadAndRegisterApps(true, true);
+    return { ok: true, manifest: result.manifest };
+  }
+
+  async function deletePrivateApp(appId: string) {
+    const result = await requestPrivateAppMutation<{ ok?: boolean; deleted?: boolean }>(appId, 'DELETE');
+    await unregisterAppUserscripts(appId);
+    lastAppHashes.delete(appId);
+    await removeDeletedPrivateAppLocalState(appId);
+    await loadAndRegisterApps(true, true);
+    return { ok: true, deleted: Boolean(result.deleted) };
+  }
+
   function isSaveTimeoutError(error: unknown): boolean {
     return error instanceof Error && /timed out/i.test(error.message);
   }
@@ -1572,6 +1648,31 @@ export default defineBackground(() => {
     }
 
     // ── Dashboard actions ──
+    if (msg?.type === 'airglow:private-app:update') {
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      const updates = msg.updates && typeof msg.updates === 'object' ? msg.updates as PrivateAppProductMetadataUpdate : {};
+      if (!appId) {
+        sendResponse({ error: 'appId is required' });
+        return;
+      }
+      updatePrivateAppProductMetadata(appId, updates)
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:private-app:delete') {
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      if (!appId) {
+        sendResponse({ error: 'appId is required' });
+        return;
+      }
+      deletePrivateApp(appId)
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
     if (msg?.type === 'airglow:reload-apps') {
       loadAndRegisterApps(true).then(() => sendResponse({ ok: true })).catch(e => sendResponse({ error: e.message }));
       return true;

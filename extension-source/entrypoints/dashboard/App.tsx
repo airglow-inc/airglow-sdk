@@ -24,6 +24,16 @@ const FEEDBACK_TIMEOUT_MS = 8000;
 
 type FeedbackKind = 'general' | 'bug' | 'idea';
 type FeedbackStatus = { type: 'info' | 'success' | 'error'; text: string };
+type PrivateAppActionStatus = { type: 'success' | 'error'; text: string };
+type PrivateAppEditState = {
+  appId: string;
+  name: string;
+  description: string;
+  summary: string;
+  tags: string;
+  saving: boolean;
+  error?: string;
+};
 type PublicRuntimeConfig = {
   appServerUrl?: string;
   enableFeedback?: boolean;
@@ -74,6 +84,10 @@ interface AppManifest {
   id: string;
   name: string;
   description: string;
+  details?: {
+    summary?: string;
+    longDescription?: string[];
+  };
   tags?: string[];
   secrets?: Record<string, { label?: string }>;
   visibility?: AppVisibility;
@@ -88,6 +102,8 @@ interface SecretKey {
   key: string;
   label: string;
 }
+
+const GENERATED_PRIVATE_APP_SYSTEM_TAGS = new Set(['generated', 'sidepanel', 'private']);
 
 function isVisibleApp(app: AppManifest): boolean {
   return app.id !== 'dashboard';
@@ -165,6 +181,9 @@ export default function App() {
   const [feedbackMessage, setFeedbackMessage] = useState('');
   const [feedbackStatus, setFeedbackStatus] = useState<FeedbackStatus | null>(null);
   const [feedbackSubmitting, setFeedbackSubmitting] = useState(false);
+  const [privateAppEdit, setPrivateAppEdit] = useState<PrivateAppEditState | null>(null);
+  const [privateAppDeleting, setPrivateAppDeleting] = useState<string | null>(null);
+  const [privateAppActionStatus, setPrivateAppActionStatus] = useState<PrivateAppActionStatus | null>(null);
 
   // Secrets state
   const [secretsOpen, setSecretsOpen] = useState(false);
@@ -500,6 +519,105 @@ export default function App() {
     });
   }
 
+  function dashboardMessage<T>(message: Record<string, unknown>): Promise<T> {
+    return new Promise((resolve, reject) => {
+      chrome.runtime.sendMessage(message, (res) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          reject(new Error(lastError.message));
+          return;
+        }
+        if (res?.error) {
+          reject(new Error(String(res.error)));
+          return;
+        }
+        resolve(res as T);
+      });
+    });
+  }
+
+  function editableTagsForPrivateApp(app: AppManifest): string {
+    return (app.tags || [])
+      .filter((tag) => !GENERATED_PRIVATE_APP_SYSTEM_TAGS.has(tag))
+      .join(', ');
+  }
+
+  function tagsForPrivateAppUpdate(app: AppManifest, input: string): string[] {
+    const tags = new Set<string>((app.tags || []).filter((tag) => GENERATED_PRIVATE_APP_SYSTEM_TAGS.has(tag)));
+    for (const rawTag of input.split(',')) {
+      const tag = rawTag.trim();
+      if (tag) tags.add(tag);
+    }
+    return Array.from(tags);
+  }
+
+  function openPrivateAppEditor(app: AppManifest) {
+    setPrivateAppActionStatus(null);
+    setPrivateAppEdit({
+      appId: app.id,
+      name: app.name,
+      description: app.description || '',
+      summary: app.details?.summary || '',
+      tags: editableTagsForPrivateApp(app),
+      saving: false,
+    });
+  }
+
+  async function submitPrivateAppEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!privateAppEdit || privateAppEdit.saving) return;
+    const app = apps?.find((candidate) => candidate.id === privateAppEdit.appId && candidate._sourceType === 'cloud');
+    const name = privateAppEdit.name.trim();
+    if (!name) {
+      setPrivateAppEdit({ ...privateAppEdit, error: 'Name is required.' });
+      return;
+    }
+    setPrivateAppEdit({ ...privateAppEdit, saving: true, error: undefined });
+    try {
+      await dashboardMessage<{ ok: true; manifest?: AppManifest }>({
+        type: 'airglow:private-app:update',
+        appId: privateAppEdit.appId,
+        updates: {
+          name,
+          description: privateAppEdit.description.trim(),
+          summary: privateAppEdit.summary.trim(),
+          tags: tagsForPrivateAppUpdate(app || ({ tags: [] } as AppManifest), privateAppEdit.tags),
+        },
+      });
+      setPrivateAppEdit(null);
+      setPrivateAppActionStatus({ type: 'success', text: 'App details saved.' });
+      await loadAll();
+    } catch (error) {
+      setPrivateAppEdit({
+        ...privateAppEdit,
+        saving: false,
+        error: error instanceof Error ? error.message : 'Could not save app details.',
+      });
+    }
+  }
+
+  async function deletePrivateApp(app: AppManifest) {
+    if (privateAppDeleting) return;
+    const confirmed = window.confirm(`Delete "${app.name}" from My Apps? This cannot be undone.`);
+    if (!confirmed) return;
+    setPrivateAppActionStatus(null);
+    setPrivateAppDeleting(app.id);
+    try {
+      await dashboardMessage<{ ok: true; deleted: boolean }>({ type: 'airglow:private-app:delete', appId: app.id });
+      setApps((current) => current ? current.filter((candidate) => candidate.id !== app.id || candidate._sourceType !== 'cloud') : current);
+      setFullManifests((current) => current.filter((candidate) => candidate.id !== app.id || candidate._sourceType !== 'cloud'));
+      setPrivateAppActionStatus({ type: 'success', text: `"${app.name}" deleted.` });
+      await loadAll();
+    } catch (error) {
+      setPrivateAppActionStatus({
+        type: 'error',
+        text: error instanceof Error ? error.message : 'Could not delete app.',
+      });
+    } finally {
+      setPrivateAppDeleting(null);
+    }
+  }
+
   // Click "Use this version" on a shadowed row: tell background to set the
   // override so this row's source wins runtime. Cloud → sourceType: 'cloud'.
   // Local → sourceType: null (clears override; local is the default).
@@ -678,6 +796,7 @@ export default function App() {
     const secrets = manifest?.secrets || app.secrets;
     const isDraggable = section !== undefined && index !== undefined && list !== undefined;
     const shadowed = isShadowed(app, apps, sourceOverrides);
+    const canManagePrivateApp = isCloudApp(app) && isPrivateApp(app);
     // When the OTHER source is currently winning, this row is shadowed.
     // The "Use this version" button flips the override.
     const otherSource: 'local' | 'cloud' = app._sourceType === 'local' ? 'cloud' : 'local';
@@ -801,6 +920,39 @@ export default function App() {
                     {reloadingApp === app.id ? 'Reloading...' : 'Reload'}
                   </button>
                 )}
+              </>
+            )}
+            {canManagePrivateApp && (
+              <>
+                <button
+                  onClick={() => openPrivateAppEditor(app)}
+                  className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                  style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+                  data-testid={`private-app-edit-${app.id}`}
+                >
+                  <Settings size={15} />
+                  Edit
+                </button>
+                <button
+                  onClick={() => deletePrivateApp(app)}
+                  disabled={privateAppDeleting === app.id}
+                  className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium transition-all border"
+                  style={{
+                    color: 'var(--error)',
+                    borderColor: 'color-mix(in srgb, var(--error) 35%, var(--border-secondary))',
+                    background: 'color-mix(in srgb, var(--error) 7%, var(--bg-primary))',
+                    opacity: privateAppDeleting === app.id ? 0.55 : 1,
+                    cursor: privateAppDeleting === app.id ? 'not-allowed' : 'pointer',
+                  }}
+                  onMouseEnter={(e) => { if (privateAppDeleting !== app.id) e.currentTarget.style.background = 'color-mix(in srgb, var(--error) 12%, var(--bg-primary))'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--error) 7%, var(--bg-primary))'; }}
+                  data-testid={`private-app-delete-${app.id}`}
+                >
+                  <Trash2 size={15} />
+                  {privateAppDeleting === app.id ? 'Deleting...' : 'Delete'}
+                </button>
               </>
             )}
           </div>
@@ -1075,6 +1227,31 @@ Airglow — for those who create
         ) : page === 'logs' ? (
           <LogsPage />
         ) : (<>
+        {privateAppActionStatus && (
+          <div
+            className="relative p-4 rounded-[var(--radius-md)] mb-6 border w-fit mx-auto text-base"
+            style={{
+              background: privateAppActionStatus.type === 'error'
+                ? 'color-mix(in srgb, var(--error) 8%, var(--bg-white))'
+                : 'color-mix(in srgb, var(--olive) 9%, var(--bg-white))',
+              borderColor: privateAppActionStatus.type === 'error'
+                ? 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))'
+                : 'color-mix(in srgb, var(--olive) 28%, var(--border-tertiary))',
+              color: privateAppActionStatus.type === 'error' ? 'var(--error)' : 'var(--olive)',
+            }}
+            data-testid="private-app-action-status"
+          >
+            <button
+              onClick={() => setPrivateAppActionStatus(null)}
+              className="absolute top-1.5 right-1.5 inline-flex items-center justify-center h-7 w-7 rounded cursor-pointer border"
+              style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'var(--border-tertiary)' }}
+              aria-label="Dismiss"
+            >
+              <X size={14} strokeWidth={2.5} />
+            </button>
+            <span className="pr-8 inline-block">{privateAppActionStatus.text}</span>
+          </div>
+        )}
         {/* Dev server offline — running from cached source. Closeable; the
             bottom-left status pill already shows the underlying offline state.
             Mirrors the "Enable User Scripts" treatment so error banners look
@@ -1385,6 +1562,131 @@ Airglow — for those who create
         <MessageSquare size={17} />
         Feedback
       </button>
+
+      {/* Private app details modal */}
+      {privateAppEdit && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-5"
+          style={{ background: 'rgba(28,25,23,0.24)' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !privateAppEdit.saving) setPrivateAppEdit(null); }}
+          data-testid="private-app-edit-modal-backdrop"
+        >
+          <form
+            onSubmit={submitPrivateAppEdit}
+            className="w-full max-w-[520px] rounded-lg p-5 border"
+            style={{
+              background: 'var(--bg-white)',
+              borderColor: 'var(--border-tertiary)',
+              boxShadow: '0 20px 60px rgba(28,25,23,.2)',
+              color: 'var(--fg-primary)',
+            }}
+            data-testid="private-app-edit-modal"
+          >
+            <div className="flex items-start justify-between gap-3 mb-4">
+              <div>
+                <div className="text-sm mb-1" style={{ color: 'var(--fg-tertiary)' }}>My Apps</div>
+                <div className="text-xl font-semibold" style={{ color: 'var(--fg-primary)' }}>App details</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPrivateAppEdit(null)}
+                disabled={privateAppEdit.saving}
+                className="h-8 w-8 rounded-md cursor-pointer inline-flex items-center justify-center"
+                style={{ color: 'var(--fg-tertiary)', background: 'transparent', border: 0, opacity: privateAppEdit.saving ? 0.5 : 1 }}
+                aria-label="Close app details"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <label className="block text-base font-medium mb-1" style={{ color: 'var(--fg-secondary)' }}>
+              Name
+            </label>
+            <input
+              required
+              maxLength={80}
+              value={privateAppEdit.name}
+              onChange={(e) => setPrivateAppEdit({ ...privateAppEdit, name: e.target.value, error: undefined })}
+              className="w-full h-10 px-3 text-base rounded-sm border outline-none mb-3"
+              style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+              data-testid="private-app-edit-name"
+              autoFocus
+            />
+
+            <label className="block text-base font-medium mb-1" style={{ color: 'var(--fg-secondary)' }}>
+              Description
+            </label>
+            <textarea
+              maxLength={220}
+              value={privateAppEdit.description}
+              onChange={(e) => setPrivateAppEdit({ ...privateAppEdit, description: e.target.value, error: undefined })}
+              className="w-full min-h-[74px] p-3 text-base rounded-sm border outline-none resize-y mb-3"
+              style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+              data-testid="private-app-edit-description"
+            />
+
+            <label className="block text-base font-medium mb-1" style={{ color: 'var(--fg-secondary)' }}>
+              Summary
+            </label>
+            <textarea
+              maxLength={180}
+              value={privateAppEdit.summary}
+              onChange={(e) => setPrivateAppEdit({ ...privateAppEdit, summary: e.target.value, error: undefined })}
+              className="w-full min-h-[64px] p-3 text-base rounded-sm border outline-none resize-y mb-3"
+              style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+              data-testid="private-app-edit-summary"
+            />
+
+            <label className="block text-base font-medium mb-1" style={{ color: 'var(--fg-secondary)' }}>
+              Tags
+            </label>
+            <input
+              value={privateAppEdit.tags}
+              onChange={(e) => setPrivateAppEdit({ ...privateAppEdit, tags: e.target.value, error: undefined })}
+              placeholder="research, finance, daily"
+              className="w-full h-10 px-3 text-base rounded-sm border outline-none"
+              style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
+              data-testid="private-app-edit-tags"
+            />
+
+            <div className="min-h-[20px] mt-2 text-sm" style={{ color: privateAppEdit.error ? 'var(--error)' : 'var(--fg-tertiary)' }}>
+              {privateAppEdit.error || ''}
+            </div>
+
+            <div className="flex justify-end gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => setPrivateAppEdit(null)}
+                disabled={privateAppEdit.saving}
+                className="h-10 px-5 rounded-md text-base font-medium cursor-pointer transition-all border"
+                style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', opacity: privateAppEdit.saving ? 0.5 : 1 }}
+                onMouseEnter={(e) => { if (!privateAppEdit.saving) e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={privateAppEdit.saving || !privateAppEdit.name.trim()}
+                className="h-10 px-5 rounded-md text-base font-medium transition-all border inline-flex items-center gap-2"
+                style={{
+                  color: 'var(--bg-white)',
+                  borderColor: 'var(--olive)',
+                  background: 'var(--olive)',
+                  opacity: privateAppEdit.saving || !privateAppEdit.name.trim() ? 0.5 : 1,
+                  cursor: privateAppEdit.saving || !privateAppEdit.name.trim() ? 'not-allowed' : 'pointer',
+                }}
+                onMouseEnter={(e) => { if (!privateAppEdit.saving && privateAppEdit.name.trim()) e.currentTarget.style.opacity = '0.85'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.opacity = privateAppEdit.saving || !privateAppEdit.name.trim() ? '0.5' : '1'; }}
+                data-testid="private-app-edit-submit"
+              >
+                <Settings size={16} />
+                {privateAppEdit.saving ? 'Saving...' : 'Save details'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {/* Feedback modal */}
       {feedbackOpen && (

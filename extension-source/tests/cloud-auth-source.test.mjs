@@ -28,6 +28,30 @@ test('sidepanel private save uses cloud identity, private endpoint, and reloads 
   assert.match(sidepanelModel, /This Airglow Cloud server does not support private app save yet/);
 });
 
+test('dashboard can edit and delete owner-scoped private apps through background', async () => {
+  const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
+  const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
+
+  assert.match(background, /msg\?\.type\s*===\s*'airglow:private-app:update'/);
+  assert.match(background, /msg\?\.type\s*===\s*'airglow:private-app:delete'/);
+  assert.match(background, /requestPrivateAppMutation<[^>]+>\(appId,\s*'PATCH',\s*payload\)/);
+  assert.match(background, /requestPrivateAppMutation<[^>]+>\(appId,\s*'DELETE'\)/);
+  assert.match(background, /\/api\/apps\/private\/\$\{encodeURIComponent\(appId\)\}/);
+  assert.match(background, /getAirglowIdentityHeaders\(\{\s*requireSession:\s*true\s*\}\)/);
+  assert.match(background, /unregisterAppUserscripts\(appId\)/);
+  assert.match(background, /removeDeletedPrivateAppLocalState\(appId\)/);
+  assert.match(background, /loadAndRegisterApps\(true,\s*true\)/);
+
+  assert.match(dashboard, /private-app-edit-modal/);
+  assert.match(dashboard, /private-app-edit-name/);
+  assert.match(dashboard, /private-app-edit-description/);
+  assert.match(dashboard, /private-app-edit-summary/);
+  assert.match(dashboard, /private-app-edit-tags/);
+  assert.match(dashboard, /type:\s*'airglow:private-app:update'/);
+  assert.match(dashboard, /type:\s*'airglow:private-app:delete'/);
+  assert.match(dashboard, /window\.confirm\(`Delete "\$\{app\.name\}" from My Apps\?/);
+});
+
 test('sidepanel reads target context after the user asks for an app', async () => {
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
 
