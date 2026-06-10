@@ -46,7 +46,7 @@ function getCloudSource(): AppSource {
 }
 
 export const APP_SOURCES_KEY = '__app_sources';
-const APP_MANIFESTS_KEY = '__app_manifests';
+export const APP_MANIFESTS_KEY = '__app_manifests';
 export const APP_INVENTORY_MANIFESTS_KEY = '__app_inventory_manifests';
 // Per-app userscript source cache. Keyed by appId; hash-gated so we only
 // re-fetch when the manifest's _hash actually changes. Lets the extension
@@ -323,18 +323,26 @@ async function fetchUserscriptSource(manifest: SourcedManifest, file: string): P
  * Register all userscripts from all installed apps via chrome.userScripts API.
  */
 export async function registerAllUserscripts(manifests: SourcedManifest[], changedAppIds?: string[], opts?: { skipReload?: boolean }): Promise<void> {
-  await chrome.userScripts.unregister();
-
+  const targetAppIds = changedAppIds ? new Set(changedAppIds) : undefined;
   const scripts: chrome.userScripts.RegisteredUserScript[] = [];
   const worldIds = new Set<string>();
   const unreachableSources = new Set<string>();
+  const manifestsToRegister = targetAppIds
+    ? manifests.filter((manifest) => targetAppIds.has(manifest.id))
+    : manifests;
+  const currentManifestIds = new Set(manifests.map((manifest) => manifest.id));
+  const preparedAppIds = new Set<string>();
 
-  outer: for (const manifest of manifests) {
-    if (!manifest.userscripts?.length) continue;
+  outer: for (const manifest of manifestsToRegister) {
+    if (!manifest.userscripts?.length) {
+      preparedAppIds.add(manifest.id);
+      continue;
+    }
 
     const sdkCode = buildSdkCode(manifest.id);
     const worldId = airglowUserScriptWorldId(manifest.id);
     worldIds.add(worldId);
+    const manifestScripts: chrome.userScripts.RegisteredUserScript[] = [];
 
     for (const us of manifest.userscripts) {
       if (unreachableSources.has(manifest._source.url)) continue outer;
@@ -344,7 +352,7 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
         // start with "airglow-app://...", letting the SDK distinguish app
         // errors from host-page noise (e.g. Outlook's ResizeObserver loop).
         const sourceUrl = `//# sourceURL=airglow-app://${manifest.id}/${us.file}\n`;
-        scripts.push({
+        manifestScripts.push({
           id: `${manifest.id}__${us.file.replace(/[\/\.]/g, '_')}`,
           matches: us.matches,
           allFrames: us.allFrames ?? false,
@@ -366,11 +374,28 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
         logger.error(manifest.id, `Build failed for ${us.file}: ${msg}`);
       }
     }
+    scripts.push(...manifestScripts);
+    preparedAppIds.add(manifest.id);
   }
 
   trackAppsRegistered(manifests.map((m) => m.id)).catch((e) =>
     logger.warn('airglow', `trackAppsRegistered failed: ${e instanceof Error ? e.message : String(e)}`),
   );
+
+  if (targetAppIds) {
+    const unregisterAppIds = Array.from(targetAppIds).filter((id) =>
+      preparedAppIds.has(id) || !currentManifestIds.has(id)
+    );
+    if (unregisterAppIds.length > 0) {
+      const registeredScripts = await chrome.userScripts.getScripts();
+      const ids = registeredScripts
+        .filter((script) => unregisterAppIds.some((id) => script.id.startsWith(id + '__')))
+        .map((script) => script.id);
+      if (ids.length > 0) await chrome.userScripts.unregister({ ids });
+    }
+  } else {
+    await chrome.userScripts.unregister();
+  }
 
   if (scripts.length > 0) {
     for (const worldId of worldIds) {

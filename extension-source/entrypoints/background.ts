@@ -9,7 +9,7 @@ import {
   setOnAppLog,
   shouldRetryHttpStatus,
 } from '../lib/airglow-message-handler';
-import { APP_INVENTORY_MANIFESTS_KEY, APP_SOURCES_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSource, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
+import { APP_INVENTORY_MANIFESTS_KEY, APP_MANIFESTS_KEY, APP_SOURCES_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSource, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackInstalled } from '../lib/analytics';
 import { USER_EMAIL_KEY, getAirglowIdentityHeaders, normalizeUserEmail } from '../lib/airglow-identity';
@@ -407,12 +407,13 @@ export default defineBackground(() => {
     // when the user enables it and we'll retry then.
     if (!userScriptsAllowed) return;
 
-    const reloadedIds = force ? manifests.map(m => m.id) : changedApps;
+    const registrationAppIds = force ? undefined : Array.from(new Set([...changedApps, ...removedIds]));
+    const reloadedIds = force ? manifests.map(m => m.id) : registrationAppIds;
     log(`reloading apps: ${reloadedIds.join(', ')}`);
 
     // Register userscripts first (critical path — must not be blocked by startup scripts)
     try {
-      await registerAllUserscripts(manifests, force ? undefined : changedApps, { skipReload });
+      await registerAllUserscripts(manifests, registrationAppIds, { skipReload });
       for (const [id, hash] of pendingHashUpdates) lastAppHashes.set(id, hash);
       for (const id of removedIds) lastAppHashes.delete(id);
     } catch (e) {
@@ -444,9 +445,10 @@ export default defineBackground(() => {
         }
       }
 
-      // force=true to bypass change detection; skipReload=true — user refreshes
-      // their own tabs (side panel hints "Refresh to apply").
-      await loadAndRegisterApps(true, true);
+      // skipReload=true — user refreshes their own tabs (side panel hints
+      // "Refresh to apply"). This is intentionally not force=true: deleting
+      // this app's hash makes loadAndRegisterApps re-register only this app.
+      await loadAndRegisterApps(false, true);
     });
 
     appToggleSyncQueue = sync.catch((e) => {
@@ -1621,8 +1623,18 @@ export default defineBackground(() => {
       const appId = msg.appId as string | undefined;
       const senderTabId = _sender?.tab?.id;
       const errorsOnTab = senderTabId ? tabErrors.get(senderTabId) : undefined;
-      const allManifests = getAppManifests();
-      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(([disabled, lastSeenRes]) => {
+      const manifestsInMemory = getAppManifests();
+      const manifestsPromise = manifestsInMemory.length > 0
+        ? Promise.resolve(manifestsInMemory)
+        : chrome.storage.local.get(APP_MANIFESTS_KEY).then((result) => {
+          const cached = result[APP_MANIFESTS_KEY];
+          if (Array.isArray(cached) && cached.length > 0) {
+            setAppManifests(cached as SourcedManifest[]);
+            return cached as SourcedManifest[];
+          }
+          return manifestsInMemory;
+        });
+      Promise.all([manifestsPromise, getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(([allManifests, disabled, lastSeenRes]) => {
         const lastSeen = (lastSeenRes['__logs_last_seen_ts'] as number | undefined) ?? 0;
         const hasError = (id: string) => {
           const ts = errorsOnTab?.get(id);
@@ -1695,6 +1707,8 @@ export default defineBackground(() => {
           } catch {}
           sendResponse({ apps: matching });
         });
+      }).catch((e) => {
+        sendResponse({ error: e instanceof Error ? e.message : String(e), apps: [] });
       });
       return true;
     }

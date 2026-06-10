@@ -48,6 +48,7 @@ test('sidepanel treats local fallback as a local draft, not a saved app', async 
 });
 
 test('app enable toggles update optimistically while registration sync remains authoritative', async () => {
+  const appLoader = await readFile(new URL('../lib/app-loader.ts', import.meta.url), 'utf8');
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
   const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
   const edgeButton = await readFile(new URL('../lib/edge-button.ts', import.meta.url), 'utf8');
@@ -63,6 +64,16 @@ test('app enable toggles update optimistically while registration sync remains a
   assert.match(background, /const nowDisabled = typeof msg\.disabled === 'boolean' \? msg\.disabled : !wasDisabled/);
   assert.match(background, /function queueAppToggleRegistrationSync\(appId: string\): Promise<void>/);
   assert.match(background, /await queueAppToggleRegistrationSync\(appId\);\s*sendResponse\(\{ ok: true, disabled: nowDisabled \}\);/);
+  assert.match(background, /await loadAndRegisterApps\(false, true\)/);
+  assert.match(background, /const registrationAppIds = force \? undefined : Array\.from\(new Set\(\[\.\.\.changedApps, \.\.\.removedIds\]\)\)/);
+  assert.match(background, /chrome\.storage\.local\.get\(APP_MANIFESTS_KEY\)/);
+  assert.match(appLoader, /export const APP_MANIFESTS_KEY = '__app_manifests'/);
+  assert.match(appLoader, /const targetAppIds = changedAppIds \? new Set\(changedAppIds\) : undefined/);
+  assert.match(appLoader, /chrome\.userScripts\.getScripts\(\)/);
+  assert.match(appLoader, /const manifestsToRegister = targetAppIds/);
+  assert.match(edgeButton, /const APP_LIST_CACHE_TTL_MS = 15000/);
+  assert.match(edgeButton, /function renderCachedApps\(key: string\)/);
+  assert.match(edgeButton, /if \(res\.apps\.length === 0\) \{\s*if \(renderCachedApps\(key\)\) return/);
 
   const visualIndex = edgeButton.indexOf('applyDisabledState(nextDisabled);');
   const sendIndex = edgeButton.indexOf("chrome.runtime.sendMessage({ type: 'airglow:toggle-app'");

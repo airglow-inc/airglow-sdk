@@ -5,6 +5,7 @@ const WARN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
 // Font family used by every edge-button surface. Backed by an @font-face
 // pointing at the extension's bundled Inter so width is consistent across sites.
 const AIRGLOW_FONT = '"Airglow Inter", sans-serif';
+const APP_LIST_CACHE_TTL_MS = 15000;
 
 function ensureAirglowFont() {
   if (document.getElementById('__airglow_font')) return;
@@ -59,7 +60,29 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   document.body.appendChild(popup);
 
   let needsRefresh = false;
+  let cachedApps: PageApp[] | null = null;
+  let cachedAppsKey = '';
+  let cachedAppsAt = 0;
+  let appsRequestId = 0;
   const result: ReturnType<typeof createPopup> = { el: popup, show, hide };
+
+  function appsCacheKey() {
+    return opts?.appId ? `app:${opts.appId}` : `url:${location.href}`;
+  }
+
+  function hasUsableCachedApps(key: string) {
+    return cachedAppsKey === key
+      && cachedApps !== null
+      && cachedApps.length > 0
+      && Date.now() - cachedAppsAt < APP_LIST_CACHE_TTL_MS;
+  }
+
+  function renderCachedApps(key: string) {
+    if (!hasUsableCachedApps(key) || !cachedApps) return false;
+    render(cachedApps);
+    opts?.onApps?.(cachedApps);
+    return true;
+  }
 
   function renderFooter() {
     const footer = document.createElement('div');
@@ -249,14 +272,32 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   function show() {
     popup.style.display = 'block';
     requestAnimationFrame(() => { popup.style.opacity = '1'; });
+    const key = appsCacheKey();
+    const showedCache = renderCachedApps(key);
     // Fetch apps for current page (by appId for app-shell, by URL otherwise)
     const msg: any = { type: 'airglow:get-page-apps', url: location.href };
     if (opts?.appId) msg.appId = opts.appId;
+    const requestId = ++appsRequestId;
     chrome.runtime.sendMessage(msg, (res) => {
-      if (res?.apps) {
-        render(res.apps);
-        opts?.onApps?.(res.apps);
+      if (requestId !== appsRequestId) return;
+      if (chrome.runtime.lastError || res?.error || !Array.isArray(res?.apps)) {
+        if (!showedCache) render([]);
+        return;
       }
+      if (res.apps.length === 0) {
+        if (renderCachedApps(key)) return;
+        cachedApps = null;
+        cachedAppsKey = '';
+        cachedAppsAt = 0;
+        render([]);
+        opts?.onApps?.([]);
+        return;
+      }
+      cachedApps = res.apps;
+      cachedAppsKey = key;
+      cachedAppsAt = Date.now();
+      render(res.apps);
+      opts?.onApps?.(res.apps);
     });
   }
 
