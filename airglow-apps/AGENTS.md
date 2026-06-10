@@ -47,9 +47,9 @@ A clean tool output is **not** a signal that the change worked. If either stream
   </AppPage>
   ```
 
-  `AppPage` renders the standard dashboard-style sidebar (Airglow logo, Cloud Apps, Local Apps, Settings) plus your content. The page must include:
+  `AppPage` renders the standard dashboard-style sidebar (Airglow logo, Cloud Apps, Local Apps, Settings) and lays the content out to fill the page: your `children` (the settings) get a wide left column, while the `preview` and `secrets` go in a sticky right rail. Let your content fill that column — don't wrap `children` in your own narrow `max-w-*`, and use `SettingsSection`/`SettingField` so it matches the layout. The page must include:
   - the **app name** and a **description** of what the app does;
-  - a **preview** when the app injects UI into websites: a small *static* JSX mock — no live logic. Copy the styles verbatim from the userscript so it matches the real thing. Always show the **entry point** (button/pill) when one exists — that's what users must find on the page — and optionally a compact glimpse of what it opens when that UI is the app's real substance. Apps with no entry point (shortcut- or CSS-triggered) show their injected UI directly;
+  - a **preview** when the app injects UI into websites: a small *static* JSX mock — no live logic. Copy the styles verbatim from the userscript so it matches the real thing. Always show the **entry point** (button/pill) when one exists — that's what users must find on the page — and optionally a compact glimpse of what it opens when that UI is the app's real substance. Apps with no entry point (shortcut- or CSS-triggered) show their injected UI directly. **Make the preview fluid:** it renders in the narrow (~340px), sticky right rail, so a real-page widget copied verbatim will overflow if you keep its fixed pixel width. Replace fixed widths with `width: 100%` + `maxWidth`, let rows `flex-wrap`, and clip nothing — never let the mock bleed outside its container;
   - **settings for every app-specific constant** (thresholds, URLs, domain lists, …), persisted via `airglow.storage` so the userscripts pick them up — use `SettingsSection`/`SettingField`;
   - required client secrets listed in the **`secrets` prop** — they render as read-only callouts (secrets are managed in the extension's Secrets page, never stored by the page itself). Server-only keys (e.g. a Composio key) get a callout with a note that they live in `.env`.
 
@@ -96,3 +96,4 @@ A clean tool output is **not** a signal that the change worked. If either stream
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No API keys or tokens are hardcoded in `userscripts/` or `ui/`.
 - The app has been tested in the real browser, not just through `curl`.
+- **Look at the rendered app page — a clean bundle is not a correct UI.** Open it in the extension (`app-shell.html?app=<id>`) and **screenshot it** (`pnpm dom shot`). Scan for layout bugs you can't catch from code: anything overflowing or clipped (especially the preview in the narrow right rail), text spilling its container, broken wrapping, or a preview that doesn't match the real injected widget. If the bundle compiles but the page looks wrong, it is wrong — fix it before handoff.

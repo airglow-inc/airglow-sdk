@@ -25,11 +25,12 @@ export function AppPage({
   secrets?: { name: string; note?: string }[];
   children?: React.ReactNode;
 }) {
+  const hasRail = !!preview || !!(secrets && secrets.length > 0);
   return (
     <div className="flex min-h-screen" style={{ background: 'var(--bg-primary)' }}>
       <AppSidebar appId={appId} />
       <main className="ml-[240px] flex-1 p-8 min-w-0">
-        <div className="max-w-3xl">
+        <div className="max-w-6xl mx-auto">
           {!isEmbedded() && (
             <div
               className="mb-5 px-4 py-2.5 rounded-lg text-sm font-medium"
@@ -52,25 +53,35 @@ export function AppPage({
           >
             {name}
           </h1>
-          <p className="mt-2 mb-6 text-base" style={{ color: 'var(--fg-secondary)' }}>
+          <p className="mt-2 mb-6 text-base max-w-2xl" style={{ color: 'var(--fg-secondary)' }}>
             {description}
           </p>
 
-          {preview && (
-            <SettingsSection title="What it looks like">
-              {preview}
-            </SettingsSection>
-          )}
+          {/* Settings flow in the wide left column; the preview + secrets sit in
+              a sticky right rail so the page uses the full width. On narrow
+              widths it collapses to a single column (rail first). */}
+          <div className={hasRail ? 'grid grid-cols-1 lg:grid-cols-3 gap-x-8 items-start' : ''}>
+            {hasRail && (
+              <aside className="lg:col-span-1 lg:order-2 lg:sticky lg:top-8 mb-6 lg:mb-0">
+                {preview && (
+                  <SettingsSection title="What it looks like">
+                    {preview}
+                  </SettingsSection>
+                )}
+                {secrets && secrets.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    {secrets.map((s) => (
+                      <SecretCallout key={s.name} name={s.name} note={s.note} />
+                    ))}
+                  </div>
+                )}
+              </aside>
+            )}
 
-          {secrets && secrets.length > 0 && (
-            <div className="mb-6 flex flex-col gap-2">
-              {secrets.map((s) => (
-                <SecretCallout key={s.name} name={s.name} note={s.note} />
-              ))}
+            <div className={hasRail ? 'lg:col-span-2 lg:order-1 min-w-0' : ''}>
+              {children}
             </div>
-          )}
-
-          {children}
+          </div>
         </div>
       </main>
     </div>

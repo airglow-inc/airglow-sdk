@@ -15,13 +15,14 @@ function HowToPillPreview() {
   const font = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
   return (
     <div
-      className="rounded-lg px-6 py-6 flex flex-col items-start gap-2"
+      className="rounded-lg px-4 py-4 flex flex-col items-start gap-2"
       style={{ background: 'var(--gray-800)', fontFamily: font }}
     >
       {/* chat panel (opens above the pill) */}
       <div
         style={{
-          width: 320,
+          width: '100%',
+          maxWidth: 320,
           background: '#ffffff',
           border: '1.5px solid #e5e3d9',
           borderRadius: 10,
