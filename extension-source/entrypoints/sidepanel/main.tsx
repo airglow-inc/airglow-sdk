@@ -1,13 +1,12 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Check, ExternalLink, Loader2, RefreshCw, Save, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
+import { Check, CircleHelp, ExternalLink, Loader2, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import './style.css';
 import {
   type AirglowAppDraft,
   type SidePanelTargetTab,
   appendDraftUserMessage,
   createAppDraft,
-  formatCloudSaveFallbackNotice,
 } from '../../lib/sidepanel-model';
 import logoUrl from '../../lib/branding/logo.svg';
 
@@ -18,6 +17,14 @@ type TargetResponse = {
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 type ApplyState = 'idle' | 'applying' | 'applied' | 'error';
+
+const GENERATION_STEPS = [
+  'Reading page context...',
+  'Generating UI...',
+  'Generating logic...',
+  'Packaging app...',
+  'Saving private app...',
+];
 
 type SaveDraftResponse =
   | {
@@ -125,6 +132,43 @@ function ApprovalList({ draft }: { draft: AirglowAppDraft }) {
   );
 }
 
+function GenerationProgress({ stepIndex }: { stepIndex: number }) {
+  return (
+    <div className="chat-message assistant progress">
+      <span>Airglow</span>
+      <div className="progress-steps" aria-label="Generation progress">
+        {GENERATION_STEPS.map((label, index) => (
+          <div
+            key={label}
+            className={index < stepIndex ? 'progress-step done' : index === stepIndex ? 'progress-step active' : 'progress-step'}
+          >
+            {index < stepIndex ? <Check size={14} /> : index === stepIndex ? <Loader2 size={14} className="spin" /> : <span className="step-dot" />}
+            <p>{label}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AssistantStatusMessage({
+  tone,
+  title,
+  children,
+}: {
+  tone?: 'error' | 'success';
+  title: string;
+  children: string;
+}) {
+  return (
+    <div className={tone ? `chat-message assistant ${tone}` : 'chat-message assistant'}>
+      <span>Airglow</span>
+      <p><strong>{title}</strong></p>
+      <p>{children}</p>
+    </div>
+  );
+}
+
 function App() {
   const [target, setTarget] = useState<SidePanelTargetTab | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
@@ -133,10 +177,12 @@ function App() {
   const [draft, setDraft] = useState<AirglowAppDraft | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [saveNotice, setSaveNotice] = useState<string | null>(null);
   const [savedAppId, setSavedAppId] = useState<string | null>(null);
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [applyError, setApplyError] = useState<string | null>(null);
+  const [generationStepIndex, setGenerationStepIndex] = useState<number | null>(null);
+  const [showSafetyDetails, setShowSafetyDetails] = useState(false);
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
 
   async function refreshTarget() {
     setLoadingTarget(true);
@@ -156,6 +202,24 @@ function App() {
     refreshTarget();
   }, []);
 
+  useEffect(() => {
+    if (saveState !== 'saving') {
+      setGenerationStepIndex(null);
+      return;
+    }
+    setGenerationStepIndex(0);
+    const intervalId = window.setInterval(() => {
+      setGenerationStepIndex((current) => Math.min((current ?? 0) + 1, GENERATION_STEPS.length - 1));
+    }, 2200);
+    return () => window.clearInterval(intervalId);
+  }, [saveState]);
+
+  useEffect(() => {
+    const log = chatLogRef.current;
+    if (!log) return;
+    log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
+  }, [draft?.messages.length, saveState, generationStepIndex, applyState, saveError, applyError]);
+
   const canSend = chatInput.trim().length > 0 && !loadingTarget && saveState !== 'saving';
 
   const disclosureText = useMemo(() => {
@@ -164,10 +228,8 @@ function App() {
   }, [target]);
 
   async function saveDraftToCloud(draftToSave: AirglowAppDraft) {
-    const wasUpdate = draftToSave.persistence?.mode === 'cloud';
     setSaveState('saving');
     setSaveError(null);
-    setSaveNotice(null);
     try {
       const response = await sendRuntimeMessage<SaveDraftResponse>({
         type: 'airglow:sidepanel:save-draft',
@@ -177,14 +239,8 @@ function App() {
       setDraft(response.draft);
       if (response.mode === 'cloud') {
         setSavedAppId(response.cloud.appId);
-        setSaveNotice(response.cloud.userScriptsEnabled === false
-            ? `${wasUpdate ? 'Updated' : 'Generated'} and saved. Enable User Scripts in Chrome extension settings, then refresh the target page to show the on-page panel.`
-            : response.cloud.registered
-              ? `${wasUpdate ? 'Updated' : 'Generated'} and saved. Refresh the target page to show the on-page panel.`
-              : `${wasUpdate ? 'Updated' : 'Generated'} and saved, but the page script is not registered yet. Reload Airglow, then refresh the target page.`);
       } else {
         setSavedAppId(null);
-        setSaveNotice(formatCloudSaveFallbackNotice(response.cloudError));
       }
       setSaveState('saved');
       setApplyState('idle');
@@ -211,7 +267,6 @@ function App() {
     setChatInput('');
     setSaveState('idle');
     setSaveError(null);
-    setSaveNotice(null);
     setApplyState('idle');
     setApplyError(null);
     await saveDraftToCloud(nextDraft);
@@ -267,7 +322,7 @@ function App() {
       </section>
 
       <section className="chat-panel">
-        <div className="chat-log" aria-live="polite">
+        <div className="chat-log" ref={chatLogRef} aria-live="polite">
           {draft?.messages.length ? draft.messages.map((message) => (
             <div key={message.id} className={`chat-message ${message.role}`}>
               <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
@@ -279,40 +334,73 @@ function App() {
               <p>Ask for an app for this page.</p>
             </div>
           )}
+          {saveState === 'saving' && <GenerationProgress stepIndex={generationStepIndex ?? 0} />}
+          {saveState === 'error' && (
+            <AssistantStatusMessage
+              tone="error"
+              title="Generation failed"
+            >
+              {saveError || 'Could not save this app draft.'}
+            </AssistantStatusMessage>
+          )}
+          {applyState === 'applying' && (
+            <AssistantStatusMessage title="Refreshing page">
+              Refreshing the target page so the generated app can inject.
+            </AssistantStatusMessage>
+          )}
+          {applyState === 'applied' && (
+            <AssistantStatusMessage tone="success" title="Page refreshed">
+              The on-page Airglow panel should appear after the page loads.
+            </AssistantStatusMessage>
+          )}
+          {applyState === 'error' && (
+            <AssistantStatusMessage tone="error" title="Refresh failed">
+              {applyError || 'Could not refresh the target page.'}
+            </AssistantStatusMessage>
+          )}
         </div>
         <form className="chat-composer" onSubmit={handleSubmitChat}>
-          <label htmlFor="app-prompt">{draft ? 'Update this app' : 'Create an app'}</label>
-        <textarea
-          id="app-prompt"
+          <div className="composer-heading">
+            <label htmlFor="app-prompt">{draft ? 'Update this app' : 'Create an app'}</label>
+            <button
+              type="button"
+              className="help-button"
+              aria-label="Show context and safety details"
+              aria-expanded={showSafetyDetails}
+              onClick={() => setShowSafetyDetails((current) => !current)}
+            >
+              <CircleHelp size={16} />
+            </button>
+          </div>
+          <textarea
+            id="app-prompt"
             value={chatInput}
             onChange={(event) => setChatInput(event.target.value)}
             placeholder={draft ? 'Example: make the panel smaller and add a copy button.' : 'Example: summarize this page and highlight action items.'}
             rows={4}
-        />
-          <div className="disclosure">{disclosureText}</div>
-        <button type="submit" className="primary-button" disabled={!canSend}>
+          />
+          {showSafetyDetails && (
+            <div className="help-panel">
+              <p>{disclosureText}</p>
+              {draft ? (
+                <ApprovalList draft={draft} />
+              ) : (
+                <p>Read-only page context can be used without approval. UX-changing browser actions require explicit approval before Airglow runs them.</p>
+              )}
+            </div>
+          )}
+          <button type="submit" className="primary-button" disabled={!canSend}>
             {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
             {saveState === 'saving' ? 'Generating' : draft ? 'Update app' : 'Generate app'}
-        </button>
+          </button>
         </form>
-      </section>
-
-      {draft && (
-        <section className="draft-panel">
-          <div className="draft-heading">
-            <div>
-              <span className="eyebrow">Generated app plan</span>
-              <h2>{draft.name}</h2>
-            </div>
+        {draft && (
+          <div className="chat-action-bar">
             <span className={draft.status === 'saved' ? 'status saved' : 'status'}>{draft.status === 'saved' ? 'Saved' : 'Draft'}</span>
-          </div>
-          <p className="summary">Latest request: {draft.prompt}</p>
-          <ApprovalList draft={draft} />
-          <div className="action-row">
-            {(draft.status !== 'saved' || saveState === 'error') && (
-              <button type="button" className="primary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
-                {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Save size={17} />}
-                {saveState === 'saving' ? 'Saving app' : 'Save app'}
+            {saveState === 'error' && (
+              <button type="button" className="secondary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
+                <RefreshCw size={16} />
+                Try again
               </button>
             )}
             {savedAppId && (
@@ -332,12 +420,8 @@ function App() {
               Dashboard
             </button>
           </div>
-          {saveState === 'saved' && <p className={draft.persistence?.mode === 'local' ? 'warning' : 'success'}>{saveNotice || 'Saved.'}</p>}
-          {applyState === 'applied' && <p className="success">Page refreshed. The on-page Airglow panel should appear after the page loads.</p>}
-          {applyState === 'error' && <p className="error">{applyError || 'Could not refresh the target page.'}</p>}
-          {saveState === 'error' && <p className="error">{saveError || 'Could not save this app draft.'}</p>}
-        </section>
-      )}
+        )}
+      </section>
     </main>
   );
 }

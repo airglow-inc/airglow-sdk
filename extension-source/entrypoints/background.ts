@@ -20,6 +20,7 @@ import {
   type AirglowAppDraft,
   type PrivateAppSavePayload,
   buildPrivateAppSavePayload,
+  formatCloudSaveFallbackNotice,
   markDraftSaved,
   normalizeDraftForSave,
 } from '../lib/sidepanel-model';
@@ -1379,6 +1380,7 @@ export default defineBackground(() => {
 
   async function saveSidePanelDraft(draft: AirglowAppDraft, requestId?: string) {
     const normalizedDraft = normalizeDraftForSave(draft);
+    const wasUpdate = normalizedDraft.persistence?.mode === 'cloud';
     const clientRequestId = requestId || crypto.randomUUID();
     const initialContextPromise = captureInitialPageContext(normalizedDraft);
     let cloud: SidePanelCloudSaveResult;
@@ -1391,6 +1393,11 @@ export default defineBackground(() => {
           mode: 'local',
           fallbackReason,
         },
+        assistantMessage: [
+          'Generation paused',
+          '',
+          formatCloudSaveFallbackNotice(fallbackReason),
+        ].join('\n'),
       });
       await persistSidePanelDraft(saved);
       logger.warn('airglow', `sidepanel cloud save fell back to local: ${fallbackReason.message}`);
@@ -1411,15 +1418,32 @@ export default defineBackground(() => {
         mode: 'cloud',
         cloud,
       },
-      assistantMessage: cloud.generatedSummary
-        ? `Generated app update: ${cloud.generatedSummary}`
-        : 'Generated app update saved.',
+      assistantMessage: formatSidePanelAssistantSaveMessage(wasUpdate, cloud),
     });
     await persistSidePanelDraft(saved);
     if (seededInitialContext) {
       logger.info('airglow', `seeded initial page context for saved app ${cloud.appId}`);
     }
     return { ok: true, mode: 'cloud' as const, draft: saved, cloud };
+  }
+
+  function formatSidePanelAssistantSaveMessage(wasUpdate: boolean, cloud: SidePanelCloudSaveResult): string {
+    const heading = wasUpdate ? 'Updated app plan' : 'Generated app plan';
+    const summary = cloud.generatedSummary?.trim() || (wasUpdate
+      ? 'Updated the app UI and logic from your latest message.'
+      : 'Generated the first version of the app UI and logic.');
+    const nextStep = cloud.userScriptsEnabled === false
+      ? 'Enable User Scripts in Chrome extension settings, then refresh the target page to show the on-page panel.'
+      : cloud.registered
+        ? 'Refresh the target page to show the on-page panel.'
+        : 'Reload Airglow, then refresh the target page to show the on-page panel.';
+    return [
+      heading,
+      '',
+      summary,
+      '',
+      nextStep,
+    ].join('\n');
   }
 
   chrome.action.onClicked.addListener((tab) => {
