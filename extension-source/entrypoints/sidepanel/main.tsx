@@ -170,7 +170,13 @@ function ContextPopover({
         </Popover.Trigger>
       </IconTooltip>
       <Popover.Portal>
-        <Popover.Content className="help-popover" side="top" align="start" sideOffset={10}>
+        <Popover.Content
+          className="help-popover"
+          side="top"
+          align="start"
+          sideOffset={10}
+          aria-label="Context and permissions"
+        >
           <p>{disclosureText}</p>
           {draft ? (
             <ApprovalList draft={draft} />
@@ -452,7 +458,7 @@ function App() {
                 <div className="message-actions">
                   {saveState === 'error' && (
                     <IconTooltip label="Save again">
-                      <button type="button" className="secondary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
+                      <button type="button" className="secondary-button" onClick={handleSaveDraft}>
                         <RefreshCw size={16} />
                         Try again
                       </button>
