@@ -16,6 +16,7 @@ type TargetResponse = {
   error?: string;
 };
 
+type GenerationPhase = 'idle' | 'reading_context' | 'generating' | 'ready' | 'error';
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
 type ApplyState = 'idle' | 'applying' | 'applied' | 'error';
 
@@ -253,9 +254,9 @@ function TargetContextMessage({
   return (
     <div className="chat-message assistant target-message">
       <div className="target-message-heading">
-        <span>Target tab</span>
-        <IconTooltip label="Refresh target tab">
-          <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loadingTarget} aria-label="Refresh target tab">
+        <span>Page context</span>
+        <IconTooltip label="Refresh page context">
+          <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loadingTarget} aria-label="Refresh page context">
             {loadingTarget ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
           </button>
         </IconTooltip>
@@ -278,9 +279,10 @@ function WelcomeMessage() {
 function App() {
   const [target, setTarget] = useState<SidePanelTargetTab | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
-  const [loadingTarget, setLoadingTarget] = useState(true);
+  const [loadingTarget, setLoadingTarget] = useState(false);
   const [chatInput, setChatInput] = useState('');
   const [draft, setDraft] = useState<AirglowAppDraft | null>(null);
+  const [generationPhase, setGenerationPhase] = useState<GenerationPhase>('idle');
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedAppId, setSavedAppId] = useState<string | null>(null);
@@ -289,30 +291,34 @@ function App() {
   const [generationStepIndex, setGenerationStepIndex] = useState<number | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
 
-  async function refreshTarget() {
+  async function readTargetContext(): Promise<SidePanelTargetTab | null> {
     setLoadingTarget(true);
     setTargetError(null);
     try {
       const response = await sendRuntimeMessage<TargetResponse>({ type: 'airglow:sidepanel:get-target' });
-      setTarget(response.target ?? null);
+      const nextTarget = response.target ?? null;
+      setTarget(nextTarget);
+      return nextTarget;
     } catch (error) {
       setTarget(null);
       setTargetError(error instanceof Error ? error.message : String(error));
+      return null;
     } finally {
       setLoadingTarget(false);
     }
   }
 
-  useEffect(() => {
-    refreshTarget();
-  }, []);
+  async function refreshTarget() {
+    const nextTarget = await readTargetContext();
+    setDraft((current) => current ? { ...current, target: nextTarget, updatedAt: new Date().toISOString() } : current);
+  }
 
   useEffect(() => {
     if (saveState !== 'saving') {
       setGenerationStepIndex(null);
       return;
     }
-    setGenerationStepIndex(0);
+    setGenerationStepIndex(1);
     const intervalId = window.setInterval(() => {
       setGenerationStepIndex((current) => Math.min((current ?? 0) + 1, GENERATION_STEPS.length - 1));
     }, 2200);
@@ -323,16 +329,22 @@ function App() {
     const log = chatLogRef.current;
     if (!log) return;
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
-  }, [draft?.messages.length, saveState, generationStepIndex, applyState, saveError, applyError]);
+  }, [draft?.messages.length, draft?.target?.id, generationPhase, saveState, generationStepIndex, applyState, saveError, applyError]);
 
-  const canSend = chatInput.trim().length > 0 && !loadingTarget && saveState !== 'saving';
+  const generationBusy = generationPhase === 'reading_context' || generationPhase === 'generating';
+  const canSend = chatInput.trim().length > 0 && !generationBusy;
 
   const disclosureText = useMemo(() => {
-    if (!target) return 'Select a browser tab to give Airglow page context.';
+    if (loadingTarget) return 'Reading selected page context for this app request.';
+    if (!target) {
+      if (targetError) return `Page context is unavailable: ${targetError}`;
+      return 'Airglow reads selected page context after you send an app request. Read-only context does not need approval.';
+    }
     return `Using the selected tab title, URL, and visible text for generation. The saved app can refresh read-only page text on ${targetOrigin(target)} after it is installed.`;
-  }, [target]);
+  }, [loadingTarget, target, targetError]);
 
   async function saveDraftToCloud(draftToSave: AirglowAppDraft) {
+    setGenerationPhase('generating');
     setSaveState('saving');
     setSaveError(null);
     try {
@@ -348,10 +360,12 @@ function App() {
         setSavedAppId(null);
       }
       setSaveState('saved');
+      setGenerationPhase('ready');
       setApplyState('idle');
       setApplyError(null);
     } catch (error) {
       setSaveState('error');
+      setGenerationPhase('error');
       setSaveError(error instanceof Error ? error.message : String(error));
       setSavedAppId(null);
     }
@@ -361,20 +375,29 @@ function App() {
     event.preventDefault();
     if (!canSend) return;
     const content = chatInput.trim();
-    const nextDraft = draft
-      ? appendDraftUserMessage(draft, { content, nonce: crypto.randomUUID() })
+    const nonce = crypto.randomUUID();
+    const draftForChat = draft
+      ? appendDraftUserMessage(draft, { content, nonce })
       : createAppDraft({
           prompt: content,
-          target,
-          nonce: crypto.randomUUID(),
+          target: null,
+          nonce,
         });
-    setDraft(nextDraft);
+    setDraft(draftForChat);
     setChatInput('');
     setSaveState('idle');
     setSaveError(null);
     setApplyState('idle');
     setApplyError(null);
-    await saveDraftToCloud(nextDraft);
+    const needsTargetContext = !draftForChat.target;
+    let draftToSave = draftForChat;
+    if (needsTargetContext) {
+      setGenerationPhase('reading_context');
+      const nextTarget = await readTargetContext();
+      draftToSave = { ...draftForChat, target: nextTarget, updatedAt: new Date().toISOString() };
+      setDraft(draftToSave);
+    }
+    await saveDraftToCloud(draftToSave);
   }
 
   async function handleSaveDraft() {
@@ -410,12 +433,6 @@ function App() {
       <main className="sidepanel">
         <section className="chat-panel">
           <div className="chat-log" ref={chatLogRef} aria-live="polite">
-            <TargetContextMessage
-              target={target}
-              targetError={targetError}
-              loadingTarget={loadingTarget}
-              onRefresh={refreshTarget}
-            />
             {draft?.messages.length ? draft.messages.map((message) => (
               <div key={message.id} className={`chat-message ${message.role}`}>
                 <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
@@ -427,7 +444,17 @@ function App() {
                 <QuickPromptChips onPick={setChatInput} />
               </>
             )}
-            {saveState === 'saving' && <GenerationProgress stepIndex={generationStepIndex ?? 0} />}
+            {draft && (loadingTarget || target || targetError) && (
+              <TargetContextMessage
+                target={target}
+                targetError={targetError}
+                loadingTarget={loadingTarget}
+                onRefresh={refreshTarget}
+              />
+            )}
+            {(generationPhase === 'reading_context' || saveState === 'saving') && (
+              <GenerationProgress stepIndex={generationPhase === 'reading_context' ? 0 : generationStepIndex ?? 1} />
+            )}
             {saveState === 'error' && (
               <AssistantStatusMessage
                 tone="error"

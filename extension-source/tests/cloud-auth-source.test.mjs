@@ -28,6 +28,15 @@ test('sidepanel private save uses cloud identity, private endpoint, and reloads 
   assert.match(sidepanelModel, /This Airglow Cloud server does not support private app save yet/);
 });
 
+test('sidepanel reads target context after the user asks for an app', async () => {
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+
+  assert.match(sidepanel, /type GenerationPhase = 'idle' \| 'reading_context' \| 'generating' \| 'ready' \| 'error'/);
+  assert.match(sidepanel, /setGenerationPhase\('reading_context'\)/);
+  assert.match(sidepanel, /await readTargetContext\(\)/);
+  assert.doesNotMatch(sidepanel, /useEffect\(\(\) => \{\s*refreshTarget\(\);\s*\}, \[\]\);/);
+});
+
 test('app UI sandbox reports successful bundle execution to app-shell', async () => {
   const appShell = await readFile(new URL('../entrypoints/app-shell/main.ts', import.meta.url), 'utf8');
   const sandbox = await readFile(new URL('../public/app-ui-sandbox.html', import.meta.url), 'utf8');
