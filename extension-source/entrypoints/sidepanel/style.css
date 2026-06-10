@@ -45,38 +45,46 @@ button {
 .sidepanel {
   height: 100vh;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   overflow: hidden;
   background: var(--bg);
 }
 
 .sidepanel-tabs {
-  flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: minmax(70px, 0.9fr) minmax(66px, 0.8fr) minmax(116px, 1.3fr);
-  gap: 6px;
-  padding: 10px 10px 8px;
-  border-bottom: 1px solid var(--border);
+  flex: 0 0 84px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 8px;
+  border-right: 1px solid var(--border);
   background: rgba(251, 250, 247, 0.96);
   backdrop-filter: blur(12px);
 }
 
+.sidepanel-tabs-primary {
+  display: grid;
+  gap: 7px;
+}
+
 .sidepanel-tab {
-  min-width: 0;
-  min-height: 34px;
-  display: inline-flex;
+  width: 100%;
+  min-height: 54px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  padding: 0 8px;
+  gap: 5px;
+  padding: 6px 5px;
   border: 1px solid transparent;
-  border-radius: 9px;
+  border-radius: 12px;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 750;
-  white-space: nowrap;
+  line-height: 1.05;
+  text-align: center;
 }
 
 .sidepanel-tab svg {
@@ -91,9 +99,37 @@ button {
   box-shadow: 0 1px 2px rgba(23, 26, 33, 0.04);
 }
 
+.sidepanel-tab.new-app {
+  border-color: rgba(37, 99, 235, 0.22);
+  background: #eff5ff;
+  color: var(--accent);
+}
+
+.sidepanel-tab.new-app:hover:not(:disabled) {
+  border-color: rgba(37, 99, 235, 0.4);
+  background: #e4eeff;
+}
+
+.sidepanel-tab.dashboard-tab {
+  min-height: 62px;
+}
+
+.sidepanel-tab:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
 .sidepanel-tab:focus-visible {
   outline: 2px solid rgba(37, 99, 235, 0.28);
   outline-offset: 2px;
+}
+
+.sidepanel-content {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  overflow: hidden;
 }
 
 .chat-panel {

@@ -1251,7 +1251,11 @@ export default defineBackground(() => {
     const lastDraftId = typeof stored[SIDEPANEL_LAST_DRAFT_KEY] === 'string'
       ? stored[SIDEPANEL_LAST_DRAFT_KEY] as string
       : '';
-    return drafts.find((item) => item.id === lastDraftId) || drafts[0] || null;
+    return lastDraftId ? drafts.find((item) => item.id === lastDraftId) || null : null;
+  }
+
+  async function clearLastSidePanelDraft(): Promise<void> {
+    await chrome.storage.local.remove(SIDEPANEL_LAST_DRAFT_KEY);
   }
 
   function parseJson(text: string): unknown {
@@ -2067,6 +2071,13 @@ export default defineBackground(() => {
     if (msg?.type === 'airglow:sidepanel:get-last-draft') {
       getLastSidePanelDraft()
         .then((draft) => sendResponse({ ok: true, draft }))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:clear-last-draft') {
+      clearLastSidePanelDraft()
+        .then(() => sendResponse({ ok: true }))
         .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
       return true;
     }

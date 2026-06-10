@@ -2,7 +2,7 @@ import { Fragment, type FormEvent, type ReactNode, useEffect, useMemo, useRef, u
 import { createRoot } from 'react-dom/client';
 import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, MessageSquare, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
+import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, MessageSquare, Plus, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import './style.css';
 import type { SourcedManifest } from '../../lib/app-resolver';
 import {
@@ -533,7 +533,7 @@ function WelcomeMessage() {
   return (
     <div className="chat-message assistant welcome-message">
       <span>Airglow</span>
-      <p>Describe the app you want to build for this page.</p>
+      <p>Describe the app you want to build.</p>
     </div>
   );
 }
@@ -695,7 +695,7 @@ function App() {
     if (loadingTarget) return 'Reading selected page context for this app request.';
     if (!target) {
       if (targetError) return `Page context is unavailable: ${targetError}`;
-      return 'Airglow reads selected page context after you send an app request. Read-only context does not need approval.';
+      return 'Airglow reads selected page context only when you ask for this page or the current tab. Read-only context does not need approval.';
     }
     return `Using the selected tab title, URL, and visible text for generation. The saved app can refresh read-only page text on ${targetOrigin(target)} after it is installed.`;
   }, [loadingTarget, target, targetError]);
@@ -871,6 +871,31 @@ function App() {
     await sendRuntimeMessage({ type: 'airglow:open-dashboard' });
   }
 
+  function hasUnsavedDraft(): boolean {
+    if (!draft?.messages.length) return false;
+    if (saveState === 'saved' || saveState === 'local') return false;
+    return draft.status !== 'saved';
+  }
+
+  function startNewApp() {
+    if (generationBusy) return;
+    if (hasUnsavedDraft() && !window.confirm('Discard current draft and start a new app?')) return;
+    setDraft(null);
+    setTarget(null);
+    setTargetError(null);
+    setLoadingTarget(false);
+    setChatInput('');
+    setSaveState('idle');
+    setSaveError(null);
+    setSavedAppId(null);
+    setApplyState('idle');
+    setApplyError(null);
+    setGenerationPhase('idle');
+    setGenerationRunEvents([]);
+    setActiveView('build');
+    void sendRuntimeMessage({ type: 'airglow:sidepanel:clear-last-draft' }).catch(() => {});
+  }
+
   function showApps() {
     setActiveView('apps');
     void loadApps();
@@ -954,42 +979,57 @@ function App() {
     <Tooltip.Provider delayDuration={160} skipDelayDuration={100}>
       <main className="sidepanel">
         <nav className="sidepanel-tabs" aria-label="Airglow sections">
-          <button
-            type="button"
-            className={activeView === 'build' ? 'sidepanel-tab active' : 'sidepanel-tab'}
-            onClick={() => setActiveView('build')}
-            aria-current={activeView === 'build' ? 'page' : undefined}
-          >
-            <MessageSquare size={16} />
-            Build
-          </button>
-          <button
-            type="button"
-            className={activeView === 'apps' ? 'sidepanel-tab active' : 'sidepanel-tab'}
-            onClick={showApps}
-            aria-current={activeView === 'apps' ? 'page' : undefined}
-          >
-            <LayoutGrid size={16} />
-            Apps
-          </button>
-          <button type="button" className="sidepanel-tab" onClick={() => void openDashboard()}>
-            <LayoutDashboard size={16} />
-            Dashboard
-            <ExternalLink size={13} />
+          <div className="sidepanel-tabs-primary">
+            <IconTooltip label="Start a new app">
+              <button
+                type="button"
+                className="sidepanel-tab new-app"
+                onClick={startNewApp}
+                disabled={generationBusy}
+                aria-label="New app"
+              >
+                <Plus size={17} />
+                <span>New app</span>
+              </button>
+            </IconTooltip>
+            <button
+              type="button"
+              className={activeView === 'build' ? 'sidepanel-tab active' : 'sidepanel-tab'}
+              onClick={() => setActiveView('build')}
+              aria-current={activeView === 'build' ? 'page' : undefined}
+            >
+              <MessageSquare size={17} />
+              <span>Build</span>
+            </button>
+            <button
+              type="button"
+              className={activeView === 'apps' ? 'sidepanel-tab active' : 'sidepanel-tab'}
+              onClick={showApps}
+              aria-current={activeView === 'apps' ? 'page' : undefined}
+            >
+              <LayoutGrid size={17} />
+              <span>Apps</span>
+            </button>
+          </div>
+          <button type="button" className="sidepanel-tab dashboard-tab" onClick={() => void openDashboard()}>
+            <LayoutDashboard size={17} />
+            <span>Dashboard</span>
+            <ExternalLink size={12} />
           </button>
         </nav>
-        {activeView === 'apps' ? (
-          <AppsTab
-            apps={apps}
-            activeAppId={savedAppId}
-            loading={appsLoading}
-            error={appsError}
-            onRefresh={() => void loadApps()}
-            onOpen={(appId) => void openApp(appId)}
-            onRefine={startRefineApp}
-          />
-        ) : (
-          <section className="chat-panel">
+        <section className="sidepanel-content">
+          {activeView === 'apps' ? (
+            <AppsTab
+              apps={apps}
+              activeAppId={savedAppId}
+              loading={appsLoading}
+              error={appsError}
+              onRefresh={() => void loadApps()}
+              onOpen={(appId) => void openApp(appId)}
+              onRefine={startRefineApp}
+            />
+          ) : (
+            <section className="chat-panel">
             <div className="chat-log" ref={chatLogRef} aria-live="polite">
               {draft?.messages.length ? draft.messages.map((message) => (
                 <Fragment key={message.id}>
@@ -1087,8 +1127,9 @@ function App() {
                 </IconTooltip>
               </div>
             </form>
-          </section>
-        )}
+            </section>
+          )}
+        </section>
       </main>
     </Tooltip.Provider>
   );

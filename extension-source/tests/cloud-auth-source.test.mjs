@@ -63,10 +63,13 @@ test('dashboard can edit and delete owner-scoped private apps through background
 
 test('sidepanel reads target context after the user asks for an app', async () => {
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+  const sidepanelModel = await readFile(new URL('../lib/sidepanel-model.ts', import.meta.url), 'utf8');
 
   assert.match(sidepanel, /type GenerationPhase = 'idle' \| 'reading_context' \| 'generating' \| 'ready' \| 'error'/);
   assert.match(sidepanel, /setGenerationPhase\('reading_context'\)/);
   assert.match(sidepanel, /await readTargetContext\(\)/);
+  assert.match(sidepanel, /draftRequestsCurrentPage\(draftForChat\)/);
+  assert.match(sidepanelModel, /function promptRequestsCurrentPage/);
   assert.doesNotMatch(sidepanel, /useEffect\(\(\) => \{\s*refreshTarget\(\);\s*\}, \[\]\);/);
 });
 
@@ -99,12 +102,27 @@ test('sidepanel lists apps and can refine private cloud apps', async () => {
 
 test('sidepanel exposes dashboard as a top-level tab action', async () => {
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+  const style = await readFile(new URL('../entrypoints/sidepanel/style.css', import.meta.url), 'utf8');
 
   assert.match(sidepanel, /<nav className="sidepanel-tabs"/);
-  assert.match(sidepanel, /<LayoutDashboard size=\{16\} \/>/);
+  assert.match(sidepanel, /<LayoutDashboard size=\{17\} \/>/);
   assert.match(sidepanel, /Dashboard/);
   assert.match(sidepanel, /type:\s*'airglow:open-dashboard'/);
+  assert.match(style, /\.sidepanel\s*\{[\s\S]*flex-direction:\s*row/);
+  assert.match(style, /\.sidepanel-tabs\s*\{[\s\S]*flex-direction:\s*column/);
   assert.doesNotMatch(sidepanel, /IconTooltip label="Open dashboard"[\s\S]*actions-message/);
+});
+
+test('sidepanel has an explicit new app action that clears the active draft', async () => {
+  const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+
+  assert.match(sidepanel, /function startNewApp\(\)/);
+  assert.match(sidepanel, /Discard current draft and start a new app\?/);
+  assert.match(sidepanel, /aria-label="New app"/);
+  assert.match(sidepanel, /type:\s*'airglow:sidepanel:clear-last-draft'/);
+  assert.match(background, /msg\?\.type === 'airglow:sidepanel:clear-last-draft'/);
+  assert.match(background, /chrome\.storage\.local\.remove\(SIDEPANEL_LAST_DRAFT_KEY\)/);
 });
 
 test('background polls cloud browser tool calls through extension identity', async () => {
