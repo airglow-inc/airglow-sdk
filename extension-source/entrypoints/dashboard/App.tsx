@@ -13,12 +13,17 @@ function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { siz
 }
 import LogsPage from './LogsPage';
 import { normalizeUserEmail, USER_EMAIL_KEY } from '../../lib/airglow-identity';
-import { getCloudAppSourceUrl } from '../../lib/app-source-config';
+import { getCloudAppSourceUrl, isDefaultCloudAppSourceUrl } from '../../lib/app-source-config';
+
+// Build-time constants — fine to capture at module load.
+const CLOUD_APP_SOURCE_URL = getCloudAppSourceUrl();
+const CLOUD_APP_SOURCE_IS_DEFAULT = isDefaultCloudAppSourceUrl();
 
 const DEV_PORT_KEY = '__dev_port';
 const APP_ORDER_KEY = '__app_order';
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
 const SIDE_BUTTON_KEY = '__side_button_enabled';
+const NATIVE_HOST_ENABLED_KEY = '__native_host_enabled';
 const FEEDBACK_VISITOR_ID_KEY = '__airglow_feedback_visitor_id';
 const DEFAULT_DEV_PORT = 3222;
 const FEEDBACK_TIMEOUT_MS = 8000;
@@ -165,6 +170,7 @@ export default function App() {
   // Settings modal state
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [sideButtonEnabled, setSideButtonEnabled] = useState(false);
+  const [nativeHostEnabled, setNativeHostEnabled] = useState(true);
 
   // Secrets state
   const [secretsOpen, setSecretsOpen] = useState(false);
@@ -349,7 +355,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote', SIDE_BUTTON_KEY], (result) => {
+    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote', SIDE_BUTTON_KEY, NATIVE_HOST_ENABLED_KEY], (result) => {
       const port = (result[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT;
       const savedEmail = normalizeUserEmail(result[USER_EMAIL_KEY]) || '';
       const nh = result['__native_host_connected'];
@@ -363,6 +369,8 @@ export default function App() {
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setGitPullDueRemote(!!result['__git_pull_due_remote']);
       setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
+      // Absent key = enabled (default). Only explicit false disables.
+      setNativeHostEnabled(result[NATIVE_HOST_ENABLED_KEY] !== false);
       setIdentityLoaded(true);
       // Initial mount = page (re)load: force a fresh upstream check on both
       // sides (SW for gitPullDueRemote, dev server for behindUpstream) so a
@@ -408,6 +416,9 @@ export default function App() {
       if (SIDE_BUTTON_KEY in changes) {
         setSideButtonEnabled(!!changes[SIDE_BUTTON_KEY].newValue);
       }
+      if (NATIVE_HOST_ENABLED_KEY in changes) {
+        setNativeHostEnabled(changes[NATIVE_HOST_ENABLED_KEY].newValue !== false);
+      }
     };
     chrome.storage.local.onChanged.addListener(onChange);
     return () => chrome.storage.local.onChanged.removeListener(onChange);
@@ -443,6 +454,11 @@ export default function App() {
   function setSideButton(next: boolean) {
     setSideButtonEnabled(next);
     chrome.storage.local.set({ [SIDE_BUTTON_KEY]: next });
+  }
+
+  function setNativeHost(next: boolean) {
+    setNativeHostEnabled(next);
+    chrome.storage.local.set({ [NATIVE_HOST_ENABLED_KEY]: next });
   }
 
   function saveUserEmail() {
@@ -977,8 +993,31 @@ export default function App() {
                 </span>
               </div>
             </div>
-            {/* Only surfaced when the debug bridge is down; silent when connected or disabled. */}
-            {nativeHostConnected === false && (
+            <div className="px-1 pt-2.5" data-testid="cloud-source-row">
+              <label className="text-base font-medium" style={{ color: 'var(--fg-tertiary)' }}>
+                <span style={{ color: 'var(--olive)', fontWeight: 600 }}>Cloud Apps</span> source
+              </label>
+              <div
+                className="text-xs mt-1 font-mono break-all"
+                title={CLOUD_APP_SOURCE_IS_DEFAULT ? CLOUD_APP_SOURCE_URL : `Override — production default is https://api.airglow.dev`}
+                style={{ color: CLOUD_APP_SOURCE_IS_DEFAULT ? 'var(--fg-secondary)' : 'var(--error)' }}
+              >
+                {!CLOUD_APP_SOURCE_IS_DEFAULT && (
+                  <span className="inline-block w-1.5 h-1.5 rounded-full mr-1.5 align-middle" style={{ background: 'var(--error)' }} />
+                )}
+                {CLOUD_APP_SOURCE_URL}
+              </div>
+            </div>
+            {/* Disabled-by-user state is muted (user choice, not a failure);
+                otherwise we only surface when the debug bridge is down. */}
+            {!nativeHostEnabled ? (
+              <div className="px-1 pt-2.5" data-testid="native-host-status">
+                <div className="flex items-center gap-1.5 text-base font-medium" style={{ color: 'var(--fg-tertiary)' }}>
+                  <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--fg-tertiary)' }} />
+                  Native host disabled
+                </div>
+              </div>
+            ) : nativeHostConnected === false && (
               <div className="px-1 pt-2.5" data-testid="native-host-status">
                 <div className="flex items-center gap-1.5 text-base font-medium" style={{ color: 'var(--error)' }}>
                   <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--error)' }} />
@@ -1556,6 +1595,41 @@ Airglow — for those who create
                   style={{
                     width: 18, height: 18,
                     left: sideButtonEnabled ? 22 : 2,
+                    background: 'var(--bg-white)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </label>
+            <label
+              className="flex items-center justify-between gap-4 py-2 cursor-pointer"
+              data-testid="settings-native-host-row"
+            >
+              <div>
+                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Native host</div>
+                <div className="text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                  Local debug bridge over native messaging. Lets CLI tools talk to the extension. Turn off if you don't need it.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={nativeHostEnabled}
+                onClick={() => setNativeHost(!nativeHostEnabled)}
+                className="relative shrink-0 transition-colors cursor-pointer rounded-full border"
+                style={{
+                  boxSizing: 'border-box',
+                  width: 44, height: 24,
+                  background: nativeHostEnabled ? 'var(--olive)' : 'var(--bg-tertiary)',
+                  borderColor: nativeHostEnabled ? 'var(--olive)' : 'var(--border-secondary)',
+                }}
+                data-testid="settings-native-host-toggle"
+              >
+                <span
+                  className="absolute top-1/2 -translate-y-1/2 rounded-full transition-all"
+                  style={{
+                    width: 18, height: 18,
+                    left: nativeHostEnabled ? 22 : 2,
                     background: 'var(--bg-white)',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                   }}

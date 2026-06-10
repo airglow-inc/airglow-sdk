@@ -10,3 +10,4 @@ extension-source/.wxt/
 extension-source/.airglow/
 extension-source/.env
 extension-source/.env.local
+extension-source/.env.*.local

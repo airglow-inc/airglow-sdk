@@ -7,3 +7,4 @@
 .airglow/
 .env
 .env.local
+.env.*.local

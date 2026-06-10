@@ -9,7 +9,7 @@ Chrome native-messaging host exposing the running extension over `localhost:3277
 | Endpoint | Purpose |
 |---|---|
 | `GET /status` | Liveness probe. Returns `{ok, service: 'airglow-trace', buffered}`. |
-| `GET /logs` | Extension log store. Filters: `level=info\|warn\|error`, `source=<app-id>`, `n=<count>`. |
+| `GET /logs` | Extension log store. Filters: `level=info\|warn\|error`, `source=<app-id>`, `n=<count>`. Errors only: `curl 'http://127.0.0.1:3277/logs?level=error&n=50'`. |
 | `POST /reload` | `chrome.runtime.reload()`. |
 
 ### Browser interaction

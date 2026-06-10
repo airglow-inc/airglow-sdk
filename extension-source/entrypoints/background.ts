@@ -310,6 +310,8 @@ export default defineBackground(() => {
           logger.warn('airglow', `boot $identify failed: ${e instanceof Error ? e.message : String(e)}`),
         );
       }
+    } catch (e) {
+      logger.error('airglow', `identity IIFE threw: ${e instanceof Error ? e.message : String(e)}`, e instanceof Error ? e.stack : undefined);
     } finally {
       posthog.markIdentifyComplete();
     }
@@ -475,11 +477,16 @@ export default defineBackground(() => {
   // when the debug bridge is down (parallel to __dev_server_online). Key absent
   // = native host disabled for this build; present = enabled, value is liveness.
   const NATIVE_HOST_CONNECTED_KEY = '__native_host_connected';
+  // User-facing toggle in dashboard Settings. Absent (default) = enabled — we
+  // don't want existing installs to lose the debug bridge on upgrade.
+  const NATIVE_HOST_ENABLED_KEY = '__native_host_enabled';
+  let nativeHostEnabled = true;
   function setNativeHostConnected(connected: boolean) {
     chrome.storage.local.set({ [NATIVE_HOST_CONNECTED_KEY]: connected });
   }
 
   function connectNativeHost() {
+    if (!nativeHostEnabled) return;
     try {
       nmPort = chrome.runtime.connectNative(NM_HOST);
       nmPort.onMessage.addListener((msg) => {
@@ -498,11 +505,20 @@ export default defineBackground(() => {
           setNativeHostConnected(false);
         }
         nmPort = null;
-        setTimeout(connectNativeHost, 3000);
+        if (nativeHostEnabled) setTimeout(connectNativeHost, 3000);
       });
     } catch (e) {
       logger.error('airglow', `connectNative failed: ${e}`);
     }
+  }
+
+  function disconnectNativeHost() {
+    if (nmPort) {
+      try { nmPort.disconnect(); } catch {}
+      nmPort = null;
+    }
+    nmWasConnected = false;
+    setNativeHostConnected(false);
   }
 
   function sendToHost(payload: Record<string, unknown>) {
@@ -976,7 +992,19 @@ export default defineBackground(() => {
   }
 
   setNativeHostConnected(false); // seed: dashboard shows "Disconnected" until the host replies
-  connectNativeHost();
+  chrome.storage.local.get(NATIVE_HOST_ENABLED_KEY, (r) => {
+    // Absent key = enabled (default). Only explicit false disables.
+    nativeHostEnabled = r[NATIVE_HOST_ENABLED_KEY] !== false;
+    if (nativeHostEnabled) connectNativeHost();
+  });
+  chrome.storage.local.onChanged.addListener((changes) => {
+    if (!(NATIVE_HOST_ENABLED_KEY in changes)) return;
+    const next = changes[NATIVE_HOST_ENABLED_KEY].newValue !== false;
+    if (next === nativeHostEnabled) return;
+    nativeHostEnabled = next;
+    if (nativeHostEnabled) connectNativeHost();
+    else disconnectNativeHost();
+  });
 
 
 

@@ -42,6 +42,15 @@ if ! command -v rsync >/dev/null 2>&1; then
   exit 1
 fi
 
+# Vite loads .env.local in every mode, so anything in it (e.g. a local
+# WXT_CLOUD_APP_SOURCE_URL) would bake into the committed extension/ build.
+# Dev-only overrides belong in .env.development.local (mode=development only).
+if [ -f "$source_dir/.env.local" ]; then
+  echo "extension-source/.env.local exists — production builds would inline it." >&2
+  echo "Move dev overrides to extension-source/.env.development.local and re-run." >&2
+  exit 1
+fi
+
 echo "==> Building extension-source"
 (cd "$source_dir" && pnpm run build)
 
