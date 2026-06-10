@@ -11,20 +11,29 @@ test('cloud manifest and UI artifact reads require an Airglow identity session',
   assert.match(appShell, /getAirglowIdentityHeaders\(\{\s*requireSession:\s*true\s*\}\)/);
 });
 
-test('sidepanel private save uses cloud identity, private endpoint, and reloads apps after save', async () => {
+test('sidepanel private generation uses cloud identity, private endpoints, and reloads apps after save', async () => {
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
   const sidepanelModel = await readFile(new URL('../lib/sidepanel-model.ts', import.meta.url), 'utf8');
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
 
   assert.match(background, /\/api\/apps\/private\/save/);
+  assert.match(background, /\/api\/apps\/private\/generation-runs/);
+  assert.match(background, /\/api\/apps\/private\/generation-runs\/\$\{encodeURIComponent\(runId\)\}\/execute/);
+  assert.match(background, /msg\?\.type\s*===\s*'airglow:sidepanel:create-generation-run'/);
+  assert.match(background, /msg\?\.type\s*===\s*'airglow:sidepanel:get-generation-run'/);
+  assert.match(background, /msg\?\.type\s*===\s*'airglow:sidepanel:execute-generation-run'/);
   assert.match(background, /getAirglowIdentityHeaders\(\{\s*requireSession:\s*true\s*\}\)/);
   assert.match(background, /refreshSavedAppRegistration\(cloud\.appId\)/);
   assert.match(background, /refreshSavedAppRegistration\(appId\)/);
   assert.match(background, /airglow:sidepanel:reload-target/);
   assert.match(background, /chrome\.tabs\.reload\(tabId\)/);
   assert.match(background, /appStorageKey\(appId,\s*SIDEPANEL_INITIAL_CONTEXT_KEY\)/);
-  assert.match(sidepanel, /setSavedAppId\(response\.cloud\.appId\)/);
+  assert.match(sidepanel, /setSavedAppId\(executed\.cloud\.appId\)/);
+  assert.match(sidepanel, /type:\s*'airglow:sidepanel:create-generation-run'/);
+  assert.match(sidepanel, /type:\s*'airglow:sidepanel:get-generation-run'/);
+  assert.match(sidepanel, /type:\s*'airglow:sidepanel:execute-generation-run'/);
   assert.match(sidepanel, /Refresh page/);
+  assert.match(sidepanelModel, /applyGenerationRunEventsToDraft/);
   assert.match(sidepanelModel, /This Airglow Cloud server does not support private app save yet/);
 });
 
@@ -61,11 +70,12 @@ test('sidepanel reads target context after the user asks for an app', async () =
   assert.doesNotMatch(sidepanel, /useEffect\(\(\) => \{\s*refreshTarget\(\);\s*\}, \[\]\);/);
 });
 
-test('sidepanel treats local fallback as a local draft, not a saved app', async () => {
+test('sidepanel treats generation failures as unsaved app errors', async () => {
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
 
   assert.match(sidepanel, /type SaveState = 'idle' \| 'saving' \| 'saved' \| 'local' \| 'error'/);
-  assert.match(sidepanel, /setSaveState\('local'\)/);
+  assert.match(sidepanel, /executed\.mode === 'failed'/);
+  assert.match(sidepanel, /setSaveState\('error'\)/);
   assert.match(sidepanel, /Draft saved locally/);
   assert.match(sidepanel, /saveState === 'error' \|\| saveState === 'local'/);
   assert.match(sidepanel, /draft\.persistence\?\.mode === 'cloud'/);

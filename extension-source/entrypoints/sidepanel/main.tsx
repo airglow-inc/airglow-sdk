@@ -6,8 +6,11 @@ import { Check, CircleHelp, ExternalLink, Loader2, RefreshCw, Send, ShieldCheck,
 import './style.css';
 import {
   type AirglowAppDraft,
+  type SidePanelGenerationRunEvent,
+  type SidePanelGenerationRunStatus,
   type SidePanelTargetTab,
   appendDraftUserMessage,
+  applyGenerationRunEventsToDraft,
   createAppDraft,
 } from '../../lib/sidepanel-model';
 
@@ -24,6 +27,7 @@ const GENERATION_STEPS = [
   'Reading page context...',
   'Generating UI...',
   'Generating logic...',
+  'Validating app...',
   'Packaging app...',
   'Saving private app...',
 ];
@@ -34,7 +38,33 @@ const QUICK_PROMPTS = [
   'Extract key data into a small floating app.',
 ];
 
-type SaveDraftResponse =
+type GenerationRunRecord = {
+  runId: string;
+  status: SidePanelGenerationRunStatus;
+  appKey?: string;
+  versionKey?: string;
+  result?: {
+    appId?: string;
+    appKey?: string;
+    versionKey?: string;
+    generatedSummary?: string;
+    generator?: string;
+  };
+  error?: {
+    message: string;
+    code?: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+};
+
+type GenerationRunActionResponse =
+  | {
+      ok: true;
+      draft: AirglowAppDraft;
+      run: GenerationRunRecord;
+      events: SidePanelGenerationRunEvent[];
+    }
   | {
       ok: true;
       mode: 'cloud';
@@ -49,18 +79,32 @@ type SaveDraftResponse =
         generatedSummary?: string;
         generator?: string;
       };
+      run: GenerationRunRecord;
+      events: SidePanelGenerationRunEvent[];
     }
   | {
       ok: true;
-      mode: 'local_fallback';
+      mode: 'failed';
       draft: AirglowAppDraft;
       cloudError: {
         message: string;
         code?: string;
-        status?: number;
-        requestId?: string;
       };
+      run: GenerationRunRecord;
+      events: SidePanelGenerationRunEvent[];
+    }
+  | {
+      ok: true;
+      mode: 'pending';
+      draft: AirglowAppDraft;
+      run: GenerationRunRecord;
+      events: SidePanelGenerationRunEvent[];
     };
+
+type LastDraftResponse = {
+  ok: true;
+  draft?: AirglowAppDraft | null;
+};
 
 function sendRuntimeMessage<T>(message: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -222,6 +266,57 @@ function GenerationProgress({ stepIndex }: { stepIndex: number }) {
   );
 }
 
+function mergeGenerationRunEvents(
+  current: SidePanelGenerationRunEvent[],
+  next: SidePanelGenerationRunEvent[],
+): SidePanelGenerationRunEvent[] {
+  const bySequence = new Map<number, SidePanelGenerationRunEvent>();
+  for (const event of current) bySequence.set(event.sequence, event);
+  for (const event of next) bySequence.set(event.sequence, event);
+  return Array.from(bySequence.values()).sort((a, b) => a.sequence - b.sequence);
+}
+
+function latestGenerationRunSequence(events: SidePanelGenerationRunEvent[]): number {
+  return events.reduce((max, event) => Math.max(max, Number(event.sequence) || 0), 0);
+}
+
+function progressStepIndexFromEvents(events: SidePanelGenerationRunEvent[], fallback: number): number {
+  const phaseIndex: Record<string, number> = {
+    generating_ui: 1,
+    generating_logic: 2,
+    validating: 3,
+    packaging: 4,
+    publishing: 5,
+    completed: 5,
+  };
+  return events.reduce((max, event) => {
+    if (!event.phase) return max;
+    return Math.max(max, phaseIndex[event.phase] ?? max);
+  }, fallback);
+}
+
+function isTerminalGenerationRunStatus(status: SidePanelGenerationRunStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'waiting_for_user';
+}
+
+function applyGenerationRunSnapshotToDraft(
+  draft: AirglowAppDraft,
+  run: GenerationRunRecord,
+  events: SidePanelGenerationRunEvent[],
+): AirglowAppDraft {
+  const lastSequence = Math.max(
+    draft.generationRun?.lastSequence || 0,
+    latestGenerationRunSequence(events),
+  );
+  return applyGenerationRunEventsToDraft(draft, {
+    runId: run.runId,
+    status: run.status,
+    lastSequence,
+    startedAt: run.createdAt,
+    updatedAt: run.updatedAt,
+  }, events);
+}
+
 function AssistantStatusMessage({
   tone,
   title,
@@ -294,8 +389,13 @@ function App() {
   const [savedAppId, setSavedAppId] = useState<string | null>(null);
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [applyError, setApplyError] = useState<string | null>(null);
-  const [generationStepIndex, setGenerationStepIndex] = useState<number | null>(null);
+  const [generationRunEvents, setGenerationRunEvents] = useState<SidePanelGenerationRunEvent[]>([]);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const draftRef = useRef<AirglowAppDraft | null>(null);
+
+  useEffect(() => {
+    draftRef.current = draft;
+  }, [draft]);
 
   async function readTargetContext(): Promise<SidePanelTargetTab | null> {
     setLoadingTarget(true);
@@ -320,24 +420,86 @@ function App() {
   }
 
   useEffect(() => {
-    if (saveState !== 'saving') {
-      setGenerationStepIndex(null);
-      return;
+    let cancelled = false;
+    let timer: number | null = null;
+
+    function stopPolling() {
+      if (timer !== null) {
+        window.clearInterval(timer);
+        timer = null;
+      }
     }
-    setGenerationStepIndex(1);
-    const intervalId = window.setInterval(() => {
-      setGenerationStepIndex((current) => Math.min((current ?? 0) + 1, GENERATION_STEPS.length - 1));
-    }, 2200);
-    return () => window.clearInterval(intervalId);
-  }, [saveState]);
+
+    function applyPollResult(poll: GenerationRunActionResponse) {
+      if (cancelled) return;
+      if (poll.events.length > 0) rememberRunEvents(poll.events);
+      setDraft((current) => current ? applyGenerationRunSnapshotToDraft(current, poll.run, poll.events) : poll.draft);
+      if ('mode' in poll && poll.mode === 'cloud') {
+        stopPolling();
+        setDraft(poll.draft);
+        setSavedAppId(poll.cloud.appId);
+        setSaveState('saved');
+        setGenerationPhase('ready');
+      } else if ('mode' in poll && poll.mode === 'failed') {
+        stopPolling();
+        setDraft(poll.draft);
+        setSavedAppId(null);
+        setSaveState('error');
+        setGenerationPhase('error');
+        setSaveError(poll.cloudError.message || 'Cloud generation failed.');
+      } else if (isTerminalGenerationRunStatus(poll.run.status)) {
+        stopPolling();
+        setSaveState('idle');
+        setGenerationPhase('ready');
+      }
+    }
+
+    sendRuntimeMessage<LastDraftResponse>({ type: 'airglow:sidepanel:get-last-draft' })
+      .then((response) => {
+        if (cancelled || !response.draft) return;
+        setDraft(response.draft);
+        setTarget(response.draft.target);
+        if (response.draft.persistence?.mode === 'cloud' && response.draft.persistence.cloud?.appId) {
+          setSavedAppId(response.draft.persistence.cloud.appId);
+          setSaveState('saved');
+        }
+        const run = response.draft.generationRun;
+        if (!run || isTerminalGenerationRunStatus(run.status)) return;
+        setSaveState('saving');
+        setGenerationPhase('generating');
+        let latestSequence = run.lastSequence || 0;
+        const poll = () => {
+          const currentDraft = draftRef.current || response.draft;
+          sendRuntimeMessage<GenerationRunActionResponse>({
+            type: 'airglow:sidepanel:get-generation-run',
+            runId: run.runId,
+            sinceSequence: latestSequence,
+            draft: currentDraft,
+          })
+            .then((pollResponse) => {
+              latestSequence = Math.max(latestSequence, latestGenerationRunSequence(pollResponse.events));
+              applyPollResult(pollResponse);
+            })
+            .catch(() => {});
+        };
+        poll();
+        timer = window.setInterval(poll, 1200);
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      stopPolling();
+    };
+  }, []);
 
   useEffect(() => {
     const log = chatLogRef.current;
     if (!log) return;
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
-  }, [draft?.messages.length, draft?.target?.id, generationPhase, saveState, generationStepIndex, applyState, saveError, applyError]);
+  }, [draft?.messages.length, draft?.target?.id, generationPhase, saveState, generationRunEvents.length, applyState, saveError, applyError]);
 
-  const generationBusy = generationPhase === 'reading_context' || generationPhase === 'generating';
+  const generationBusy = generationPhase === 'reading_context' || generationPhase === 'generating' || saveState === 'saving';
   const canSend = chatInput.trim().length > 0 && !generationBusy;
 
   const disclosureText = useMemo(() => {
@@ -349,33 +511,122 @@ function App() {
     return `Using the selected tab title, URL, and visible text for generation. The saved app can refresh read-only page text on ${targetOrigin(target)} after it is installed.`;
   }, [loadingTarget, target, targetError]);
 
+  function rememberRunEvents(events: SidePanelGenerationRunEvent[]) {
+    setGenerationRunEvents((current) => mergeGenerationRunEvents(current, events));
+  }
+
   async function saveDraftToCloud(draftToSave: AirglowAppDraft) {
     setGenerationPhase('generating');
     setSaveState('saving');
     setSaveError(null);
+    setGenerationRunEvents([]);
+    let pollTimer: number | null = null;
+    let latestSequence = 0;
+    let activeRunId = '';
     try {
-      const response = await sendRuntimeMessage<SaveDraftResponse>({
-        type: 'airglow:sidepanel:save-draft',
+      const created = await sendRuntimeMessage<GenerationRunActionResponse>({
+        type: 'airglow:sidepanel:create-generation-run',
         requestId: crypto.randomUUID(),
         draft: draftToSave,
       });
-      setDraft(response.draft);
-      if (response.mode === 'cloud') {
-        setSavedAppId(response.cloud.appId);
+      activeRunId = created.run.runId;
+      setDraft(created.draft);
+      rememberRunEvents(created.events);
+      latestSequence = latestGenerationRunSequence(created.events);
+
+      if (created.run.status === 'waiting_for_user') {
+        setSaveState('idle');
+        setGenerationPhase('ready');
+        setSavedAppId(null);
+        return;
+      }
+
+      pollTimer = window.setInterval(() => {
+        sendRuntimeMessage<GenerationRunActionResponse>({
+          type: 'airglow:sidepanel:get-generation-run',
+          runId: created.run.runId,
+          sinceSequence: latestSequence,
+          draft: draftRef.current,
+        })
+          .then((poll) => {
+            if (poll.events.length > 0) {
+              latestSequence = Math.max(latestSequence, latestGenerationRunSequence(poll.events));
+              rememberRunEvents(poll.events);
+              setDraft((current) => current ? applyGenerationRunSnapshotToDraft(current, poll.run, poll.events) : current);
+            }
+            if ('mode' in poll && poll.mode === 'cloud') {
+              if (pollTimer !== null) {
+                window.clearInterval(pollTimer);
+                pollTimer = null;
+              }
+              setDraft(poll.draft);
+              setSavedAppId(poll.cloud.appId);
+              setSaveState('saved');
+              setGenerationPhase('ready');
+            } else if ('mode' in poll && poll.mode === 'failed') {
+              if (pollTimer !== null) {
+                window.clearInterval(pollTimer);
+                pollTimer = null;
+              }
+              setDraft(poll.draft);
+              setSavedAppId(null);
+              setSaveState('error');
+              setGenerationPhase('error');
+              setSaveError(poll.cloudError.message || 'Cloud generation failed.');
+            }
+          })
+          .catch(() => {
+            // Polling is best-effort; the execute response below carries the authoritative final snapshot.
+          });
+      }, 900);
+
+      const executed = await sendRuntimeMessage<GenerationRunActionResponse>({
+        type: 'airglow:sidepanel:execute-generation-run',
+        runId: created.run.runId,
+        draft: created.draft,
+      });
+      const executedTerminal = (
+        ('mode' in executed && (executed.mode === 'cloud' || executed.mode === 'failed')) ||
+        isTerminalGenerationRunStatus(executed.run.status)
+      );
+      if (executedTerminal && pollTimer !== null) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      setDraft(executed.draft);
+      rememberRunEvents(executed.events);
+      if ('mode' in executed && executed.mode === 'cloud') {
+        setSavedAppId(executed.cloud.appId);
         setSaveState('saved');
+        setGenerationPhase('ready');
+      } else if ('mode' in executed && executed.mode === 'failed') {
+        setSavedAppId(null);
+        setSaveState('error');
+        setGenerationPhase('error');
+        setSaveError(executed.cloudError.message || 'Cloud generation failed.');
+      } else if (executed.run.status === 'waiting_for_user') {
+        setSavedAppId(null);
+        setSaveState('idle');
         setGenerationPhase('ready');
       } else {
         setSavedAppId(null);
-        setSaveState('local');
-        setGenerationPhase('error');
-        setSaveError(response.cloudError.message || 'Cloud save failed.');
+        setSaveState(isTerminalGenerationRunStatus(executed.run.status) ? 'error' : 'saving');
+        setGenerationPhase(isTerminalGenerationRunStatus(executed.run.status) ? 'error' : 'generating');
       }
       setApplyState('idle');
       setApplyError(null);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (pollTimer !== null && activeRunId && /timed out|aborted/i.test(message)) {
+        setSaveState('saving');
+        setGenerationPhase('generating');
+        setSaveError('Generation is still running on Airglow Cloud. Waiting for the next update...');
+        return;
+      }
+      if (pollTimer !== null) window.clearInterval(pollTimer);
       setSaveState('error');
       setGenerationPhase('error');
-      setSaveError(error instanceof Error ? error.message : String(error));
+      setSaveError(message);
       setSavedAppId(null);
     }
   }
@@ -469,7 +720,11 @@ function App() {
             )}
             {draft?.messages.length && firstAssistantMessageIndex === -1 ? targetContextMessage : null}
             {(generationPhase === 'reading_context' || saveState === 'saving') && (
-              <GenerationProgress stepIndex={generationPhase === 'reading_context' ? 0 : generationStepIndex ?? 1} />
+              <GenerationProgress
+                stepIndex={generationPhase === 'reading_context'
+                  ? 0
+                  : progressStepIndexFromEvents(generationRunEvents, 1)}
+              />
             )}
             {saveState === 'error' && (
               <AssistantStatusMessage

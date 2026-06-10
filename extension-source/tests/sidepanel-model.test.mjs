@@ -156,6 +156,88 @@ test('markDraftSaved keeps the draft content and updates status', async () => {
   }
 });
 
+test('generation run events become assistant chat messages without duplicates', async () => {
+  const model = await loadSidepanelModel();
+  try {
+    const draft = model.createAppDraft({
+      prompt: 'build a planner for every page',
+      now: new Date('2026-06-10T10:00:00.000Z'),
+      nonce: 'run',
+    });
+    const withPlan = model.applyGenerationRunEventsToDraft(draft, {
+      runId: 'run-1',
+      status: 'queued',
+      startedAt: '2026-06-10T10:00:01.000Z',
+      updatedAt: '2026-06-10T10:00:02.000Z',
+    }, [
+      {
+        sequence: 1,
+        type: 'assistant_message',
+        role: 'assistant',
+        phase: 'planning',
+        message: 'Generated app plan\n\nBuild a planner.',
+        createdAt: '2026-06-10T10:00:01.000Z',
+      },
+      {
+        sequence: 2,
+        type: 'phase_started',
+        role: 'system',
+        phase: 'generating_ui',
+        message: 'Generating UI...',
+        createdAt: '2026-06-10T10:00:02.000Z',
+      },
+    ]);
+    const duplicated = model.applyGenerationRunEventsToDraft(withPlan, {
+      runId: 'run-1',
+      status: 'completed',
+      startedAt: '2026-06-10T10:00:01.000Z',
+      updatedAt: '2026-06-10T10:00:04.000Z',
+    }, [
+      {
+        sequence: 1,
+        type: 'assistant_message',
+        role: 'assistant',
+        phase: 'planning',
+        message: 'Generated app plan\n\nBuild a planner.',
+        createdAt: '2026-06-10T10:00:01.000Z',
+      },
+      {
+        sequence: 3,
+        type: 'completed',
+        role: 'assistant',
+        phase: 'completed',
+        message: 'App saved\n\nGenerated a planner.',
+        createdAt: '2026-06-10T10:00:04.000Z',
+      },
+    ]);
+
+    assert.equal(duplicated.generationRun.runId, 'run-1');
+    assert.equal(duplicated.generationRun.status, 'completed');
+    assert.equal(duplicated.generationRun.lastSequence, 3);
+    assert.deepEqual(
+      duplicated.messages.map((message) => message.id),
+      ['msg-run', 'msg-run-run-1-1', 'msg-run-run-1-3'],
+    );
+    assert.equal(duplicated.messages[1].role, 'assistant');
+    assert.match(duplicated.messages[1].content, /Generated app plan/);
+    assert.match(duplicated.messages[2].content, /App saved/);
+
+    const saved = model.markDraftSaved(duplicated, {
+      now: new Date('2026-06-10T10:00:05.000Z'),
+      persistence: {
+        mode: 'cloud',
+        cloud: {
+          appId: 'private-app',
+        },
+      },
+    });
+    assert.equal(saved.status, 'saved');
+    assert.equal(saved.generationRun, undefined);
+  } finally {
+    await model.cleanup();
+  }
+});
+
 test('buildPrivateAppSavePayload strips local-only tab fields', async () => {
   const model = await loadSidepanelModel();
   try {

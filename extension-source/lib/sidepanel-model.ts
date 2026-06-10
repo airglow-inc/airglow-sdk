@@ -69,6 +69,45 @@ export interface AirglowAppDraftPersistence {
   fallbackReason?: SavedAppFallbackReason;
 }
 
+export type SidePanelGenerationRunStatus =
+  | 'queued'
+  | 'planning'
+  | 'waiting_for_user'
+  | 'generating'
+  | 'validating'
+  | 'packaging'
+  | 'publishing'
+  | 'completed'
+  | 'failed'
+  | 'cancelled';
+
+export type SidePanelGenerationRunEventType =
+  | 'assistant_message'
+  | 'clarification_requested'
+  | 'phase_started'
+  | 'phase_completed'
+  | 'warning'
+  | 'completed'
+  | 'failed';
+
+export interface SidePanelGenerationRunEvent {
+  sequence: number;
+  type: SidePanelGenerationRunEventType;
+  message: string;
+  role?: 'assistant' | 'system';
+  phase?: string;
+  payload?: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface SidePanelGenerationRunMetadata {
+  runId: string;
+  status: SidePanelGenerationRunStatus;
+  lastSequence: number;
+  startedAt: string;
+  updatedAt: string;
+}
+
 export interface AirglowAppDraft {
   id: string;
   name: string;
@@ -82,6 +121,7 @@ export interface AirglowAppDraft {
   createdAt: string;
   updatedAt: string;
   persistence?: AirglowAppDraftPersistence;
+  generationRun?: SidePanelGenerationRunMetadata;
 }
 
 export interface CreateAirglowAppDraftInput {
@@ -102,6 +142,13 @@ export interface AppendDraftUserMessageInput {
   content: string;
   now?: Date;
   nonce?: string;
+}
+
+export interface AppendDraftAssistantMessageInput {
+  content: string;
+  id?: string;
+  createdAt?: string;
+  now?: Date;
 }
 
 export interface PrivateAppSavePayload {
@@ -136,6 +183,14 @@ export interface MarkDraftSavedOptions {
   now?: Date;
   persistence?: Omit<AirglowAppDraftPersistence, 'savedAt'>;
   assistantMessage?: string;
+}
+
+export interface MarkDraftGenerationRunInput {
+  runId: string;
+  status: SidePanelGenerationRunStatus;
+  lastSequence?: number;
+  startedAt?: string;
+  updatedAt?: string;
 }
 
 const ACTION_LABELS: Record<BrowserActionKey, string> = {
@@ -367,6 +422,75 @@ export function appendDraftUserMessage(draft: AirglowAppDraft, input: AppendDraf
   };
 }
 
+export function appendDraftAssistantMessage(
+  draft: AirglowAppDraft,
+  input: AppendDraftAssistantMessageInput,
+): AirglowAppDraft {
+  const content = input.content.trim().slice(0, 4000);
+  if (!content) return draft;
+  const normalizedDraft = normalizeDraftForSave(draft, input.now);
+  const now = input.now ?? new Date();
+  const createdAt = input.createdAt || now.toISOString();
+  const id = input.id || `msg-assistant-${createdAt}`;
+  if (normalizedDraft.messages.some((message) => message.id === id)) return normalizedDraft;
+  return {
+    ...normalizedDraft,
+    messages: [
+      ...normalizedDraft.messages,
+      {
+        id,
+        role: 'assistant',
+        content,
+        createdAt,
+      },
+    ].slice(-24),
+    updatedAt: createdAt,
+  };
+}
+
+export function markDraftGenerationRun(
+  draft: AirglowAppDraft,
+  input: MarkDraftGenerationRunInput,
+): AirglowAppDraft {
+  const normalizedDraft = normalizeDraftForSave(draft);
+  const nowIso = new Date().toISOString();
+  const previous = normalizedDraft.generationRun;
+  return {
+    ...normalizedDraft,
+    status: 'draft',
+    updatedAt: input.updatedAt || nowIso,
+    generationRun: {
+      runId: input.runId,
+      status: input.status,
+      lastSequence: input.lastSequence ?? previous?.lastSequence ?? 0,
+      startedAt: input.startedAt || previous?.startedAt || input.updatedAt || nowIso,
+      updatedAt: input.updatedAt || nowIso,
+    },
+  };
+}
+
+export function applyGenerationRunEventsToDraft(
+  draft: AirglowAppDraft,
+  run: MarkDraftGenerationRunInput,
+  events: SidePanelGenerationRunEvent[],
+): AirglowAppDraft {
+  const lastSequence = events.reduce((max, event) => Math.max(max, Number(event.sequence) || 0), run.lastSequence ?? 0);
+  let next = markDraftGenerationRun(draft, {
+    ...run,
+    lastSequence,
+    updatedAt: run.updatedAt || events[events.length - 1]?.createdAt,
+  });
+  for (const event of events) {
+    if (!shouldRenderGenerationRunEventAsMessage(event)) continue;
+    next = appendDraftAssistantMessage(next, {
+      id: `msg-run-${run.runId}-${event.sequence}`,
+      content: event.message,
+      createdAt: event.createdAt,
+    });
+  }
+  return next;
+}
+
 export function buildPrivateAppSavePayload(draft: AirglowAppDraft, clientRequestId: string): PrivateAppSavePayload {
   const normalizedDraft = normalizeDraftForSave(draft);
   const previousApp = previousAppForPayload(normalizedDraft);
@@ -422,7 +546,21 @@ export function markDraftSaved(
           },
         }
       : {}),
+    generationRun: undefined,
   };
+}
+
+function shouldRenderGenerationRunEventAsMessage(event: SidePanelGenerationRunEvent): boolean {
+  return (
+    event.role === 'assistant' &&
+    (
+      event.type === 'assistant_message' ||
+      event.type === 'clarification_requested' ||
+      event.type === 'completed' ||
+      event.type === 'failed' ||
+      event.type === 'warning'
+    )
+  );
 }
 
 function previousAppForPayload(draft: AirglowAppDraft): PrivateAppSavePayload['previousApp'] | undefined {

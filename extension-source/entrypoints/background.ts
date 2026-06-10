@@ -19,6 +19,9 @@ import {
   SIDEPANEL_LAST_DRAFT_KEY,
   type AirglowAppDraft,
   type PrivateAppSavePayload,
+  type SidePanelGenerationRunEvent,
+  type SidePanelGenerationRunStatus,
+  applyGenerationRunEventsToDraft,
   buildPrivateAppSavePayload,
   formatCloudSaveFallbackNotice,
   markDraftSaved,
@@ -1151,6 +1154,28 @@ export default defineBackground(() => {
     generator?: string;
   };
 
+  type SidePanelGenerationRunRecord = {
+    runId: string;
+    status: SidePanelGenerationRunStatus;
+    appKey?: string;
+    versionKey?: string;
+    result?: SidePanelCloudSaveResult & {
+      manifest?: AppManifest;
+    };
+    error?: {
+      message: string;
+      code?: string;
+    };
+    createdAt: string;
+    updatedAt: string;
+  };
+
+  type SidePanelGenerationRunResponse = {
+    ok?: boolean;
+    run: SidePanelGenerationRunRecord;
+    events: SidePanelGenerationRunEvent[];
+  };
+
   type SavedAppRegistrationStatus = {
     registered: boolean;
     userScriptsEnabled: boolean;
@@ -1194,6 +1219,17 @@ export default defineBackground(() => {
       [SIDEPANEL_DRAFTS_KEY]: [draft, ...withoutCurrent].slice(0, 25),
       [SIDEPANEL_LAST_DRAFT_KEY]: draft.id,
     });
+  }
+
+  async function getLastSidePanelDraft(): Promise<AirglowAppDraft | null> {
+    const stored = await chrome.storage.local.get([SIDEPANEL_DRAFTS_KEY, SIDEPANEL_LAST_DRAFT_KEY]);
+    const drafts = Array.isArray(stored[SIDEPANEL_DRAFTS_KEY])
+      ? stored[SIDEPANEL_DRAFTS_KEY] as AirglowAppDraft[]
+      : [];
+    const lastDraftId = typeof stored[SIDEPANEL_LAST_DRAFT_KEY] === 'string'
+      ? stored[SIDEPANEL_LAST_DRAFT_KEY] as string
+      : '';
+    return drafts.find((item) => item.id === lastDraftId) || drafts[0] || null;
   }
 
   function parseJson(text: string): unknown {
@@ -1414,6 +1450,185 @@ export default defineBackground(() => {
     throw saveNetworkError(lastError);
   }
 
+  function normalizeGenerationRunResponse(result: unknown): SidePanelGenerationRunResponse {
+    const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+    const run = envelope.run && typeof envelope.run === 'object'
+      ? envelope.run as SidePanelGenerationRunRecord
+      : null;
+    const events = Array.isArray(envelope.events)
+      ? envelope.events.filter((event: unknown): event is SidePanelGenerationRunEvent => {
+          if (!event || typeof event !== 'object') return false;
+          const record = event as Record<string, unknown>;
+          return typeof record.sequence === 'number' && typeof record.type === 'string' && typeof record.message === 'string';
+        })
+      : [];
+    if (!run?.runId || typeof run.status !== 'string') {
+      throw new Error('Generation run response did not include run metadata');
+    }
+    return { ok: Boolean(envelope.ok), run, events };
+  }
+
+  async function postPrivateAppGenerationRun(payload: PrivateAppSavePayload): Promise<SidePanelGenerationRunResponse> {
+    const url = `${getCloudAppSourceUrl()}/api/apps/private/generation-runs`;
+    const requestInit: RequestInit = {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        ...await getAirglowIdentityHeaders({ requireSession: true }),
+      },
+      body: JSON.stringify(payload),
+    };
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= SIDEPANEL_SAVE_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        const res = await fetchWithTimeout(url, requestInit, SIDEPANEL_SAVE_TIMEOUT_MS);
+        const result = parseJson(await res.text());
+        if (!res.ok) {
+          const error = saveErrorFromResponse(res, result);
+          lastError = error;
+          if (shouldRetryHttpStatus(res.status) && attempt < SIDEPANEL_SAVE_RETRY_DELAYS_MS.length) {
+            await sleep(SIDEPANEL_SAVE_RETRY_DELAYS_MS[attempt]);
+            continue;
+          }
+          throw error;
+        }
+        return normalizeGenerationRunResponse(result);
+      } catch (error) {
+        lastError = error;
+        if (isSaveTimeoutError(error)) throw saveNetworkError(error);
+        const rawStatus = (error as SidePanelSaveError)?.status;
+        const status = typeof rawStatus === 'number' ? rawStatus : null;
+        if (status !== null && !shouldRetryHttpStatus(status)) throw error;
+        if (attempt < SIDEPANEL_SAVE_RETRY_DELAYS_MS.length) {
+          await sleep(SIDEPANEL_SAVE_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+      }
+    }
+    throw saveNetworkError(lastError);
+  }
+
+  async function getPrivateAppGenerationRun(runId: string, sinceSequence = 0): Promise<SidePanelGenerationRunResponse> {
+    const since = Math.max(0, Math.floor(sinceSequence));
+    const url = `${getCloudAppSourceUrl()}/api/apps/private/generation-runs/${encodeURIComponent(runId)}?since=${since}`;
+    const res = await fetchWithTimeout(url, {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        ...await getAirglowIdentityHeaders({ requireSession: true }),
+      },
+    }, 30000);
+    const result = parseJson(await res.text());
+    if (!res.ok) throw saveErrorFromResponse(res, result);
+    return normalizeGenerationRunResponse(result);
+  }
+
+  async function executePrivateAppGenerationRun(runId: string): Promise<SidePanelGenerationRunResponse> {
+    const url = `${getCloudAppSourceUrl()}/api/apps/private/generation-runs/${encodeURIComponent(runId)}/execute`;
+    const res = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        ...await getAirglowIdentityHeaders({ requireSession: true }),
+      },
+    }, SIDEPANEL_SAVE_TIMEOUT_MS);
+    const result = parseJson(await res.text());
+    if (!res.ok) throw saveErrorFromResponse(res, result);
+    return normalizeGenerationRunResponse(result);
+  }
+
+  function applyGenerationRunSnapshotToDraft(
+    draft: AirglowAppDraft,
+    snapshot: SidePanelGenerationRunResponse,
+  ): AirglowAppDraft {
+    const lastSequence = snapshot.events.reduce((max, event) => Math.max(max, event.sequence), draft.generationRun?.lastSequence || 0);
+    return applyGenerationRunEventsToDraft(draft, {
+      runId: snapshot.run.runId,
+      status: snapshot.run.status,
+      lastSequence,
+      startedAt: snapshot.run.createdAt,
+      updatedAt: snapshot.run.updatedAt,
+    }, snapshot.events);
+  }
+
+  async function createSidePanelGenerationRun(draft: AirglowAppDraft, requestId?: string) {
+    const normalizedDraft = normalizeDraftForSave(draft);
+    const clientRequestId = requestId || crypto.randomUUID();
+    const snapshot = await postPrivateAppGenerationRun(buildPrivateAppSavePayload(normalizedDraft, clientRequestId));
+    const nextDraft = applyGenerationRunSnapshotToDraft(normalizedDraft, snapshot);
+    await persistSidePanelDraft(nextDraft);
+    return { ok: true, draft: nextDraft, run: snapshot.run, events: snapshot.events };
+  }
+
+  function cloudSaveResultFromGenerationRun(run: SidePanelGenerationRunRecord): SidePanelCloudSaveResult | null {
+    const result = run.result;
+    const appId = result?.appId || result?.appKey || run.appKey;
+    if (!appId) return null;
+    return {
+      appId,
+      ...(result?.appKey || run.appKey ? { appKey: result?.appKey || run.appKey } : {}),
+      ...(result?.versionKey || run.versionKey ? { versionKey: result?.versionKey || run.versionKey } : {}),
+      ...(result?.generatedSummary ? { generatedSummary: result.generatedSummary } : {}),
+      ...(result?.generator ? { generator: result.generator } : {}),
+    };
+  }
+
+  async function sidePanelGenerationSnapshotResult(
+    draft: AirglowAppDraft,
+    snapshot: SidePanelGenerationRunResponse,
+    initialContextPromise?: Promise<SidePanelInitialPageContext | null>,
+  ) {
+    const normalizedDraft = normalizeDraftForSave(draft);
+    let nextDraft = applyGenerationRunSnapshotToDraft(normalizedDraft, snapshot);
+
+    if (snapshot.run.status === 'completed') {
+      let cloud = cloudSaveResultFromGenerationRun(snapshot.run);
+      if (!cloud) throw new Error('Generation run completed without an app result');
+      const seededInitialContext = initialContextPromise
+        ? await seedInitialPageContext(cloud.appId, await initialContextPromise)
+        : false;
+      let registrationStatus: SavedAppRegistrationStatus = { registered: false, userScriptsEnabled: userScriptsAllowed };
+      await refreshSavedAppRegistration(cloud.appId)
+        .then((result) => { registrationStatus = result; })
+        .catch((error) => {
+          logger.warn('airglow', `reload after sidepanel generation run failed: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      cloud = { ...cloud, ...registrationStatus };
+      nextDraft = markDraftSaved(nextDraft, {
+        persistence: {
+          mode: 'cloud',
+          cloud,
+        },
+      });
+      await persistSidePanelDraft(nextDraft);
+      if (seededInitialContext) {
+        logger.info('airglow', `seeded initial page context for generated app ${cloud.appId}`);
+      }
+      return { ok: true, mode: 'cloud' as const, draft: nextDraft, cloud, run: snapshot.run, events: snapshot.events };
+    }
+
+    await persistSidePanelDraft(nextDraft);
+    if (snapshot.run.status === 'failed') {
+      const error = snapshot.run.error || { message: 'App generation failed.' };
+      return { ok: true, mode: 'failed' as const, draft: nextDraft, cloudError: error, run: snapshot.run, events: snapshot.events };
+    }
+    return { ok: true, mode: 'pending' as const, draft: nextDraft, run: snapshot.run, events: snapshot.events };
+  }
+
+  async function refreshSidePanelGenerationRun(draft: AirglowAppDraft, runId: string, sinceSequence = 0) {
+    const snapshot = await getPrivateAppGenerationRun(runId, sinceSequence);
+    return await sidePanelGenerationSnapshotResult(draft, snapshot);
+  }
+
+  async function executeSidePanelGenerationRun(draft: AirglowAppDraft, runId: string) {
+    const normalizedDraft = normalizeDraftForSave(draft);
+    const initialContextPromise = captureInitialPageContext(normalizedDraft);
+    const snapshot = await executePrivateAppGenerationRun(runId);
+    return await sidePanelGenerationSnapshotResult(normalizedDraft, snapshot, initialContextPromise);
+  }
+
   async function requestPrivateAppMutation<T>(
     appId: string,
     method: 'PATCH' | 'DELETE',
@@ -1611,6 +1826,13 @@ export default defineBackground(() => {
       return true;
     }
 
+    if (msg?.type === 'airglow:sidepanel:get-last-draft') {
+      getLastSidePanelDraft()
+        .then((draft) => sendResponse({ ok: true, draft }))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
     if (msg?.type === 'airglow:sidepanel:save-draft') {
       const draft = msg.draft as AirglowAppDraft | undefined;
       if (!draft || typeof draft !== 'object' || typeof draft.prompt !== 'string') {
@@ -1620,6 +1842,52 @@ export default defineBackground(() => {
       saveSidePanelDraft(draft, typeof msg.requestId === 'string' ? msg.requestId : undefined)
         .then((result) => sendResponse(result))
         .catch((e) => sendResponse({ error: e.message }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:create-generation-run') {
+      const draft = msg.draft as AirglowAppDraft | undefined;
+      if (!draft || typeof draft !== 'object' || typeof draft.prompt !== 'string') {
+        sendResponse({ error: 'draft is required' });
+        return;
+      }
+      createSidePanelGenerationRun(draft, typeof msg.requestId === 'string' ? msg.requestId : undefined)
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:get-generation-run') {
+      const runId = typeof msg.runId === 'string' ? msg.runId : '';
+      if (!runId) {
+        sendResponse({ error: 'runId is required' });
+        return;
+      }
+      const sinceSequence = typeof msg.sinceSequence === 'number' ? msg.sinceSequence : 0;
+      const draft = msg.draft as AirglowAppDraft | undefined;
+      const request = draft && typeof draft === 'object' && typeof draft.prompt === 'string'
+        ? refreshSidePanelGenerationRun(draft, runId, sinceSequence)
+        : getPrivateAppGenerationRun(runId, sinceSequence).then((result) => ({ ok: true, ...result }));
+      request
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
+    if (msg?.type === 'airglow:sidepanel:execute-generation-run') {
+      const draft = msg.draft as AirglowAppDraft | undefined;
+      const runId = typeof msg.runId === 'string' ? msg.runId : '';
+      if (!draft || typeof draft !== 'object' || typeof draft.prompt !== 'string') {
+        sendResponse({ error: 'draft is required' });
+        return;
+      }
+      if (!runId) {
+        sendResponse({ error: 'runId is required' });
+        return;
+      }
+      executeSidePanelGenerationRun(draft, runId)
+        .then((result) => sendResponse(result))
+        .catch((e) => sendResponse({ error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
 
