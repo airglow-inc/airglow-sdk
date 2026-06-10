@@ -29,6 +29,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font-size: 14px;
+  min-width: 380px;
 }
 
 button,
@@ -42,17 +43,20 @@ button {
 
 .sidepanel {
   height: 100vh;
-  padding: 12px;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 10px;
   overflow: hidden;
 }
 
 .topbar {
   display: flex;
-  gap: 12px;
+  gap: 10px;
   align-items: center;
+  flex: 0 0 auto;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
 }
 
 .topbar img {
@@ -66,14 +70,12 @@ button {
   line-height: 1.15;
 }
 
-.topbar p,
 .review-section p {
   margin: 4px 0 0;
   color: var(--muted);
   line-height: 1.45;
 }
 
-.chat-panel,
 .review-section {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -121,6 +123,7 @@ button {
   flex-direction: column;
   overflow: hidden;
   padding: 0;
+  background: var(--bg);
 }
 
 .chat-log {
@@ -130,7 +133,7 @@ button {
   align-content: start;
   gap: 10px;
   overflow: auto;
-  padding: 14px;
+  padding: 12px;
 }
 
 .chat-message {
@@ -151,10 +154,12 @@ button {
   margin-right: auto;
 }
 
-.chat-message.target-message,
+.chat-message.target-message {
+  max-width: 92%;
+}
+
 .chat-message.actions-message {
-  width: 100%;
-  max-width: 100%;
+  max-width: 92%;
 }
 
 .chat-message.progress {
@@ -242,9 +247,9 @@ button {
 
 .chat-composer {
   flex: 0 0 auto;
-  padding: 10px;
+  padding: 10px 12px 12px;
   border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--surface) 94%, var(--surface-muted));
+  background: var(--bg);
 }
 
 .help-button {

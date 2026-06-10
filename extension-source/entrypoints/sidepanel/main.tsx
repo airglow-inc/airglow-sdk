@@ -340,7 +340,6 @@ function App() {
         <img src={logoUrl} alt="" />
         <div>
           <h1>Airglow</h1>
-          <p>Build apps for the selected page.</p>
         </div>
       </header>
 
