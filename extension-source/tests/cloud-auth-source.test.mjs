@@ -86,12 +86,25 @@ test('sidepanel lists apps and can refine private cloud apps', async () => {
   const sidepanelModel = await readFile(new URL('../lib/sidepanel-model.ts', import.meta.url), 'utf8');
 
   assert.match(sidepanel, /type:\s*'airglow:get-dashboard-manifests'/);
-  assert.match(sidepanel, /function AppsMessage/);
+  assert.match(sidepanel, /type SidePanelView = 'build' \| 'apps'/);
+  assert.match(sidepanel, /function AppsTab/);
+  assert.match(sidepanel, /className=\{activeView === 'apps' \? 'sidepanel-tab active' : 'sidepanel-tab'\}/);
   assert.match(sidepanel, /Refine/);
   assert.match(sidepanel, /function startRefineApp\(app: SourcedManifest\)/);
   assert.match(sidepanel, /previousAppCloudMetadataForManifest\(app\)/);
   assert.match(sidepanel, /setSavedAppId\(app\.id\)/);
+  assert.match(sidepanel, /setActiveView\('build'\)/);
   assert.match(sidepanelModel, /previousAppForPayload/);
+});
+
+test('sidepanel exposes dashboard as a top-level tab action', async () => {
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+
+  assert.match(sidepanel, /<nav className="sidepanel-tabs"/);
+  assert.match(sidepanel, /<LayoutDashboard size=\{16\} \/>/);
+  assert.match(sidepanel, /Dashboard/);
+  assert.match(sidepanel, /type:\s*'airglow:open-dashboard'/);
+  assert.doesNotMatch(sidepanel, /IconTooltip label="Open dashboard"[\s\S]*actions-message/);
 });
 
 test('background polls cloud browser tool calls through extension identity', async () => {

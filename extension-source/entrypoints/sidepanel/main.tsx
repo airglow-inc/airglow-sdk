@@ -2,7 +2,7 @@ import { Fragment, type FormEvent, type ReactNode, useEffect, useMemo, useRef, u
 import { createRoot } from 'react-dom/client';
 import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { Check, CircleHelp, ExternalLink, Loader2, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
+import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, MessageSquare, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import './style.css';
 import type { SourcedManifest } from '../../lib/app-resolver';
 import {
@@ -24,6 +24,7 @@ type TargetResponse = {
 type GenerationPhase = 'idle' | 'reading_context' | 'generating' | 'ready' | 'error';
 type SaveState = 'idle' | 'saving' | 'saved' | 'local' | 'error';
 type ApplyState = 'idle' | 'applying' | 'applied' | 'error';
+type SidePanelView = 'build' | 'apps';
 
 const GENERATION_STEPS = [
   'Reading page context...',
@@ -427,7 +428,7 @@ function TargetContextMessage({
   );
 }
 
-function AppsMessage({
+function AppsTab({
   apps,
   activeAppId,
   loading,
@@ -445,9 +446,12 @@ function AppsMessage({
   onRefine: (app: SourcedManifest) => void;
 }) {
   return (
-    <div className="chat-message assistant apps-message">
-      <div className="target-message-heading">
-        <span>Apps</span>
+    <section className="apps-tab-panel" aria-label="Apps">
+      <div className="apps-tab-header">
+        <div>
+          <h2>Apps</h2>
+          <p>Saved apps available in this browser context.</p>
+        </div>
         <IconTooltip label="Refresh apps">
           <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loading} aria-label="Refresh apps">
             {loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
@@ -455,9 +459,9 @@ function AppsMessage({
         </IconTooltip>
       </div>
       {error ? (
-        <p className="target-meta">{error}</p>
+        <p className="apps-empty">{error}</p>
       ) : apps.length === 0 ? (
-        <p className="target-meta">{loading ? 'Loading apps...' : 'No apps saved yet.'}</p>
+        <p className="apps-empty">{loading ? 'Loading apps...' : 'No apps saved yet.'}</p>
       ) : (
         <div className="apps-list" aria-label="Available apps">
           {apps.map((app) => {
@@ -494,7 +498,7 @@ function AppsMessage({
           })}
         </div>
       )}
-    </div>
+    </section>
   );
 }
 
@@ -529,6 +533,7 @@ function App() {
   const [apps, setApps] = useState<SourcedManifest[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
   const [appsError, setAppsError] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<SidePanelView>('build');
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<AirglowAppDraft | null>(null);
 
@@ -837,6 +842,11 @@ function App() {
     await sendRuntimeMessage({ type: 'airglow:open-dashboard' });
   }
 
+  function showApps() {
+    setActiveView('apps');
+    void loadApps();
+  }
+
   function startRefineApp(app: SourcedManifest) {
     const now = new Date();
     const iso = now.toISOString();
@@ -881,6 +891,7 @@ function App() {
     setApplyError(null);
     setGenerationRunEvents([]);
     setChatInput('');
+    setActiveView('build');
   }
 
   async function refreshTargetPage() {
@@ -911,122 +922,142 @@ function App() {
   return (
     <Tooltip.Provider delayDuration={160} skipDelayDuration={100}>
       <main className="sidepanel">
-        <section className="chat-panel">
-          <div className="chat-log" ref={chatLogRef} aria-live="polite">
-            <AppsMessage
-              apps={apps}
-              activeAppId={savedAppId}
-              loading={appsLoading}
-              error={appsError}
-              onRefresh={() => void loadApps()}
-              onOpen={(appId) => void openApp(appId)}
-              onRefine={startRefineApp}
-            />
-            {draft?.messages.length ? draft.messages.map((message) => (
-              <Fragment key={message.id}>
-                {firstAssistantMessageIndex !== -1 && draft.messages[firstAssistantMessageIndex]?.id === message.id && targetContextMessage}
-                <div className={`chat-message ${message.role}`}>
-                  <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
-                  <p>{message.content}</p>
+        <nav className="sidepanel-tabs" aria-label="Airglow sections">
+          <button
+            type="button"
+            className={activeView === 'build' ? 'sidepanel-tab active' : 'sidepanel-tab'}
+            onClick={() => setActiveView('build')}
+            aria-current={activeView === 'build' ? 'page' : undefined}
+          >
+            <MessageSquare size={16} />
+            Build
+          </button>
+          <button
+            type="button"
+            className={activeView === 'apps' ? 'sidepanel-tab active' : 'sidepanel-tab'}
+            onClick={showApps}
+            aria-current={activeView === 'apps' ? 'page' : undefined}
+          >
+            <LayoutGrid size={16} />
+            Apps
+          </button>
+          <button type="button" className="sidepanel-tab" onClick={() => void openDashboard()}>
+            <LayoutDashboard size={16} />
+            Dashboard
+            <ExternalLink size={13} />
+          </button>
+        </nav>
+        {activeView === 'apps' ? (
+          <AppsTab
+            apps={apps}
+            activeAppId={savedAppId}
+            loading={appsLoading}
+            error={appsError}
+            onRefresh={() => void loadApps()}
+            onOpen={(appId) => void openApp(appId)}
+            onRefine={startRefineApp}
+          />
+        ) : (
+          <section className="chat-panel">
+            <div className="chat-log" ref={chatLogRef} aria-live="polite">
+              {draft?.messages.length ? draft.messages.map((message) => (
+                <Fragment key={message.id}>
+                  {firstAssistantMessageIndex !== -1 && draft.messages[firstAssistantMessageIndex]?.id === message.id && targetContextMessage}
+                  <div className={`chat-message ${message.role}`}>
+                    <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
+                    <p>{message.content}</p>
+                  </div>
+                </Fragment>
+              )) : (
+                <>
+                  <WelcomeMessage />
+                  <QuickPromptChips onPick={setChatInput} />
+                </>
+              )}
+              {draft?.messages.length && firstAssistantMessageIndex === -1 ? targetContextMessage : null}
+              {(generationPhase === 'reading_context' || saveState === 'saving') && (
+                <GenerationProgress
+                  stepIndex={generationPhase === 'reading_context'
+                    ? 0
+                    : progressStepIndexFromEvents(generationRunEvents, 1)}
+                />
+              )}
+              {saveState === 'error' && (
+                <AssistantStatusMessage
+                  tone="error"
+                  title="Generation failed"
+                >
+                  {saveError || 'Could not save this app draft.'}
+                </AssistantStatusMessage>
+              )}
+              {applyState === 'applying' && (
+                <AssistantStatusMessage title="Refreshing page">
+                  Refreshing the target page so the generated app can inject.
+                </AssistantStatusMessage>
+              )}
+              {applyState === 'applied' && (
+                <AssistantStatusMessage tone="success" title="Page refreshed">
+                  The on-page Airglow panel should appear after the page loads.
+                </AssistantStatusMessage>
+              )}
+              {applyState === 'error' && (
+                <AssistantStatusMessage tone="error" title="Refresh failed">
+                  {applyError || 'Could not refresh the target page.'}
+                </AssistantStatusMessage>
+              )}
+              {draft && saveState !== 'saving' && (
+                <div className="chat-message assistant actions-message">
+                  <span>Airglow</span>
+                  <p><strong>{saveStateTitle(draft, saveState)}</strong></p>
+                  <div className="message-actions">
+                    {(saveState === 'error' || saveState === 'local') && (
+                      <IconTooltip label="Save again">
+                        <button type="button" className="secondary-button" onClick={handleSaveDraft}>
+                          <RefreshCw size={16} />
+                          Try again
+                        </button>
+                      </IconTooltip>
+                    )}
+                    {savedAppId && (
+                      <IconTooltip label="Open generated app">
+                        <button type="button" className="secondary-button" onClick={openSavedApp}>
+                          <ExternalLink size={16} />
+                          Open app
+                        </button>
+                      </IconTooltip>
+                    )}
+                    {savedAppId && typeof draft.target?.id === 'number' && (
+                      <IconTooltip label="Reload the target tab">
+                        <button type="button" className="secondary-button" onClick={refreshTargetPage} disabled={applyState === 'applying'}>
+                          {applyState === 'applying' ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+                          {applyState === 'applying' ? 'Refreshing' : 'Refresh page'}
+                        </button>
+                      </IconTooltip>
+                    )}
+                  </div>
                 </div>
-              </Fragment>
-            )) : (
-              <>
-                <WelcomeMessage />
-                <QuickPromptChips onPick={setChatInput} />
-              </>
-            )}
-            {draft?.messages.length && firstAssistantMessageIndex === -1 ? targetContextMessage : null}
-            {(generationPhase === 'reading_context' || saveState === 'saving') && (
-              <GenerationProgress
-                stepIndex={generationPhase === 'reading_context'
-                  ? 0
-                  : progressStepIndexFromEvents(generationRunEvents, 1)}
-              />
-            )}
-            {saveState === 'error' && (
-              <AssistantStatusMessage
-                tone="error"
-                title="Generation failed"
-              >
-                {saveError || 'Could not save this app draft.'}
-              </AssistantStatusMessage>
-            )}
-            {applyState === 'applying' && (
-              <AssistantStatusMessage title="Refreshing page">
-                Refreshing the target page so the generated app can inject.
-              </AssistantStatusMessage>
-            )}
-            {applyState === 'applied' && (
-              <AssistantStatusMessage tone="success" title="Page refreshed">
-                The on-page Airglow panel should appear after the page loads.
-              </AssistantStatusMessage>
-            )}
-            {applyState === 'error' && (
-              <AssistantStatusMessage tone="error" title="Refresh failed">
-                {applyError || 'Could not refresh the target page.'}
-              </AssistantStatusMessage>
-            )}
-            {draft && saveState !== 'saving' && (
-              <div className="chat-message assistant actions-message">
-                <span>Airglow</span>
-                <p><strong>{saveStateTitle(draft, saveState)}</strong></p>
-                <div className="message-actions">
-                  {(saveState === 'error' || saveState === 'local') && (
-                    <IconTooltip label="Save again">
-                      <button type="button" className="secondary-button" onClick={handleSaveDraft}>
-                        <RefreshCw size={16} />
-                        Try again
-                      </button>
-                    </IconTooltip>
-                  )}
-                  {savedAppId && (
-                    <IconTooltip label="Open generated app">
-                      <button type="button" className="secondary-button" onClick={openSavedApp}>
-                        <ExternalLink size={16} />
-                        Open app
-                      </button>
-                    </IconTooltip>
-                  )}
-                  {savedAppId && typeof draft.target?.id === 'number' && (
-                    <IconTooltip label="Reload the target tab">
-                      <button type="button" className="secondary-button" onClick={refreshTargetPage} disabled={applyState === 'applying'}>
-                        {applyState === 'applying' ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
-                        {applyState === 'applying' ? 'Refreshing' : 'Refresh page'}
-                      </button>
-                    </IconTooltip>
-                  )}
-                  {savedAppId && (
-                    <IconTooltip label="Open dashboard">
-                      <button type="button" className="secondary-button" onClick={openDashboard}>
-                        <ExternalLink size={16} />
-                        Dashboard
-                      </button>
-                    </IconTooltip>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-          <form className="chat-composer" onSubmit={handleSubmitChat}>
-            <div className="composer-row">
-              <ContextPopover draft={draft} disclosureText={disclosureText} />
-              <textarea
-                id="app-prompt"
-                aria-label={draft ? 'Update this app' : 'Create an app'}
-                value={chatInput}
-                onChange={(event) => setChatInput(event.target.value)}
-                placeholder={draft ? 'Update this app...' : 'Message Airglow...'}
-                rows={1}
-              />
-              <IconTooltip label={draft ? 'Update app' : 'Generate app'}>
-                <button type="submit" className="send-button" disabled={!canSend} aria-label={draft ? 'Update app' : 'Generate app'}>
-                  {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-                </button>
-              </IconTooltip>
+              )}
             </div>
-          </form>
-        </section>
+            <form className="chat-composer" onSubmit={handleSubmitChat}>
+              <div className="composer-row">
+                <ContextPopover draft={draft} disclosureText={disclosureText} />
+                <textarea
+                  id="app-prompt"
+                  aria-label={draft ? 'Update this app' : 'Create an app'}
+                  value={chatInput}
+                  onChange={(event) => setChatInput(event.target.value)}
+                  placeholder={draft ? 'Update this app...' : 'Message Airglow...'}
+                  rows={1}
+                />
+                <IconTooltip label={draft ? 'Update app' : 'Generate app'}>
+                  <button type="submit" className="send-button" disabled={!canSend} aria-label={draft ? 'Update app' : 'Generate app'}>
+                    {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
+                  </button>
+                </IconTooltip>
+              </div>
+            </form>
+          </section>
+        )}
       </main>
     </Tooltip.Provider>
   );

@@ -45,8 +45,55 @@ button {
 .sidepanel {
   height: 100vh;
   display: flex;
+  flex-direction: column;
   overflow: hidden;
   background: var(--bg);
+}
+
+.sidepanel-tabs {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(70px, 0.9fr) minmax(66px, 0.8fr) minmax(116px, 1.3fr);
+  gap: 6px;
+  padding: 10px 10px 8px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(251, 250, 247, 0.96);
+  backdrop-filter: blur(12px);
+}
+
+.sidepanel-tab {
+  min-width: 0;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.sidepanel-tab svg {
+  flex: 0 0 auto;
+}
+
+.sidepanel-tab:hover,
+.sidepanel-tab.active {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 1px 2px rgba(23, 26, 33, 0.04);
+}
+
+.sidepanel-tab:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.28);
+  outline-offset: 2px;
 }
 
 .chat-panel {
@@ -88,8 +135,7 @@ button {
 }
 
 .chat-message.target-message,
-.chat-message.actions-message,
-.chat-message.apps-message {
+.chat-message.actions-message {
   max-width: min(94%, 560px);
 }
 
@@ -175,6 +221,52 @@ button {
   gap: 0;
   max-height: 280px;
   overflow: auto;
+}
+
+.apps-tab-panel {
+  min-height: 0;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 14px 12px 12px;
+}
+
+.apps-tab-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.apps-tab-header h2,
+.apps-tab-header p,
+.apps-empty {
+  margin: 0;
+}
+
+.apps-tab-header h2 {
+  font-size: 16px;
+  line-height: 1.2;
+}
+
+.apps-tab-header p,
+.apps-empty {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.apps-empty {
+  padding: 14px 0;
+}
+
+.apps-tab-panel .apps-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  max-height: none;
 }
 
 .app-row {
