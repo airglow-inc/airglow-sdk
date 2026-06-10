@@ -37,6 +37,16 @@ test('sidepanel reads target context after the user asks for an app', async () =
   assert.doesNotMatch(sidepanel, /useEffect\(\(\) => \{\s*refreshTarget\(\);\s*\}, \[\]\);/);
 });
 
+test('sidepanel treats local fallback as a local draft, not a saved app', async () => {
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+
+  assert.match(sidepanel, /type SaveState = 'idle' \| 'saving' \| 'saved' \| 'local' \| 'error'/);
+  assert.match(sidepanel, /setSaveState\('local'\)/);
+  assert.match(sidepanel, /Draft saved locally/);
+  assert.match(sidepanel, /saveState === 'error' \|\| saveState === 'local'/);
+  assert.match(sidepanel, /draft\.persistence\?\.mode === 'cloud'/);
+});
+
 test('app UI sandbox reports successful bundle execution to app-shell', async () => {
   const appShell = await readFile(new URL('../entrypoints/app-shell/main.ts', import.meta.url), 'utf8');
   const sandbox = await readFile(new URL('../public/app-ui-sandbox.html', import.meta.url), 'utf8');

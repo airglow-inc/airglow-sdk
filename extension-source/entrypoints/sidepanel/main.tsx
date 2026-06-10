@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
@@ -17,7 +17,7 @@ type TargetResponse = {
 };
 
 type GenerationPhase = 'idle' | 'reading_context' | 'generating' | 'ready' | 'error';
-type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type SaveState = 'idle' | 'saving' | 'saved' | 'local' | 'error';
 type ApplyState = 'idle' | 'applying' | 'applied' | 'error';
 
 const GENERATION_STEPS = [
@@ -276,6 +276,12 @@ function WelcomeMessage() {
   );
 }
 
+function saveStateTitle(draft: AirglowAppDraft, saveState: SaveState): string {
+  if (saveState === 'local' || draft.persistence?.mode === 'local') return 'Draft saved locally';
+  if (saveState === 'saved' && draft.persistence?.mode === 'cloud') return 'App saved';
+  return 'Draft ready';
+}
+
 function App() {
   const [target, setTarget] = useState<SidePanelTargetTab | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
@@ -356,11 +362,14 @@ function App() {
       setDraft(response.draft);
       if (response.mode === 'cloud') {
         setSavedAppId(response.cloud.appId);
+        setSaveState('saved');
+        setGenerationPhase('ready');
       } else {
         setSavedAppId(null);
+        setSaveState('local');
+        setGenerationPhase('error');
+        setSaveError(response.cloudError.message || 'Cloud save failed.');
       }
-      setSaveState('saved');
-      setGenerationPhase('ready');
       setApplyState('idle');
       setApplyError(null);
     } catch (error) {
@@ -428,30 +437,37 @@ function App() {
     }
   }
 
+  const shouldShowTargetContext = Boolean(draft && (loadingTarget || target || targetError));
+  const firstAssistantMessageIndex = draft?.messages.findIndex((message) => message.role === 'assistant') ?? -1;
+  const targetContextMessage = shouldShowTargetContext ? (
+    <TargetContextMessage
+      target={target}
+      targetError={targetError}
+      loadingTarget={loadingTarget}
+      onRefresh={refreshTarget}
+    />
+  ) : null;
+
   return (
     <Tooltip.Provider delayDuration={160} skipDelayDuration={100}>
       <main className="sidepanel">
         <section className="chat-panel">
           <div className="chat-log" ref={chatLogRef} aria-live="polite">
             {draft?.messages.length ? draft.messages.map((message) => (
-              <div key={message.id} className={`chat-message ${message.role}`}>
-                <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
-                <p>{message.content}</p>
-              </div>
+              <Fragment key={message.id}>
+                {firstAssistantMessageIndex !== -1 && draft.messages[firstAssistantMessageIndex]?.id === message.id && targetContextMessage}
+                <div className={`chat-message ${message.role}`}>
+                  <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
+                  <p>{message.content}</p>
+                </div>
+              </Fragment>
             )) : (
               <>
                 <WelcomeMessage />
                 <QuickPromptChips onPick={setChatInput} />
               </>
             )}
-            {draft && (loadingTarget || target || targetError) && (
-              <TargetContextMessage
-                target={target}
-                targetError={targetError}
-                loadingTarget={loadingTarget}
-                onRefresh={refreshTarget}
-              />
-            )}
+            {draft?.messages.length && firstAssistantMessageIndex === -1 ? targetContextMessage : null}
             {(generationPhase === 'reading_context' || saveState === 'saving') && (
               <GenerationProgress stepIndex={generationPhase === 'reading_context' ? 0 : generationStepIndex ?? 1} />
             )}
@@ -481,9 +497,9 @@ function App() {
             {draft && saveState !== 'saving' && (
               <div className="chat-message assistant actions-message">
                 <span>Airglow</span>
-                <p><strong>{draft.status === 'saved' ? 'App saved' : 'Draft ready'}</strong></p>
+                <p><strong>{saveStateTitle(draft, saveState)}</strong></p>
                 <div className="message-actions">
-                  {saveState === 'error' && (
+                  {(saveState === 'error' || saveState === 'local') && (
                     <IconTooltip label="Save again">
                       <button type="button" className="secondary-button" onClick={handleSaveDraft}>
                         <RefreshCw size={16} />
@@ -507,12 +523,14 @@ function App() {
                       </button>
                     </IconTooltip>
                   )}
-                  <IconTooltip label="Open dashboard">
-                    <button type="button" className="secondary-button" onClick={openDashboard}>
-                      <ExternalLink size={16} />
-                      Dashboard
-                    </button>
-                  </IconTooltip>
+                  {savedAppId && (
+                    <IconTooltip label="Open dashboard">
+                      <button type="button" className="secondary-button" onClick={openDashboard}>
+                        <ExternalLink size={16} />
+                        Dashboard
+                      </button>
+                    </IconTooltip>
+                  )}
                 </div>
               </div>
             )}
