@@ -26,6 +26,7 @@ import {
   formatCloudSaveFallbackNotice,
   markDraftSaved,
   normalizeDraftForSave,
+  normalizeStoredDraft,
 } from '../lib/sidepanel-model';
 
 export default defineBackground(() => {
@@ -1251,7 +1252,10 @@ export default defineBackground(() => {
     const lastDraftId = typeof stored[SIDEPANEL_LAST_DRAFT_KEY] === 'string'
       ? stored[SIDEPANEL_LAST_DRAFT_KEY] as string
       : '';
-    return lastDraftId ? drafts.find((item) => item.id === lastDraftId) || null : null;
+    if (!lastDraftId) return null;
+    // Heal legacy/partial drafts (e.g. pre-`messages` schema) before handing them
+    // to the sidepanel, which would otherwise crash on `draft.messages.length`.
+    return normalizeStoredDraft(drafts.find((item) => item?.id === lastDraftId) ?? null);
   }
 
   async function clearLastSidePanelDraft(): Promise<void> {
@@ -2011,6 +2015,23 @@ export default defineBackground(() => {
 
   startBrowserToolBridge();
 
+  // Open the end-user side panel when the toolbar icon is clicked. We let Chrome
+  // open the panel natively via openPanelOnActionClick rather than calling
+  // sidePanel.open() ourselves from onClicked: a click that first has to wake an
+  // idle service worker loses its user-gesture token by the time the listener
+  // runs, so sidePanel.open() throws "may only be called in response to a user
+  // gesture" and we fall back to the dashboard. (This is why a fresh profile —
+  // SW still alive — opened the panel, but a long-running profile opened the
+  // dashboard.) Native open has no such race. setPanelBehavior is persisted
+  // per-profile, so re-asserting it every startup also heals profiles left in
+  // the old (false) state.
+  chrome.sidePanel?.setPanelBehavior?.({ openPanelOnActionClick: true }).catch((error) => {
+    logger.warn('airglow', `setPanelBehavior failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+
+  // Fallback only: with openPanelOnActionClick set, Chrome handles the click and
+  // onClicked does NOT fire. It still fires on builds without sidePanel support,
+  // where openSidePanel opens the dashboard instead.
   chrome.action.onClicked.addListener((tab) => {
     openSidePanel(tab).catch((error) => {
       logger.error('airglow', `open side panel failed: ${error instanceof Error ? error.message : String(error)}`);

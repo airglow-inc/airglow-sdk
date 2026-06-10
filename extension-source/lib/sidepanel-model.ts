@@ -348,6 +348,61 @@ export function createAppDraft(input: CreateAirglowAppDraftInput): AirglowAppDra
   };
 }
 
+// Heal a draft read back from storage. Drafts persisted by older builds predate
+// the `messages`/`generationRun` fields, so a restored draft can have
+// `messages: undefined`. The sidepanel reads `draft?.messages.length` (the `?.`
+// only guards `draft` being null, not `messages`), so an unhealed legacy draft
+// throws "Cannot read properties of undefined (reading 'length')" and crashes
+// the React mount — a blank panel. Normalizing here upholds the type contract
+// (all array fields present) before the draft ever reaches the UI.
+export function normalizeStoredDraft(raw: unknown): AirglowAppDraft | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const d = raw as Record<string, unknown>;
+  if (typeof d.id !== 'string' || !d.id) return null;
+
+  const asArray = <T,>(value: unknown): T[] => (Array.isArray(value) ? (value as T[]) : []);
+  const rawReview = d.review && typeof d.review === 'object' ? (d.review as Record<string, unknown>) : {};
+  const review: AppDraftReview = {
+    readOnly: asArray<ConsentPolicyResult>(rawReview.readOnly),
+    disclosures: asArray<ConsentPolicyResult>(rawReview.disclosures),
+    approvals: asArray<ConsentPolicyResult>(rawReview.approvals),
+  };
+
+  const createdAt = typeof d.createdAt === 'string' ? d.createdAt : new Date().toISOString();
+  const prompt = typeof d.prompt === 'string' ? d.prompt : '';
+  let messages = asArray<unknown>(d.messages).filter(
+    (m): m is SidePanelChatMessage =>
+      Boolean(m) && typeof m === 'object'
+      && ((m as SidePanelChatMessage).role === 'user' || (m as SidePanelChatMessage).role === 'assistant')
+      && typeof (m as SidePanelChatMessage).content === 'string',
+  );
+  // Legacy drafts have no messages but do carry the original prompt — surface it
+  // as the first user message so the restored chat is not empty.
+  if (messages.length === 0 && prompt.trim()) {
+    messages = [{ id: `msg-${d.id}`, role: 'user', content: prompt, createdAt }];
+  }
+
+  return {
+    id: d.id,
+    name: typeof d.name === 'string' ? d.name : '',
+    prompt,
+    messages,
+    revision: Number.isInteger(d.revision) ? (d.revision as number) : messages.length,
+    target: d.target && typeof d.target === 'object' ? (d.target as SidePanelTargetTab) : null,
+    requestedActions: asArray<BrowserActionKey>(d.requestedActions),
+    review,
+    status: d.status === 'saved' ? 'saved' : 'draft',
+    createdAt,
+    updatedAt: typeof d.updatedAt === 'string' ? d.updatedAt : createdAt,
+    ...(d.persistence && typeof d.persistence === 'object'
+      ? { persistence: d.persistence as AirglowAppDraftPersistence }
+      : {}),
+    ...(d.generationRun && typeof d.generationRun === 'object'
+      ? { generationRun: d.generationRun as SidePanelGenerationRunMetadata }
+      : {}),
+  };
+}
+
 export function normalizeDraftForSave(draft: AirglowAppDraft, now: Date = new Date()): AirglowAppDraft {
   const fallbackPrompt = typeof draft.prompt === 'string' ? draft.prompt.trim().slice(0, 4000) : '';
   const fallbackCreatedAt = typeof draft.createdAt === 'string' ? draft.createdAt : now.toISOString();
