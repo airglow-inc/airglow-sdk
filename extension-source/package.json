@@ -9,6 +9,7 @@
     "build": "wxt build",
     "test": "node --test tests/*.test.mjs",
     "export": "bash scripts/export-extension.sh",
+    "smoke:browser-tools": "node scripts/browser-tool-bridge-smoke.mjs",
     "smoke:sidepanel-mvp": "node scripts/sidepanel-mvp-smoke.mjs",
     "zip": "bash scripts/zip-for-store.sh",
     "chrome": "node ../airglow-apps/scripts/chrome.mjs .output/chrome-mv3-dev",
