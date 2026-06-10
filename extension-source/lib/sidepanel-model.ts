@@ -51,6 +51,8 @@ export interface SavedAppCloudMetadata {
   requestId?: string;
   registered?: boolean;
   userScriptsEnabled?: boolean;
+  generatedSummary?: string;
+  generator?: string;
 }
 
 export interface SavedAppFallbackReason {
@@ -71,6 +73,8 @@ export interface AirglowAppDraft {
   id: string;
   name: string;
   prompt: string;
+  messages: SidePanelChatMessage[];
+  revision: number;
   target: SidePanelTargetTab | null;
   requestedActions: BrowserActionKey[];
   review: AppDraftReview;
@@ -87,12 +91,35 @@ export interface CreateAirglowAppDraftInput {
   nonce?: string;
 }
 
+export interface SidePanelChatMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  createdAt: string;
+}
+
+export interface AppendDraftUserMessageInput {
+  content: string;
+  now?: Date;
+  nonce?: string;
+}
+
 export interface PrivateAppSavePayload {
   schemaVersion: 1;
   clientRequestId: string;
   draftId: string;
   name: string;
   prompt: string;
+  conversation: Array<{
+    role: SidePanelChatMessage['role'];
+    content: string;
+    createdAt: string;
+  }>;
+  previousApp?: {
+    appId: string;
+    versionKey?: string;
+    generatedSummary?: string;
+  };
   requestedActions: BrowserActionKey[];
   review: AppDraftReview;
   target: {
@@ -108,6 +135,7 @@ export interface PrivateAppSavePayload {
 export interface MarkDraftSavedOptions {
   now?: Date;
   persistence?: Omit<AirglowAppDraftPersistence, 'savedAt'>;
+  assistantMessage?: string;
 }
 
 const ACTION_LABELS: Record<BrowserActionKey, string> = {
@@ -247,6 +275,13 @@ export function createAppDraft(input: CreateAirglowAppDraftInput): AirglowAppDra
     id: `draft-${nonce}`,
     name: deriveAppName(prompt),
     prompt,
+    messages: [{
+      id: `msg-${nonce}`,
+      role: 'user',
+      content: prompt,
+      createdAt: iso,
+    }],
+    revision: 1,
     target: input.target ?? null,
     requestedActions,
     review: buildDraftReview(requestedActions),
@@ -256,18 +291,102 @@ export function createAppDraft(input: CreateAirglowAppDraftInput): AirglowAppDra
   };
 }
 
+export function normalizeDraftForSave(draft: AirglowAppDraft, now: Date = new Date()): AirglowAppDraft {
+  const fallbackPrompt = typeof draft.prompt === 'string' ? draft.prompt.trim().slice(0, 4000) : '';
+  const fallbackCreatedAt = typeof draft.createdAt === 'string' ? draft.createdAt : now.toISOString();
+  const rawMessages = Array.isArray(draft.messages) ? draft.messages : [];
+  const messages = rawMessages
+    .map((message, index): SidePanelChatMessage | null => {
+      if (!message || typeof message !== 'object') return null;
+      const record = message as Record<string, unknown>;
+      const role = record.role === 'assistant' ? 'assistant' : record.role === 'user' ? 'user' : null;
+      const content = typeof record.content === 'string' ? record.content.trim().slice(0, 4000) : '';
+      if (!role || !content) return null;
+      return {
+        id: typeof record.id === 'string' && record.id ? record.id : `msg-${role}-${index}`,
+        role,
+        content,
+        createdAt: typeof record.createdAt === 'string' && record.createdAt ? record.createdAt : fallbackCreatedAt,
+      };
+    })
+    .filter((message): message is SidePanelChatMessage => Boolean(message))
+    .slice(-24);
+  const normalizedMessages = messages.length > 0
+    ? messages
+    : [{
+        id: 'msg-migrated-user',
+        role: 'user' as const,
+        content: fallbackPrompt || 'Create an Airglow app.',
+        createdAt: fallbackCreatedAt,
+      }];
+  const latestUserMessage = [...normalizedMessages].reverse().find((message) => message.role === 'user');
+  const prompt = latestUserMessage?.content || fallbackPrompt || normalizedMessages[normalizedMessages.length - 1].content;
+  const requestedActions = classifyPromptActions(normalizedMessages
+    .filter((message) => message.role === 'user')
+    .map((message) => message.content)
+    .join('\n'));
+  return {
+    ...draft,
+    prompt,
+    messages: normalizedMessages,
+    revision: Number.isInteger(draft.revision) && draft.revision > 0 ? draft.revision : normalizedMessages.length,
+    requestedActions,
+    review: buildDraftReview(requestedActions),
+  };
+}
+
+export function appendDraftUserMessage(draft: AirglowAppDraft, input: AppendDraftUserMessageInput): AirglowAppDraft {
+  const content = input.content.trim().slice(0, 4000);
+  if (!content) return draft;
+  const normalizedDraft = normalizeDraftForSave(draft, input.now);
+  const now = input.now ?? new Date();
+  const iso = now.toISOString();
+  const nonce = input.nonce ?? String(now.getTime());
+  const messages = [
+    ...normalizedDraft.messages,
+    {
+      id: `msg-${nonce}`,
+      role: 'user' as const,
+      content,
+      createdAt: iso,
+    },
+  ].slice(-24);
+  const requestedActions = classifyPromptActions(messages
+    .filter((message) => message.role === 'user')
+    .map((message) => message.content)
+    .join('\n'));
+  return {
+    ...normalizedDraft,
+    prompt: content,
+    messages,
+    revision: normalizedDraft.revision + 1,
+    requestedActions,
+    review: buildDraftReview(requestedActions),
+    status: 'draft',
+    updatedAt: iso,
+  };
+}
+
 export function buildPrivateAppSavePayload(draft: AirglowAppDraft, clientRequestId: string): PrivateAppSavePayload {
+  const normalizedDraft = normalizeDraftForSave(draft);
+  const previousApp = previousAppForPayload(normalizedDraft);
   return {
     schemaVersion: 1,
     clientRequestId,
-    draftId: draft.id,
-    name: draft.name,
-    prompt: draft.prompt,
-    requestedActions: [...draft.requestedActions],
-    review: draft.review,
-    target: sanitizedTarget(draft.target),
-    clientCreatedAt: draft.createdAt,
-    clientUpdatedAt: draft.updatedAt,
+    draftId: normalizedDraft.id,
+    name: normalizedDraft.name,
+    prompt: normalizedDraft.prompt,
+    conversation: normalizedDraft.messages.map((message) => ({
+      role: message.role,
+      content: message.content,
+      createdAt: message.createdAt,
+    })),
+    ...(previousApp ? { previousApp } : {}),
+    requestedActions: [...normalizedDraft.requestedActions],
+    review: normalizedDraft.review,
+    target: sanitizedTarget(normalizedDraft.target),
+    clientCreatedAt: normalizedDraft.createdAt,
+    clientUpdatedAt: normalizedDraft.updatedAt,
     source: 'extension-sidepanel',
   };
 }
@@ -279,8 +398,20 @@ export function markDraftSaved(
   const options = optionsOrNow instanceof Date ? { now: optionsOrNow } : optionsOrNow;
   const now = options.now ?? new Date();
   const savedAt = now.toISOString();
+  const messages = options.assistantMessage
+    ? [
+        ...draft.messages,
+        {
+          id: `msg-saved-${savedAt}`,
+          role: 'assistant' as const,
+          content: options.assistantMessage.trim().slice(0, 4000),
+          createdAt: savedAt,
+        },
+      ].slice(-24)
+    : draft.messages;
   return {
     ...draft,
+    messages,
     status: 'saved',
     updatedAt: savedAt,
     ...(options.persistence
@@ -291,6 +422,15 @@ export function markDraftSaved(
           },
         }
       : {}),
+  };
+}
+
+function previousAppForPayload(draft: AirglowAppDraft): PrivateAppSavePayload['previousApp'] | undefined {
+  if (draft.persistence?.mode !== 'cloud' || !draft.persistence.cloud?.appId) return undefined;
+  return {
+    appId: draft.persistence.cloud.appId,
+    ...(draft.persistence.cloud.versionKey ? { versionKey: draft.persistence.cloud.versionKey } : {}),
+    ...(draft.persistence.cloud.generatedSummary ? { generatedSummary: draft.persistence.cloud.generatedSummary } : {}),
   };
 }
 

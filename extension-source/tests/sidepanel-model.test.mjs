@@ -85,10 +85,53 @@ test('createAppDraft builds a deterministic review from a prompt', async () => {
     assert.equal(draft.id, 'draft-abc');
     assert.equal(draft.status, 'draft');
     assert.equal(draft.name, 'Summarize This Page Take A');
+    assert.equal(draft.revision, 1);
+    assert.equal(draft.messages.length, 1);
+    assert.equal(draft.messages[0].role, 'user');
+    assert.equal(draft.messages[0].content, 'summarize this page, take a screenshot, then click the buy button');
     assert.equal(draft.target.id, 7);
     assert.ok(draft.review.readOnly.some((item) => item.action === 'capture_semantic_fingerprint'));
     assert.ok(draft.review.disclosures.some((item) => item.action === 'screenshot_selected_tab'));
     assert.ok(draft.review.approvals.some((item) => item.action === 'click_page'));
+  } finally {
+    await model.cleanup();
+  }
+});
+
+test('appendDraftUserMessage turns a saved draft into an iterative chat update', async () => {
+  const model = await loadSidepanelModel();
+  try {
+    const draft = model.createAppDraft({
+      prompt: 'summarize this page',
+      now: new Date('2026-06-09T10:00:00.000Z'),
+      nonce: 'chat',
+    });
+    const saved = model.markDraftSaved(draft, {
+      now: new Date('2026-06-09T10:01:00.000Z'),
+      persistence: {
+        mode: 'cloud',
+        cloud: {
+          appId: 'private-app',
+          versionKey: 'private-app@v1',
+          generatedSummary: 'Summarizes the page.',
+        },
+      },
+      assistantMessage: 'Generated app update: Summarizes the page.',
+    });
+    const updated = model.appendDraftUserMessage(saved, {
+      content: 'make the panel smaller and add a copy button',
+      now: new Date('2026-06-09T10:02:00.000Z'),
+      nonce: 'followup',
+    });
+
+    assert.equal(updated.id, draft.id);
+    assert.equal(updated.status, 'draft');
+    assert.equal(updated.revision, 2);
+    assert.equal(updated.prompt, 'make the panel smaller and add a copy button');
+    assert.deepEqual(updated.messages.map((message) => message.role), ['user', 'assistant', 'user']);
+    assert.equal(updated.messages[2].id, 'msg-followup');
+    assert.ok(updated.review.readOnly.some((item) => item.action === 'dom_query'));
+    assert.equal(updated.persistence.cloud.appId, 'private-app');
   } finally {
     await model.cleanup();
   }
@@ -107,6 +150,7 @@ test('markDraftSaved keeps the draft content and updates status', async () => {
     assert.equal(saved.prompt, draft.prompt);
     assert.equal(saved.status, 'saved');
     assert.equal(saved.updatedAt, '2026-06-09T10:01:00.000Z');
+    assert.equal(saved.messages.length, 1);
   } finally {
     await model.cleanup();
   }
@@ -142,6 +186,80 @@ test('buildPrivateAppSavePayload strips local-only tab fields', async () => {
     assert.equal('status' in payload.target, false);
     assert.deepEqual(payload.requestedActions, draft.requestedActions);
     assert.deepEqual(payload.review, draft.review);
+    assert.deepEqual(payload.conversation, [{
+      role: 'user',
+      content: 'summarize this page and take a screenshot',
+      createdAt: '2026-06-09T10:00:00.000Z',
+    }]);
+  } finally {
+    await model.cleanup();
+  }
+});
+
+test('buildPrivateAppSavePayload includes previous cloud app metadata for updates', async () => {
+  const model = await loadSidepanelModel();
+  try {
+    const draft = model.createAppDraft({
+      prompt: 'summarize this page',
+      now: new Date('2026-06-09T10:00:00.000Z'),
+      nonce: 'previous',
+    });
+    const saved = model.markDraftSaved(draft, {
+      now: new Date('2026-06-09T10:01:00.000Z'),
+      persistence: {
+        mode: 'cloud',
+        cloud: {
+          appId: 'private-app',
+          versionKey: 'private-app@v1',
+          generatedSummary: 'Summarizes the page.',
+        },
+      },
+      assistantMessage: 'Generated app update: Summarizes the page.',
+    });
+    const updated = model.appendDraftUserMessage(saved, {
+      content: 'now make it compact',
+      now: new Date('2026-06-09T10:02:00.000Z'),
+      nonce: 'previous-2',
+    });
+    const payload = model.buildPrivateAppSavePayload(updated, 'request-2');
+
+    assert.equal(payload.prompt, 'now make it compact');
+    assert.deepEqual(payload.previousApp, {
+      appId: 'private-app',
+      versionKey: 'private-app@v1',
+      generatedSummary: 'Summarizes the page.',
+    });
+    assert.deepEqual(payload.conversation.map((message) => message.role), ['user', 'assistant', 'user']);
+  } finally {
+    await model.cleanup();
+  }
+});
+
+test('normalizeDraftForSave migrates legacy one-shot drafts into chat drafts', async () => {
+  const model = await loadSidepanelModel();
+  try {
+    const legacy = {
+      id: 'draft-legacy',
+      name: 'Legacy Draft',
+      prompt: 'summarize legacy page',
+      target: null,
+      requestedActions: [],
+      review: { readOnly: [], disclosures: [], approvals: [] },
+      status: 'draft',
+      createdAt: '2026-06-09T10:00:00.000Z',
+      updatedAt: '2026-06-09T10:00:00.000Z',
+    };
+    const normalized = model.normalizeDraftForSave(legacy, new Date('2026-06-09T10:03:00.000Z'));
+
+    assert.equal(normalized.prompt, 'summarize legacy page');
+    assert.equal(normalized.revision, 1);
+    assert.deepEqual(normalized.messages, [{
+      id: 'msg-migrated-user',
+      role: 'user',
+      content: 'summarize legacy page',
+      createdAt: '2026-06-09T10:00:00.000Z',
+    }]);
+    assert.ok(normalized.review.readOnly.some((item) => item.action === 'dom_query'));
   } finally {
     await model.cleanup();
   }

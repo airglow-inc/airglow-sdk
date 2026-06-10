@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Check, ExternalLink, Loader2, RefreshCw, Save, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
+import { Check, ExternalLink, Loader2, RefreshCw, Save, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import './style.css';
 import {
   type AirglowAppDraft,
   type SidePanelTargetTab,
+  appendDraftUserMessage,
   createAppDraft,
   formatCloudSaveFallbackNotice,
 } from '../../lib/sidepanel-model';
@@ -30,6 +31,8 @@ type SaveDraftResponse =
         requestId?: string;
         registered?: boolean;
         userScriptsEnabled?: boolean;
+        generatedSummary?: string;
+        generator?: string;
       };
     }
   | {
@@ -103,11 +106,11 @@ function ApprovalList({ draft }: { draft: AirglowAppDraft }) {
       <section className={hasApprovals ? 'review-section approval' : 'review-section'}>
         <div className="section-title">
           {hasApprovals ? <TriangleAlert size={15} /> : <Check size={15} />}
-          <span>{hasApprovals ? 'Requires approval before generation' : 'No page automation detected'}</span>
+          <span>{hasApprovals ? 'Not added without approval' : 'No page automation detected'}</span>
         </div>
         {hasApprovals ? (
           <>
-            <p>The generated app stays read-only for now. These actions need an explicit approval flow before they can be added.</p>
+            <p>The generated app stays read-only for now. These actions need explicit approval before they can be added.</p>
             <ul>
               {draft.review.approvals.map((item) => (
                 <li key={item.action}>{item.label}</li>
@@ -126,7 +129,7 @@ function App() {
   const [target, setTarget] = useState<SidePanelTargetTab | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
   const [loadingTarget, setLoadingTarget] = useState(true);
-  const [prompt, setPrompt] = useState('');
+  const [chatInput, setChatInput] = useState('');
   const [draft, setDraft] = useState<AirglowAppDraft | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('idle');
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -153,31 +156,15 @@ function App() {
     refreshTarget();
   }, []);
 
-  const canCreate = prompt.trim().length > 0 && !loadingTarget;
+  const canSend = chatInput.trim().length > 0 && !loadingTarget && saveState !== 'saving';
 
   const disclosureText = useMemo(() => {
     if (!target) return 'Select a browser tab to give Airglow page context.';
-    return `Using the selected tab title and URL now. The saved app captures read-only page text on ${targetOrigin(target)} after it is installed.`;
+    return `Using the selected tab title, URL, and visible text for generation. The saved app can refresh read-only page text on ${targetOrigin(target)} after it is installed.`;
   }, [target]);
 
-  function handleCreateDraft() {
-    if (!canCreate) return;
-    const nextDraft = createAppDraft({
-      prompt,
-      target,
-      nonce: crypto.randomUUID(),
-    });
-    setDraft(nextDraft);
-    setSaveState('idle');
-    setSaveError(null);
-    setSaveNotice(null);
-    setSavedAppId(null);
-    setApplyState('idle');
-    setApplyError(null);
-  }
-
-  async function handleSaveDraft() {
-    if (!draft) return;
+  async function saveDraftToCloud(draftToSave: AirglowAppDraft) {
+    const wasUpdate = draftToSave.persistence?.mode === 'cloud';
     setSaveState('saving');
     setSaveError(null);
     setSaveNotice(null);
@@ -185,16 +172,16 @@ function App() {
       const response = await sendRuntimeMessage<SaveDraftResponse>({
         type: 'airglow:sidepanel:save-draft',
         requestId: crypto.randomUUID(),
-        draft,
+        draft: draftToSave,
       });
       setDraft(response.draft);
       if (response.mode === 'cloud') {
         setSavedAppId(response.cloud.appId);
         setSaveNotice(response.cloud.userScriptsEnabled === false
-            ? 'Generated and saved. Enable User Scripts in Chrome extension settings, then refresh the target page to show the on-page panel.'
+            ? `${wasUpdate ? 'Updated' : 'Generated'} and saved. Enable User Scripts in Chrome extension settings, then refresh the target page to show the on-page panel.`
             : response.cloud.registered
-              ? 'Generated and saved. Refresh the target page to show the on-page panel.'
-              : 'Generated and saved, but the page script is not registered yet. Reload Airglow, then refresh the target page.');
+              ? `${wasUpdate ? 'Updated' : 'Generated'} and saved. Refresh the target page to show the on-page panel.`
+              : `${wasUpdate ? 'Updated' : 'Generated'} and saved, but the page script is not registered yet. Reload Airglow, then refresh the target page.`);
       } else {
         setSavedAppId(null);
         setSaveNotice(formatCloudSaveFallbackNotice(response.cloudError));
@@ -207,6 +194,32 @@ function App() {
       setSaveError(error instanceof Error ? error.message : String(error));
       setSavedAppId(null);
     }
+  }
+
+  async function handleSubmitChat(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSend) return;
+    const content = chatInput.trim();
+    const nextDraft = draft
+      ? appendDraftUserMessage(draft, { content, nonce: crypto.randomUUID() })
+      : createAppDraft({
+          prompt: content,
+          target,
+          nonce: crypto.randomUUID(),
+        });
+    setDraft(nextDraft);
+    setChatInput('');
+    setSaveState('idle');
+    setSaveError(null);
+    setSaveNotice(null);
+    setApplyState('idle');
+    setApplyError(null);
+    await saveDraftToCloud(nextDraft);
+  }
+
+  async function handleSaveDraft() {
+    if (!draft) return;
+    await saveDraftToCloud(draft);
   }
 
   async function openSavedApp() {
@@ -238,7 +251,7 @@ function App() {
         <img src={logoUrl} alt="" />
         <div>
           <h1>Airglow</h1>
-          <p>Generate apps for the selected page.</p>
+          <p>Build apps for the selected page.</p>
         </div>
       </header>
 
@@ -253,20 +266,35 @@ function App() {
         </button>
       </section>
 
-      <section className="composer">
-        <label htmlFor="app-prompt">What should this app do?</label>
+      <section className="chat-panel">
+        <div className="chat-log" aria-live="polite">
+          {draft?.messages.length ? draft.messages.map((message) => (
+            <div key={message.id} className={`chat-message ${message.role}`}>
+              <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
+              <p>{message.content}</p>
+            </div>
+          )) : (
+            <div className="chat-empty">
+              <Sparkles size={17} />
+              <p>Ask for an app for this page.</p>
+            </div>
+          )}
+        </div>
+        <form className="chat-composer" onSubmit={handleSubmitChat}>
+          <label htmlFor="app-prompt">{draft ? 'Update this app' : 'Create an app'}</label>
         <textarea
           id="app-prompt"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          placeholder="Example: summarize the current page and highlight the important action items."
-          rows={6}
+            value={chatInput}
+            onChange={(event) => setChatInput(event.target.value)}
+            placeholder={draft ? 'Example: make the panel smaller and add a copy button.' : 'Example: summarize this page and highlight action items.'}
+            rows={4}
         />
-        <div className="disclosure">{disclosureText}</div>
-        <button type="button" className="primary-button" disabled={!canCreate} onClick={handleCreateDraft}>
-          <Sparkles size={17} />
-          Review app plan
+          <div className="disclosure">{disclosureText}</div>
+        <button type="submit" className="primary-button" disabled={!canSend}>
+            {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
+            {saveState === 'saving' ? 'Generating' : draft ? 'Update app' : 'Generate app'}
         </button>
+        </form>
       </section>
 
       {draft && (
@@ -278,13 +306,15 @@ function App() {
             </div>
             <span className={draft.status === 'saved' ? 'status saved' : 'status'}>{draft.status === 'saved' ? 'Saved' : 'Draft'}</span>
           </div>
-          <p className="summary">{draft.prompt}</p>
+          <p className="summary">Latest request: {draft.prompt}</p>
           <ApprovalList draft={draft} />
           <div className="action-row">
-            <button type="button" className="primary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
-              {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Save size={17} />}
-              {saveState === 'saving' ? 'Saving app' : 'Save app'}
-            </button>
+            {(draft.status !== 'saved' || saveState === 'error') && (
+              <button type="button" className="primary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
+                {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Save size={17} />}
+                {saveState === 'saving' ? 'Saving app' : 'Save app'}
+              </button>
+            )}
             {savedAppId && (
               <button type="button" className="secondary-button" onClick={openSavedApp}>
                 <ExternalLink size={16} />

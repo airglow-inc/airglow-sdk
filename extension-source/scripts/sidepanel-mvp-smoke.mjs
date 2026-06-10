@@ -182,6 +182,8 @@ async function startMockCloud(targetSite) {
           appId,
           appKey: appId,
           versionKey: `${appId}@${manifest.version}`,
+          generatedSummary: 'Browser smoke private app generated from chat.',
+          generator: 'test-double',
           manifest,
         });
         return;
@@ -498,6 +500,13 @@ function sidepanelDraft(now, targetUrl) {
     id: 'draft-browser-smoke',
     name: 'Browser Smoke App',
     prompt: 'Summarize the current page context for the Airglow browser smoke.',
+    messages: [{
+      id: 'msg-browser-smoke',
+      role: 'user',
+      content: 'Summarize the current page context for the Airglow browser smoke.',
+      createdAt: now,
+    }],
+    revision: 1,
     target: {
       id: 1,
       windowId: 1,

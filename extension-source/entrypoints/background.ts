@@ -21,6 +21,7 @@ import {
   type PrivateAppSavePayload,
   buildPrivateAppSavePayload,
   markDraftSaved,
+  normalizeDraftForSave,
 } from '../lib/sidepanel-model';
 
 export default defineBackground(() => {
@@ -1112,6 +1113,8 @@ export default defineBackground(() => {
     requestId?: string;
     registered?: boolean;
     userScriptsEnabled?: boolean;
+    generatedSummary?: string;
+    generator?: string;
   };
 
   type SavedAppRegistrationStatus = {
@@ -1351,6 +1354,8 @@ export default defineBackground(() => {
           appId,
           ...(typeof envelope.appKey === 'string' ? { appKey: envelope.appKey } : {}),
           ...(typeof envelope.versionKey === 'string' ? { versionKey: envelope.versionKey } : {}),
+          ...(typeof envelope.generatedSummary === 'string' ? { generatedSummary: envelope.generatedSummary } : {}),
+          ...(typeof envelope.generator === 'string' ? { generator: envelope.generator } : {}),
           requestId: res.headers.get('x-request-id') || undefined,
         };
       } catch (error) {
@@ -1373,14 +1378,15 @@ export default defineBackground(() => {
   }
 
   async function saveSidePanelDraft(draft: AirglowAppDraft, requestId?: string) {
+    const normalizedDraft = normalizeDraftForSave(draft);
     const clientRequestId = requestId || crypto.randomUUID();
-    const initialContextPromise = captureInitialPageContext(draft);
+    const initialContextPromise = captureInitialPageContext(normalizedDraft);
     let cloud: SidePanelCloudSaveResult;
     try {
-      cloud = await postPrivateAppSave(buildPrivateAppSavePayload(draft, clientRequestId));
+      cloud = await postPrivateAppSave(buildPrivateAppSavePayload(normalizedDraft, clientRequestId));
     } catch (error) {
       const fallbackReason = serializeSaveError(error);
-      const saved = markDraftSaved(draft, {
+      const saved = markDraftSaved(normalizedDraft, {
         persistence: {
           mode: 'local',
           fallbackReason,
@@ -1400,11 +1406,14 @@ export default defineBackground(() => {
         logger.warn('airglow', `reload after sidepanel save failed: ${error instanceof Error ? error.message : String(error)}`);
       });
     cloud = { ...cloud, ...registrationStatus };
-    const saved = markDraftSaved(draft, {
+    const saved = markDraftSaved(normalizedDraft, {
       persistence: {
         mode: 'cloud',
         cloud,
       },
+      assistantMessage: cloud.generatedSummary
+        ? `Generated app update: ${cloud.generatedSummary}`
+        : 'Generated app update saved.',
     });
     await persistSidePanelDraft(saved);
     if (seededInitialContext) {

@@ -78,7 +78,7 @@ button {
 }
 
 .target-bar,
-.composer,
+.chat-panel,
 .draft-panel,
 .review-section {
   background: var(--surface);
@@ -142,21 +142,78 @@ button {
   opacity: 0.6;
 }
 
-.composer,
+.chat-panel,
 .draft-panel {
   padding: 14px;
 }
 
-.composer label {
+.chat-log {
+  display: grid;
+  gap: 10px;
+  max-height: 310px;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.chat-message {
+  max-width: 88%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.chat-message.user {
+  margin-left: auto;
+  background: #eef5f8;
+  border-color: #c6dbe4;
+}
+
+.chat-message.assistant {
+  margin-right: auto;
+}
+
+.chat-message span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.chat-message p,
+.chat-empty p {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.42;
+}
+
+.chat-empty {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+  color: var(--muted);
+}
+
+.chat-composer {
+  margin-top: 12px;
+}
+
+.chat-composer label {
   display: block;
   margin-bottom: 8px;
   font-weight: 650;
 }
 
-.composer textarea {
+.chat-composer textarea {
   width: 100%;
   resize: vertical;
-  min-height: 128px;
+  min-height: 104px;
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 11px;
@@ -165,7 +222,7 @@ button {
   line-height: 1.45;
 }
 
-.composer textarea:focus {
+.chat-composer textarea:focus {
   outline: 2px solid rgba(13, 59, 110, 0.18);
   border-color: var(--accent);
 }
