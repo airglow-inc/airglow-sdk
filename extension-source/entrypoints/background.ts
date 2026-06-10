@@ -220,6 +220,7 @@ export default defineBackground(() => {
   // build stamp. CLI-only / docs-only commits won't trip this.
   const REMOTE_MANIFEST_URL = 'https://raw.githubusercontent.com/airglow-inc/airglow-sdk/main/extension/manifest.json';
   const REMOTE_CHECK_ALARM = 'airglow:remote-update-check';
+  const BROWSER_TOOL_BRIDGE_ALARM = 'airglow:browser-tool-bridge';
 
   // Persisted so the dashboard can render the "git pull" banner in sync with
   // the toolbar badge — the badge fires on (server-side OR remote-only)
@@ -254,6 +255,7 @@ export default defineBackground(() => {
   });
   chrome.alarms.onAlarm.addListener((alarm) => {
     if (alarm.name === REMOTE_CHECK_ALARM) refreshRemoteUpdateStatus();
+    if (alarm.name === BROWSER_TOOL_BRIDGE_ALARM) pollBrowserToolBridge().catch(() => {});
   });
   // Seed from the last persisted value so the badge survives SW restarts
   // without waiting for the network check to come back.
@@ -1205,6 +1207,26 @@ export default defineBackground(() => {
     promptHint: string;
   };
 
+  type BrowserToolCallRecord = {
+    callId: string;
+    status: 'queued' | 'claimed' | 'completed' | 'failed' | 'cancelled';
+    toolName: 'browser.current_tab' | 'browser.read_page';
+    input?: Record<string, unknown>;
+  };
+
+  type BrowserToolBridgeHeadersCache = {
+    headers: Awaited<ReturnType<typeof getAirglowIdentityHeaders>>;
+    expiresAt: number;
+  };
+
+  const BROWSER_TOOL_BRIDGE_POLL_MS = 5000;
+  const BROWSER_TOOL_BRIDGE_HEADERS_TTL_MS = 5 * 60_000;
+  const BROWSER_TOOL_READ_PAGE_MAX_CHARS = 20_000;
+  let browserToolBridgeTimer: ReturnType<typeof setInterval> | undefined;
+  let browserToolBridgeRunning = false;
+  let browserToolBridgeHeadersCache: BrowserToolBridgeHeadersCache | null = null;
+  let browserToolBridgeLastWarningAt = 0;
+
   function sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -1768,6 +1790,222 @@ export default defineBackground(() => {
       nextStep,
     ].join('\n');
   }
+
+  function warnBrowserToolBridge(message: string) {
+    const now = Date.now();
+    if (now - browserToolBridgeLastWarningAt < 60_000) return;
+    browserToolBridgeLastWarningAt = now;
+    logger.warn('airglow', message);
+  }
+
+  async function getBrowserToolBridgeHeaders() {
+    if (browserToolBridgeHeadersCache && browserToolBridgeHeadersCache.expiresAt > Date.now()) {
+      return browserToolBridgeHeadersCache.headers;
+    }
+    const headers = await getAirglowIdentityHeaders({ requireSession: true });
+    browserToolBridgeHeadersCache = {
+      headers,
+      expiresAt: Date.now() + BROWSER_TOOL_BRIDGE_HEADERS_TTL_MS,
+    };
+    return headers;
+  }
+
+  function browserToolBridgeErrorFromResponse(res: Response, result: unknown): Error & { status?: number; code?: string } {
+    const envelope = result && typeof result === 'object' ? result as Record<string, any> : {};
+    const nested = envelope.error && typeof envelope.error === 'object'
+      ? envelope.error as Record<string, any>
+      : undefined;
+    const message =
+      (nested && typeof nested.message === 'string' ? nested.message : undefined) ||
+      (typeof envelope.error === 'string' ? envelope.error : undefined) ||
+      `Browser tool request failed with HTTP ${res.status}`;
+    const error = new Error(message) as Error & { status?: number; code?: string };
+    error.status = res.status;
+    error.code =
+      (nested && typeof nested.code === 'string' ? nested.code : undefined) ||
+      (typeof envelope.code === 'string' ? envelope.code : undefined) ||
+      'BROWSER_TOOL_HTTP_ERROR';
+    return error;
+  }
+
+  async function fetchBrowserToolBridge(path: string, init: RequestInit, timeoutMs = 10000): Promise<unknown> {
+    const url = `${getCloudAppSourceUrl()}${path}`;
+    const headers = await getBrowserToolBridgeHeaders();
+    const res = await fetchWithTimeout(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...headers,
+        ...(init.headers || {}),
+      },
+    }, timeoutMs);
+    const result = parseJson(await res.text());
+    if (res.status === 401) browserToolBridgeHeadersCache = null;
+    if (!res.ok) throw browserToolBridgeErrorFromResponse(res, result);
+    return result;
+  }
+
+  function normalizeBrowserToolCallsResponse(result: unknown): BrowserToolCallRecord[] {
+    const envelope = result && typeof result === 'object' ? result as Record<string, unknown> : {};
+    const calls = Array.isArray(envelope.calls) ? envelope.calls : [];
+    return calls.filter((call: unknown): call is BrowserToolCallRecord => {
+      if (!call || typeof call !== 'object') return false;
+      const record = call as Record<string, unknown>;
+      return typeof record.callId === 'string'
+        && (record.toolName === 'browser.current_tab' || record.toolName === 'browser.read_page');
+    }).map((call) => ({
+      callId: call.callId,
+      status: call.status,
+      toolName: call.toolName,
+      input: call.input && typeof call.input === 'object' && !Array.isArray(call.input)
+        ? call.input as Record<string, unknown>
+        : {},
+    }));
+  }
+
+  async function claimBrowserToolCalls(): Promise<BrowserToolCallRecord[]> {
+    const result = await fetchBrowserToolBridge('/api/browser-tools/calls/claim', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        limit: 3,
+        executorId: chrome.runtime.id,
+      }),
+    });
+    return normalizeBrowserToolCallsResponse(result);
+  }
+
+  function serializeBrowserToolError(error: unknown) {
+    return {
+      message: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Error && typeof (error as { code?: unknown }).code === 'string'
+        ? { code: (error as { code: string }).code }
+        : {}),
+    };
+  }
+
+  async function postBrowserToolCallResult(callId: string, payload: { result?: unknown; error?: unknown }): Promise<void> {
+    await fetchBrowserToolBridge(`/api/browser-tools/calls/${encodeURIComponent(callId)}/result`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+
+  function tabForBrowserToolResult(tab: chrome.tabs.Tab) {
+    return {
+      id: tab.id,
+      windowId: tab.windowId,
+      active: tab.active,
+      title: tab.title || '',
+      url: tab.url || '',
+      pendingUrl: tab.pendingUrl || '',
+      status: tab.status || '',
+      favIconUrl: tab.favIconUrl || '',
+    };
+  }
+
+  async function getActiveBrowserToolTab(): Promise<chrome.tabs.Tab> {
+    const currentTabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const currentTab = currentTabs.find((tab) => typeof tab.id === 'number');
+    if (currentTab) return currentTab;
+
+    const lastFocusedWindow = await chrome.windows.getLastFocused({ populate: true });
+    const focusedTab = lastFocusedWindow.tabs?.find((tab) => tab.active && typeof tab.id === 'number');
+    if (focusedTab) return focusedTab;
+    throw new Error('No active browser tab is available');
+  }
+
+  function browserToolMaxChars(input: Record<string, unknown> | undefined): number {
+    const raw = typeof input?.maxChars === 'number'
+      ? input.maxChars
+      : typeof input?.maxChars === 'string'
+        ? Number(input.maxChars)
+        : 12000;
+    if (!Number.isFinite(raw)) return 12000;
+    return Math.min(Math.max(500, Math.floor(raw)), BROWSER_TOOL_READ_PAGE_MAX_CHARS);
+  }
+
+  async function executeBrowserCurrentTabTool() {
+    const tab = await getActiveBrowserToolTab();
+    return { tab: tabForBrowserToolResult(tab), capturedAt: new Date().toISOString() };
+  }
+
+  async function executeBrowserReadPageTool(input: Record<string, unknown> | undefined) {
+    const tab = await getActiveBrowserToolTab();
+    if (typeof tab.id !== 'number') throw new Error('Active tab id is missing');
+    const tabUrl = tab.url || '';
+    if (!/^https?:\/\//i.test(tabUrl)) {
+      throw new Error('Browser page text can only be read from http(s) tabs');
+    }
+    const maxChars = browserToolMaxChars(input);
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [maxChars],
+      func: (limit: number) => {
+        const normalizeText = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+        const selection = normalizeText(globalThis.getSelection?.().toString() || '');
+        return {
+          title: normalizeText(document.title),
+          url: location.href,
+          origin: location.origin,
+          text: normalizeText(document.body?.innerText || '').slice(0, limit),
+          selection: selection.slice(0, limit),
+          capturedAt: new Date().toISOString(),
+        };
+      },
+    });
+    const page = result?.result;
+    if (!page || typeof page !== 'object') throw new Error('Browser page script returned no page context');
+    return {
+      tab: tabForBrowserToolResult(tab),
+      page,
+      maxChars,
+    };
+  }
+
+  async function executeBrowserToolCall(call: BrowserToolCallRecord): Promise<unknown> {
+    if (call.toolName === 'browser.current_tab') return await executeBrowserCurrentTabTool();
+    if (call.toolName === 'browser.read_page') return await executeBrowserReadPageTool(call.input);
+    throw new Error(`Unsupported browser tool: ${call.toolName}`);
+  }
+
+  async function pollBrowserToolBridge(): Promise<void> {
+    if (browserToolBridgeRunning) return;
+    browserToolBridgeRunning = true;
+    try {
+      const calls = await claimBrowserToolCalls();
+      for (const call of calls) {
+        try {
+          const result = await executeBrowserToolCall(call);
+          await postBrowserToolCallResult(call.callId, { result });
+        } catch (error) {
+          await postBrowserToolCallResult(call.callId, { error: serializeBrowserToolError(error) }).catch((postError) => {
+            warnBrowserToolBridge(`browser tool result post failed: ${postError instanceof Error ? postError.message : String(postError)}`);
+          });
+        }
+      }
+    } catch (error) {
+      warnBrowserToolBridge(`browser tool bridge poll failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      browserToolBridgeRunning = false;
+    }
+  }
+
+  function startBrowserToolBridge() {
+    if (!browserToolBridgeTimer) {
+      browserToolBridgeTimer = setInterval(() => {
+        pollBrowserToolBridge().catch(() => {});
+      }, BROWSER_TOOL_BRIDGE_POLL_MS);
+    }
+    pollBrowserToolBridge().catch(() => {});
+    chrome.alarms.get(BROWSER_TOOL_BRIDGE_ALARM).then((existing) => {
+      if (!existing) chrome.alarms.create(BROWSER_TOOL_BRIDGE_ALARM, { periodInMinutes: 1 });
+    });
+  }
+
+  startBrowserToolBridge();
 
   chrome.action.onClicked.addListener((tab) => {
     openSidePanel(tab).catch((error) => {

@@ -94,6 +94,25 @@ test('sidepanel lists apps and can refine private cloud apps', async () => {
   assert.match(sidepanelModel, /previousAppForPayload/);
 });
 
+test('background polls cloud browser tool calls through extension identity', async () => {
+  const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
+
+  assert.match(background, /BROWSER_TOOL_BRIDGE_ALARM/);
+  assert.match(background, /\/api\/browser-tools\/calls\/claim/);
+  assert.match(background, /\/api\/browser-tools\/calls\/\$\{encodeURIComponent\(callId\)\}\/result/);
+  assert.match(background, /getAirglowIdentityHeaders\(\{\s*requireSession:\s*true\s*\}\)/);
+  assert.match(background, /executeBrowserCurrentTabTool/);
+  assert.match(background, /executeBrowserReadPageTool/);
+  assert.match(background, /chrome\.scripting\.executeScript/);
+  const bridgeSource = background.slice(
+    background.indexOf('function executeBrowserCurrentTabTool'),
+    background.indexOf('function startBrowserToolBridge'),
+  );
+  assert.doesNotMatch(bridgeSource, /chrome\.tabs\.update/);
+  assert.doesNotMatch(bridgeSource, /chrome\.tabs\.create/);
+  assert.doesNotMatch(bridgeSource, /chrome\.tabs\.reload/);
+});
+
 test('app enable toggles update optimistically while registration sync remains authoritative', async () => {
   const appLoader = await readFile(new URL('../lib/app-loader.ts', import.meta.url), 'utf8');
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
