@@ -169,6 +169,40 @@ function AssistantStatusMessage({
   );
 }
 
+function TargetContextMessage({
+  target,
+  targetError,
+  loadingTarget,
+  onRefresh,
+}: {
+  target: SidePanelTargetTab | null;
+  targetError: string | null;
+  loadingTarget: boolean;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="chat-message assistant target-message">
+      <div className="target-message-heading">
+        <span>Target tab</span>
+        <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loadingTarget} aria-label="Refresh target tab">
+          {loadingTarget ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+        </button>
+      </div>
+      <p><strong>{loadingTarget ? 'Reading selected tab...' : targetLabel(target)}</strong></p>
+      <p className="target-meta">{targetError || targetOrigin(target)}</p>
+    </div>
+  );
+}
+
+function WelcomeMessage() {
+  return (
+    <div className="chat-message assistant welcome-message">
+      <span>Airglow</span>
+      <p>Describe the app you want to build for this page.</p>
+    </div>
+  );
+}
+
 function App() {
   const [target, setTarget] = useState<SidePanelTargetTab | null>(null);
   const [targetError, setTargetError] = useState<string | null>(null);
@@ -310,29 +344,21 @@ function App() {
         </div>
       </header>
 
-      <section className="target-bar" aria-live="polite">
-        <div>
-          <span className="eyebrow">Target tab</span>
-          <strong>{loadingTarget ? 'Reading selected tab...' : targetLabel(target)}</strong>
-          <small>{targetError || targetOrigin(target)}</small>
-        </div>
-        <button type="button" className="icon-button" onClick={refreshTarget} disabled={loadingTarget} aria-label="Refresh target tab">
-          {loadingTarget ? <Loader2 size={17} className="spin" /> : <RefreshCw size={17} />}
-        </button>
-      </section>
-
       <section className="chat-panel">
         <div className="chat-log" ref={chatLogRef} aria-live="polite">
+          <TargetContextMessage
+            target={target}
+            targetError={targetError}
+            loadingTarget={loadingTarget}
+            onRefresh={refreshTarget}
+          />
           {draft?.messages.length ? draft.messages.map((message) => (
             <div key={message.id} className={`chat-message ${message.role}`}>
               <span>{message.role === 'user' ? 'You' : 'Airglow'}</span>
               <p>{message.content}</p>
             </div>
           )) : (
-            <div className="chat-empty">
-              <Sparkles size={17} />
-              <p>Ask for an app for this page.</p>
-            </div>
+            <WelcomeMessage />
           )}
           {saveState === 'saving' && <GenerationProgress stepIndex={generationStepIndex ?? 0} />}
           {saveState === 'error' && (
@@ -358,27 +384,38 @@ function App() {
               {applyError || 'Could not refresh the target page.'}
             </AssistantStatusMessage>
           )}
+          {draft && saveState !== 'saving' && (
+            <div className="chat-message assistant actions-message">
+              <span>Airglow</span>
+              <p><strong>{draft.status === 'saved' ? 'App saved' : 'Draft ready'}</strong></p>
+              <div className="message-actions">
+                {saveState === 'error' && (
+                  <button type="button" className="secondary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
+                    <RefreshCw size={16} />
+                    Try again
+                  </button>
+                )}
+                {savedAppId && (
+                  <button type="button" className="secondary-button" onClick={openSavedApp}>
+                    <ExternalLink size={16} />
+                    Open app
+                  </button>
+                )}
+                {savedAppId && typeof draft.target?.id === 'number' && (
+                  <button type="button" className="secondary-button" onClick={refreshTargetPage} disabled={applyState === 'applying'}>
+                    {applyState === 'applying' ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
+                    {applyState === 'applying' ? 'Refreshing' : 'Refresh page'}
+                  </button>
+                )}
+                <button type="button" className="secondary-button" onClick={openDashboard}>
+                  <ExternalLink size={16} />
+                  Dashboard
+                </button>
+              </div>
+            </div>
+          )}
         </div>
         <form className="chat-composer" onSubmit={handleSubmitChat}>
-          <div className="composer-heading">
-            <label htmlFor="app-prompt">{draft ? 'Update this app' : 'Create an app'}</label>
-            <button
-              type="button"
-              className="help-button"
-              aria-label="Show context and safety details"
-              aria-expanded={showSafetyDetails}
-              onClick={() => setShowSafetyDetails((current) => !current)}
-            >
-              <CircleHelp size={16} />
-            </button>
-          </div>
-          <textarea
-            id="app-prompt"
-            value={chatInput}
-            onChange={(event) => setChatInput(event.target.value)}
-            placeholder={draft ? 'Example: make the panel smaller and add a copy button.' : 'Example: summarize this page and highlight action items.'}
-            rows={4}
-          />
           {showSafetyDetails && (
             <div className="help-panel">
               <p>{disclosureText}</p>
@@ -389,38 +426,29 @@ function App() {
               )}
             </div>
           )}
-          <button type="submit" className="primary-button" disabled={!canSend}>
-            {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-            {saveState === 'saving' ? 'Generating' : draft ? 'Update app' : 'Generate app'}
-          </button>
-        </form>
-        {draft && (
-          <div className="chat-action-bar">
-            <span className={draft.status === 'saved' ? 'status saved' : 'status'}>{draft.status === 'saved' ? 'Saved' : 'Draft'}</span>
-            {saveState === 'error' && (
-              <button type="button" className="secondary-button" onClick={handleSaveDraft} disabled={saveState === 'saving'}>
-                <RefreshCw size={16} />
-                Try again
-              </button>
-            )}
-            {savedAppId && (
-              <button type="button" className="secondary-button" onClick={openSavedApp}>
-                <ExternalLink size={16} />
-                Open app
-              </button>
-            )}
-            {savedAppId && typeof draft.target?.id === 'number' && (
-              <button type="button" className="secondary-button" onClick={refreshTargetPage} disabled={applyState === 'applying'}>
-                {applyState === 'applying' ? <Loader2 size={16} className="spin" /> : <RefreshCw size={16} />}
-                {applyState === 'applying' ? 'Refreshing' : 'Refresh page'}
-              </button>
-            )}
-            <button type="button" className="secondary-button" onClick={openDashboard}>
-              <ExternalLink size={16} />
-              Dashboard
+          <div className="composer-row">
+            <button
+              type="button"
+              className="help-button"
+              aria-label="Show context and safety details"
+              aria-expanded={showSafetyDetails}
+              onClick={() => setShowSafetyDetails((current) => !current)}
+            >
+              <CircleHelp size={16} />
+            </button>
+            <textarea
+              id="app-prompt"
+              aria-label={draft ? 'Update this app' : 'Create an app'}
+              value={chatInput}
+              onChange={(event) => setChatInput(event.target.value)}
+              placeholder={draft ? 'Update this app...' : 'Describe an app to generate...'}
+              rows={1}
+            />
+            <button type="submit" className="send-button" disabled={!canSend} aria-label={draft ? 'Update app' : 'Generate app'}>
+              {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
             </button>
           </div>
-        )}
+        </form>
       </section>
     </main>
   );
