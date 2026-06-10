@@ -23,6 +23,16 @@
  *                    email-required gate fires on the next app open. Use to
  *                    test the email-onboarding flow without a prod build.
  *                    Incompatible with --no-cdp.
+ *   --airglow-session-file <path>
+ *                    Seed Airglow Cloud identity tokens into extension storage.
+ *                    Use with cloud live-smoke --session-file to test private
+ *                    generated apps in this browser profile.
+ *   --open-app <appId>
+ *                    Open the Airglow app shell for the given app after the
+ *                    extension loads. Use with --airglow-session-file for
+ *                    private generated apps.
+ *   --open-url <url> Open a normal browser tab after launch.
+ *   --open-target    Open targetUrl from --airglow-session-file, if present.
  *
  * Theme + chrome.log also live under <cwd>/.airglow/.
  *
@@ -66,6 +76,10 @@ const fresh = args.includes('--fresh');
 const noCdp = args.includes('--no-cdp');
 const askEmail = args.includes('--ask-email');
 const noPasswords = args.includes('--no-passwords');
+const airglowSessionFile = flagValue('airglow-session-file') || '';
+const openAppId = flagValue('open-app') || '';
+const openUrl = flagValue('open-url') || '';
+const openTarget = args.includes('--open-target');
 
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--no-passwords] [--extension <dir>] [--user-data-dir=<dir>]
@@ -91,6 +105,15 @@ Flags:
                       email-onboarding flow without a prod build.
                       With CDP: written automatically. With --no-cdp: prints
                       a one-liner to paste into the SW DevTools console.
+  --airglow-session-file <path>
+                      Seed Airglow Cloud identity from a JSON file created by
+                      airglow-cloud's generation-run live smoke. Writes:
+                      __airglow_user_id, __airglow_session_token,
+                      __airglow_refresh_token, and optional email.
+  --open-app <appId>  Open chrome-extension://<id>/app-shell.html?app=<appId>
+                      after the extension loads.
+  --open-url <url>    Open a normal browser tab after launch.
+  --open-target       Open targetUrl from --airglow-session-file, if present.
   --no-passwords      Skip seeding saved passwords from the system default
                       Chrome profile (~/Library/Application Support/Google/
                       Chrome/Default). By default, "Login Data" SQLite files
@@ -289,7 +312,50 @@ function cdpSend(method, params = {}, sessionId) {
   });
 }
 
+async function attachExtensionServiceWorker(extensionId) {
+  let swTarget = null;
+  for (let i = 0; i < 30 && !swTarget; i++) {
+    const { targetInfos } = await cdpSend('Target.getTargets');
+    swTarget = targetInfos.find(t => t.type === 'service_worker' && t.url.includes(extensionId));
+    if (!swTarget) await new Promise(r => setTimeout(r, 100));
+  }
+  if (!swTarget) throw new Error('service worker target not found');
+  const { sessionId } = await cdpSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true });
+  return sessionId;
+}
+
+function readAirglowSessionSeed(path) {
+  if (!path) return null;
+  const seed = JSON.parse(readFileSync(resolve(path), 'utf8'));
+  if (!seed || typeof seed !== 'object') throw new Error('--airglow-session-file must contain a JSON object');
+  if (typeof seed.userId !== 'string' || !seed.userId) throw new Error('--airglow-session-file missing userId');
+  if (typeof seed.accessToken !== 'string' || !seed.accessToken) throw new Error('--airglow-session-file missing accessToken');
+  return seed;
+}
+
+async function seedAirglowSession(extensionId, seed) {
+  const sessionId = await attachExtensionServiceWorker(extensionId);
+  const storage = {
+    __airglow_skip_dev_seed: true,
+    __airglow_user_id: seed.userId,
+    __airglow_session_token: seed.accessToken,
+    ...(typeof seed.refreshToken === 'string' && seed.refreshToken ? { __airglow_refresh_token: seed.refreshToken } : {}),
+    ...(typeof seed.userEmail === 'string' && seed.userEmail ? { __airglow_user_email: seed.userEmail } : {}),
+  };
+  await cdpSend('Runtime.evaluate', {
+    expression: `chrome.storage.local.set(${JSON.stringify(storage)})`,
+    awaitPromise: true,
+  }, sessionId);
+  console.log(`Seeded Airglow Cloud identity for ${seed.userId}`);
+}
+
+async function openBrowserTab(url) {
+  await cdpSend('Target.createTarget', { url });
+  console.log(`Opened tab: ${url}`);
+}
+
 let loadedExtId = null;
+const airglowSessionSeed = readAirglowSessionSeed(airglowSessionFile);
 try {
   const result = await cdpSend('Extensions.loadUnpacked', { path: extDir });
   loadedExtId = result.id;
@@ -300,16 +366,7 @@ try {
 
 if (askEmail && loadedExtId) {
   try {
-    // Find the extension's service worker target (poll briefly — it may not be
-    // registered the instant Extensions.loadUnpacked resolves).
-    let swTarget = null;
-    for (let i = 0; i < 30 && !swTarget; i++) {
-      const { targetInfos } = await cdpSend('Target.getTargets');
-      swTarget = targetInfos.find(t => t.type === 'service_worker' && t.url.includes(loadedExtId));
-      if (!swTarget) await new Promise(r => setTimeout(r, 100));
-    }
-    if (!swTarget) throw new Error('service worker target not found');
-    const { sessionId } = await cdpSend('Target.attachToTarget', { targetId: swTarget.targetId, flatten: true });
+    const sessionId = await attachExtensionServiceWorker(loadedExtId);
     // Give the SW a moment to run its boot-time auto-seed before we clear it.
     // We also write __airglow_skip_dev_seed so future SW reboots don't re-seed.
     await new Promise(r => setTimeout(r, 300));
@@ -326,11 +383,43 @@ if (askEmail && loadedExtId) {
   }
 }
 
+if (airglowSessionSeed && loadedExtId) {
+  try {
+    await seedAirglowSession(loadedExtId, airglowSessionSeed);
+  } catch (err) {
+    console.error(`--airglow-session-file: failed: ${err.message}`);
+  }
+}
+
 try {
   const theme = await cdpSend('Extensions.loadUnpacked', { path: THEME_DIR });
   console.log(`Theme loaded: ${theme.id}`);
 } catch (err) {
   console.error(`Failed to load theme: ${err.message}`);
+}
+
+if (openUrl) {
+  try {
+    await openBrowserTab(openUrl);
+  } catch (err) {
+    console.error(`--open-url: failed: ${err.message}`);
+  }
+}
+
+if (openTarget && airglowSessionSeed?.targetUrl) {
+  try {
+    await openBrowserTab(airglowSessionSeed.targetUrl);
+  } catch (err) {
+    console.error(`--open-target: failed: ${err.message}`);
+  }
+}
+
+if (openAppId && loadedExtId) {
+  try {
+    await openBrowserTab(`chrome-extension://${loadedExtId}/app-shell.html?app=${encodeURIComponent(openAppId)}`);
+  } catch (err) {
+    console.error(`--open-app: failed: ${err.message}`);
+  }
 }
 
 chrome.on('exit', code => process.exit(code ?? 0));
