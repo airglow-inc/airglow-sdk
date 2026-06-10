@@ -14,6 +14,9 @@ import {
   appendDraftUserMessage,
   applyGenerationRunEventsToDraft,
   createAppDraft,
+  draftHasExplicitWebTarget,
+  draftRequestsCurrentPage,
+  shouldStartNewAppDraftForPrompt,
 } from '../../lib/sidepanel-model';
 
 type TargetResponse = {
@@ -132,7 +135,8 @@ function targetLabel(target: SidePanelTargetTab | null): string {
   if (!target) return 'No selected tab';
   if (target.title?.trim()) return target.title.trim();
   if (target.url) return target.url;
-  return `Tab ${target.id}`;
+  if (typeof target.id === 'number') return `Tab ${target.id}`;
+  return 'App target';
 }
 
 function targetOrigin(target: SidePanelTargetTab | null): string {
@@ -155,6 +159,29 @@ function manifestSummary(app: SourcedManifest): string {
   if (typeof details.summary === 'string' && details.summary.trim()) return details.summary.trim();
   if (typeof app.description === 'string' && app.description.trim()) return app.description.trim();
   return '';
+}
+
+function targetFromManifest(app: SourcedManifest): SidePanelTargetTab | null {
+  const pattern = app.userscripts?.flatMap((userscript) => userscript.matches || [])[0]
+    || app.host_permissions?.[0];
+  if (!pattern) return null;
+  const targetUrl = urlFromChromeMatchPattern(pattern);
+  if (!targetUrl) return null;
+  return {
+    title: `${app.name} target`,
+    url: targetUrl,
+    matchPattern: pattern,
+  };
+}
+
+function urlFromChromeMatchPattern(pattern: string): string | null {
+  const match = /^(\*|http|https):\/\/([^/]+)\/.*$/.exec(pattern);
+  if (!match) return null;
+  const [, rawScheme, rawHost] = match;
+  if (rawHost === '*' || rawHost.includes(':')) return null;
+  const scheme = rawScheme === '*' ? 'https' : rawScheme;
+  const host = rawHost.startsWith('*.') ? `www.${rawHost.slice(2)}` : rawHost;
+  return `${scheme}://${host}/`;
 }
 
 function isPrivateCloudApp(app: SourcedManifest): boolean {
@@ -800,7 +827,8 @@ function App() {
     if (!canSend) return;
     const content = chatInput.trim();
     const nonce = crypto.randomUUID();
-    const draftForChat = draft
+    const startsNewDraft = draft ? shouldStartNewAppDraftForPrompt(draft, content) : false;
+    const draftForChat = draft && !startsNewDraft
       ? appendDraftUserMessage(draft, { content, nonce })
       : createAppDraft({
           prompt: content,
@@ -808,12 +836,13 @@ function App() {
           nonce,
         });
     setDraft(draftForChat);
+    if (startsNewDraft) setSavedAppId(null);
     setChatInput('');
     setSaveState('idle');
     setSaveError(null);
     setApplyState('idle');
     setApplyError(null);
-    const needsTargetContext = !draftForChat.target;
+    const needsTargetContext = !draftForChat.target && draftRequestsCurrentPage(draftForChat);
     let draftToSave = draftForChat;
     if (needsTargetContext) {
       setGenerationPhase('reading_context');
@@ -853,9 +882,10 @@ function App() {
     const nonce = crypto.randomUUID();
     const summary = manifestSummary(app);
     const cloud = previousAppCloudMetadataForManifest(app);
+    const appTarget = targetFromManifest(app);
     const seed = createAppDraft({
       prompt: `Refine ${app.name}`,
-      target,
+      target: appTarget,
       nonce,
       now,
     });
@@ -883,6 +913,7 @@ function App() {
       generationRun: undefined,
     };
     setDraft(nextDraft);
+    setTarget(appTarget);
     setSavedAppId(app.id);
     setSaveState('saved');
     setSaveError(null);
@@ -908,7 +939,7 @@ function App() {
     }
   }
 
-  const shouldShowTargetContext = Boolean(draft && (loadingTarget || target || targetError));
+  const shouldShowTargetContext = Boolean(draft && draftRequestsCurrentPage(draft) && !draftHasExplicitWebTarget(draft) && (loadingTarget || target || targetError));
   const firstAssistantMessageIndex = draft?.messages.findIndex((message) => message.role === 'assistant') ?? -1;
   const targetContextMessage = shouldShowTargetContext ? (
     <TargetContextMessage

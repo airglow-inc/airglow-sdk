@@ -2,10 +2,11 @@ export const SIDEPANEL_DRAFTS_KEY = '__airglow_sidepanel_app_drafts';
 export const SIDEPANEL_LAST_DRAFT_KEY = '__airglow_sidepanel_last_draft';
 
 export interface SidePanelTargetTab {
-  id: number;
-  windowId: number;
+  id?: number;
+  windowId?: number;
   title?: string;
   url?: string;
+  matchPattern?: string;
   favIconUrl?: string;
   status?: string;
 }
@@ -173,6 +174,7 @@ export interface PrivateAppSavePayload {
     title?: string;
     url?: string;
     origin?: string;
+    matchPattern?: string;
   } | null;
   clientCreatedAt: string;
   clientUpdatedAt: string;
@@ -422,6 +424,166 @@ export function appendDraftUserMessage(draft: AirglowAppDraft, input: AppendDraf
   };
 }
 
+const EXPLICIT_WEB_TARGETS: Array<{ key: string; hosts: string[]; terms: RegExp[] }> = [
+  { key: 'wikipedia', hosts: ['wikipedia.org'], terms: [/\bwikipedia(?:\.org)?\b/i, /википед[а-яё]*/i] },
+  { key: 'youtube', hosts: ['youtube.com'], terms: [/\byoutube(?:\.com)?\b/i, /ютуб[а-яё]*/i, /ютьюб[а-яё]*/i] },
+  { key: 'codeforces', hosts: ['codeforces.com'], terms: [/\bcodeforces(?:\.com)?\b/i, /кодфорс[а-яё]*/i] },
+];
+
+const PROMPT_TARGET_PREFIX = String.raw`(?:for|on|at|inside|target(?:ing)?|для|на|в|под|сайт(?:е|а)?|страниц(?:е|ах|у|ы)?)`;
+const DOMAIN_LABEL = String.raw`[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?`;
+const DOMAIN_TEXT = String.raw`${DOMAIN_LABEL}(?:\.${DOMAIN_LABEL})+`;
+const FILE_EXTENSION_SUFFIXES = new Set([
+  'cjs',
+  'css',
+  'gif',
+  'htm',
+  'html',
+  'jpeg',
+  'jpg',
+  'js',
+  'json',
+  'jsx',
+  'map',
+  'md',
+  'mjs',
+  'pdf',
+  'png',
+  'svg',
+  'ts',
+  'tsx',
+  'txt',
+  'webp',
+]);
+
+const NEW_APP_PATTERNS = [
+  /^\s*(build|create|generate)\b/i,
+  /^\s*make\s+(?:a|an|new)\b/i,
+  /^\s*(сделай|создай|сгенерируй|собери|построй|запили)\b/i,
+];
+
+const REFINEMENT_PATTERNS = [
+  /^\s*(add|remove|change|update|refine|fix|also|now)\b/i,
+  /^\s*make\s+(?:it|this|the\s+(?:panel|button|text|ui))\b/i,
+  /\b(smaller|bigger|larger|compact|red|blue|green|copy button)\b/i,
+  /^\s*(добавь|убери|измени|поменяй|исправь|обнови|доработай|теперь|ещ[её])\b/i,
+  /^\s*сделай\s+(?:его|ее|её|это|панель|кнопк[ауи]?|текст|цвет|размер)\b/i,
+  /\b(компактн|меньше|больше|красн|син|зелен|зелён|кнопк[ауи]?\s+копир)\b/i,
+];
+
+export function promptHasExplicitWebTarget(prompt: string): boolean {
+  return Boolean(explicitPromptTargetKey(prompt) || domainMentionFromPrompt(prompt));
+}
+
+export function draftHasExplicitWebTarget(draft: AirglowAppDraft): boolean {
+  if (normalizeMatchPattern(draft.target?.matchPattern)) return true;
+  return draft.messages.some((message) => message.role === 'user' && promptHasExplicitWebTarget(message.content));
+}
+
+export function promptRequestsCurrentPage(prompt: string): boolean {
+  return (
+    /\b(?:this|current|selected)\s+(?:page|tab|site)\b/i.test(prompt) ||
+    /\b(?:page|tab)\s+(?:i'?m\s+)?(?:on|viewing|looking at)\b/i.test(prompt) ||
+    /(?:^|[\s(])(?:эта|эту|этой|текущая|текущую|текущей|выбранная|выбранную|выбранной)\s+(?:страниц[а-яё]*|вкладк[а-яё]*|сайт[а-яё]*)(?=$|[\s),.!?:;])/i.test(prompt)
+  );
+}
+
+export function draftRequestsCurrentPage(draft: AirglowAppDraft): boolean {
+  return draft.messages.some((message) => message.role === 'user' && promptRequestsCurrentPage(message.content));
+}
+
+export function shouldStartNewAppDraftForPrompt(draft: AirglowAppDraft, prompt: string): boolean {
+  const content = prompt.trim();
+  if (!content) return false;
+  const hasExistingWork = draft.messages.length > 0 || Boolean(draft.persistence);
+  if (!hasExistingWork) return false;
+  const explicitTargetKey = explicitPromptTargetKey(content) || domainMentionFromPrompt(content);
+  if (explicitTargetKey) {
+    const currentTargetKey = draftTargetKey(draft);
+    if (!currentTargetKey || currentTargetKey !== explicitTargetKey) return true;
+  }
+  return looksLikeNewAppRequest(content) && !looksLikeRefinementRequest(content);
+}
+
+function looksLikeNewAppRequest(prompt: string): boolean {
+  return NEW_APP_PATTERNS.some((pattern) => pattern.test(prompt));
+}
+
+function looksLikeRefinementRequest(prompt: string): boolean {
+  return REFINEMENT_PATTERNS.some((pattern) => pattern.test(prompt));
+}
+
+function explicitPromptTargetKey(prompt: string): string | undefined {
+  const explicit = EXPLICIT_WEB_TARGETS.find((target) => target.terms.some((term) => targetMentionIsExplicit(prompt, term)));
+  return explicit?.key;
+}
+
+function draftTargetKey(draft: AirglowAppDraft): string | undefined {
+  const hostname = normalizedHostname(draft.target?.url);
+  if (hostname) return explicitTargetKeyForHostname(hostname) || hostname;
+  const userMessages = draft.messages.filter((message) => message.role === 'user').map((message) => message.content);
+  for (const message of userMessages) {
+    const key = explicitPromptTargetKey(message) || domainMentionFromPrompt(message);
+    if (key) return key;
+  }
+  return undefined;
+}
+
+function explicitTargetKeyForHostname(hostname: string): string | undefined {
+  const explicit = EXPLICIT_WEB_TARGETS.find((target) => target.hosts.some((host) => hostname === host || hostname.endsWith(`.${host}`)));
+  return explicit?.key;
+}
+
+function targetMentionIsExplicit(prompt: string, term: RegExp): boolean {
+  const match = term.exec(prompt);
+  if (!match || match.index === undefined) return false;
+  const before = prompt.slice(0, match.index);
+  return new RegExp(String.raw`(?:^|[\s(])${PROMPT_TARGET_PREFIX}\s+(?:the\s+|сайт\s+)?$`, 'iu').test(before);
+}
+
+function domainMentionFromPrompt(prompt: string): string | undefined {
+  const match = new RegExp(
+    String.raw`(?:^|[\s(])${PROMPT_TARGET_PREFIX}\s+(?:https?:\/\/)?(${DOMAIN_TEXT})(?=$|[\/\s),.!?:;])`,
+    'i',
+  ).exec(prompt);
+  return normalizedPromptHostname(match?.[1]);
+}
+
+function normalizedPromptHostname(value: string | undefined): string | undefined {
+  const hostname = normalizedHostname(value);
+  if (!hostname || !hostnameLooksLikeWebDomain(hostname)) return undefined;
+  return explicitTargetKeyForHostname(hostname) || hostname;
+}
+
+function normalizedHostname(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new URL(value).hostname.toLowerCase().replace(/^www\./, '');
+  } catch {
+    return value.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+  }
+}
+
+function hostnameLooksLikeWebDomain(hostname: string): boolean {
+  if (!/^[a-z0-9.-]+$/i.test(hostname) || hostname.includes('..')) return false;
+  const labels = hostname.toLowerCase().split('.');
+  if (labels.length < 2 || labels.some((label) => !label || label.startsWith('-') || label.endsWith('-'))) return false;
+  const tld = labels[labels.length - 1];
+  return /^[a-z]{2,24}$/.test(tld) && !FILE_EXTENSION_SUFFIXES.has(tld);
+}
+
+function normalizeMatchPattern(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const pattern = value.trim();
+  const match = /^(https?):\/\/([^/]+)\/\*$/.exec(pattern);
+  if (!match) return undefined;
+  const host = match[2];
+  if (!host || host === '*' || host.includes(':') || host.includes('**')) return undefined;
+  const hostname = host.startsWith('*.') ? host.slice(2) : host;
+  if (!hostnameLooksLikeWebDomain(hostname)) return undefined;
+  return pattern;
+}
+
 export function appendDraftAssistantMessage(
   draft: AirglowAppDraft,
   input: AppendDraftAssistantMessageInput,
@@ -605,6 +767,7 @@ function sanitizedTarget(target: SidePanelTargetTab | null): PrivateAppSavePaylo
   const next = {
     ...(target.title ? { title: target.title } : {}),
     ...(target.url ? { url: target.url } : {}),
+    ...(normalizeMatchPattern(target.matchPattern) ? { matchPattern: normalizeMatchPattern(target.matchPattern) } : {}),
     ...targetOrigin(target.url),
   };
   return Object.keys(next).length > 0 ? next : null;

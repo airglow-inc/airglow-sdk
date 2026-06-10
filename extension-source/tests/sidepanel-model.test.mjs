@@ -137,6 +137,67 @@ test('appendDraftUserMessage turns a saved draft into an iterative chat update',
   }
 });
 
+test('new explicit site prompts start a fresh app instead of refining the saved draft', async () => {
+  const model = await loadSidepanelModel();
+  try {
+    const draft = model.createAppDraft({
+      prompt: 'Сделай планировщик на каждую страницу',
+      target: { id: 7, windowId: 3, title: 'YouTube', url: 'https://www.youtube.com/watch?v=1' },
+      now: new Date('2026-06-09T10:00:00.000Z'),
+      nonce: 'planner',
+    });
+    const saved = model.markDraftSaved(draft, {
+      now: new Date('2026-06-09T10:01:00.000Z'),
+      persistence: {
+        mode: 'cloud',
+        cloud: {
+          appId: 'private-planner',
+          versionKey: 'private-planner@v1',
+          generatedSummary: 'Planner for YouTube pages.',
+        },
+      },
+    });
+
+    assert.equal(model.promptHasExplicitWebTarget('Сделай саммарайзер для википедии'), true);
+    assert.equal(model.promptHasExplicitWebTarget('Summarize YouTube mentions on this page'), false);
+    assert.equal(model.promptHasExplicitWebTarget('fix app.tsx for v1.2'), false);
+    assert.equal(model.promptHasExplicitWebTarget('Create a helper for this page that opens https://status.example.com'), false);
+    assert.equal(model.promptRequestsCurrentPage('Create a helper for this page that opens https://status.example.com'), true);
+    assert.equal(model.promptRequestsCurrentPage('Сделай штуку для текущей страницы'), true);
+    assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'Сделай саммарайзер для википедии'), true);
+    assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'сделай панель компактнее'), false);
+    assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'make the panel smaller and add a copy button'), false);
+
+    const explicitTargetDraft = model.markDraftSaved(model.createAppDraft({
+      prompt: 'Сделай саммарайзер для википедии',
+      target: null,
+      now: new Date('2026-06-09T10:03:00.000Z'),
+      nonce: 'wiki',
+    }), {
+      now: new Date('2026-06-09T10:04:00.000Z'),
+      persistence: {
+        mode: 'cloud',
+        cloud: {
+          appId: 'private-wikipedia',
+          versionKey: 'private-wikipedia@v1',
+        },
+      },
+    });
+    const explicitTargetFollowup = model.appendDraftUserMessage(explicitTargetDraft, {
+      content: 'make it smaller',
+      now: new Date('2026-06-09T10:05:00.000Z'),
+      nonce: 'wiki-followup',
+    });
+    assert.equal(model.shouldStartNewAppDraftForPrompt(explicitTargetDraft, 'добавь для Wikipedia copy button'), false);
+    assert.equal(model.draftHasExplicitWebTarget(explicitTargetFollowup), true);
+    assert.equal(model.draftRequestsCurrentPage(explicitTargetFollowup), false);
+    assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'update to v1.2'), false);
+    assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'fix app.tsx button'), false);
+  } finally {
+    await model.cleanup();
+  }
+});
+
 test('markDraftSaved keeps the draft content and updates status', async () => {
   const model = await loadSidepanelModel();
   try {
