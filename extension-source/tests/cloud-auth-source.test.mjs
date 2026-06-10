@@ -81,6 +81,19 @@ test('sidepanel treats generation failures as unsaved app errors', async () => {
   assert.match(sidepanel, /draft\.persistence\?\.mode === 'cloud'/);
 });
 
+test('sidepanel lists apps and can refine private cloud apps', async () => {
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+  const sidepanelModel = await readFile(new URL('../lib/sidepanel-model.ts', import.meta.url), 'utf8');
+
+  assert.match(sidepanel, /type:\s*'airglow:get-dashboard-manifests'/);
+  assert.match(sidepanel, /function AppsMessage/);
+  assert.match(sidepanel, /Refine/);
+  assert.match(sidepanel, /function startRefineApp\(app: SourcedManifest\)/);
+  assert.match(sidepanel, /previousAppCloudMetadataForManifest\(app\)/);
+  assert.match(sidepanel, /setSavedAppId\(app\.id\)/);
+  assert.match(sidepanelModel, /previousAppForPayload/);
+});
+
 test('app enable toggles update optimistically while registration sync remains authoritative', async () => {
   const appLoader = await readFile(new URL('../lib/app-loader.ts', import.meta.url), 'utf8');
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');

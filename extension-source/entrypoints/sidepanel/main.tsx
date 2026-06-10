@@ -4,8 +4,10 @@ import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
 import { Check, CircleHelp, ExternalLink, Loader2, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
 import './style.css';
+import type { SourcedManifest } from '../../lib/app-resolver';
 import {
   type AirglowAppDraft,
+  type SavedAppCloudMetadata,
   type SidePanelGenerationRunEvent,
   type SidePanelGenerationRunStatus,
   type SidePanelTargetTab,
@@ -106,6 +108,15 @@ type LastDraftResponse = {
   draft?: AirglowAppDraft | null;
 };
 
+type AppsResponse = {
+  manifests?: SourcedManifest[];
+};
+
+type ManifestDetails = {
+  summary?: string;
+  longDescription?: string[];
+};
+
 function sendRuntimeMessage<T>(message: Record<string, unknown>): Promise<T> {
   return new Promise((resolve, reject) => {
     chrome.runtime.sendMessage(message, (response: T & { error?: string }) => {
@@ -130,6 +141,60 @@ function targetOrigin(target: SidePanelTargetTab | null): string {
   } catch {
     return target.url;
   }
+}
+
+function manifestDetails(app: SourcedManifest): ManifestDetails {
+  const details = app.details;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return {};
+  return details as ManifestDetails;
+}
+
+function manifestSummary(app: SourcedManifest): string {
+  const details = manifestDetails(app);
+  if (typeof details.summary === 'string' && details.summary.trim()) return details.summary.trim();
+  if (typeof app.description === 'string' && app.description.trim()) return app.description.trim();
+  return '';
+}
+
+function isPrivateCloudApp(app: SourcedManifest): boolean {
+  return app._sourceType === 'cloud' && app.visibility === 'private';
+}
+
+function isSidePanelVisibleApp(app: SourcedManifest): boolean {
+  return app.id !== 'dashboard' && app.visibility !== 'hidden';
+}
+
+function appSortRank(app: SourcedManifest): number {
+  if (isPrivateCloudApp(app)) return 0;
+  if (app._sourceType === 'cloud') return 1;
+  return 2;
+}
+
+function sidePanelApps(manifests: SourcedManifest[]): SourcedManifest[] {
+  const byId = new Map<string, SourcedManifest>();
+  const sorted = manifests
+    .filter(isSidePanelVisibleApp)
+    .sort((a, b) => {
+      const rank = appSortRank(a) - appSortRank(b);
+      if (rank !== 0) return rank;
+      return a.name.localeCompare(b.name);
+    });
+  for (const app of sorted) {
+    if (!byId.has(app.id)) byId.set(app.id, app);
+  }
+  return Array.from(byId.values());
+}
+
+function previousAppCloudMetadataForManifest(app: SourcedManifest): SavedAppCloudMetadata {
+  const record = app as Record<string, unknown>;
+  const rawVersionKey = record.versionKey || record.publishedVersionKey;
+  const summary = manifestSummary(app);
+  return {
+    appId: app.id,
+    ...(typeof rawVersionKey === 'string' && rawVersionKey ? { versionKey: rawVersionKey } : {}),
+    ...(summary ? { generatedSummary: summary } : {}),
+    registered: true,
+  };
 }
 
 function ApprovalList({ draft }: { draft: AirglowAppDraft }) {
@@ -362,6 +427,77 @@ function TargetContextMessage({
   );
 }
 
+function AppsMessage({
+  apps,
+  activeAppId,
+  loading,
+  error,
+  onRefresh,
+  onOpen,
+  onRefine,
+}: {
+  apps: SourcedManifest[];
+  activeAppId: string | null;
+  loading: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  onOpen: (appId: string) => void;
+  onRefine: (app: SourcedManifest) => void;
+}) {
+  return (
+    <div className="chat-message assistant apps-message">
+      <div className="target-message-heading">
+        <span>Apps</span>
+        <IconTooltip label="Refresh apps">
+          <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loading} aria-label="Refresh apps">
+            {loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+          </button>
+        </IconTooltip>
+      </div>
+      {error ? (
+        <p className="target-meta">{error}</p>
+      ) : apps.length === 0 ? (
+        <p className="target-meta">{loading ? 'Loading apps...' : 'No apps saved yet.'}</p>
+      ) : (
+        <div className="apps-list" aria-label="Available apps">
+          {apps.map((app) => {
+            const summary = manifestSummary(app);
+            const canRefine = isPrivateCloudApp(app);
+            const active = activeAppId === app.id;
+            return (
+              <div key={`${app._sourceType}:${app.id}`} className={active ? 'app-row active' : 'app-row'}>
+                <div className="app-row-main">
+                  <p><strong>{app.name}</strong></p>
+                  {summary && <p className="target-meta">{summary}</p>}
+                  <div className="app-row-meta">
+                    <span>{app.visibility || 'public'}</span>
+                    <span>{app._sourceType}</span>
+                  </div>
+                </div>
+                <div className="app-row-actions">
+                  {canRefine && (
+                    <IconTooltip label="Continue editing this app in chat">
+                      <button type="button" className="secondary-button compact" onClick={() => onRefine(app)}>
+                        <Sparkles size={15} />
+                        Refine
+                      </button>
+                    </IconTooltip>
+                  )}
+                  <IconTooltip label="Open app">
+                    <button type="button" className="secondary-button compact icon-only" onClick={() => onOpen(app.id)} aria-label={`Open ${app.name}`}>
+                      <ExternalLink size={15} />
+                    </button>
+                  </IconTooltip>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function WelcomeMessage() {
   return (
     <div className="chat-message assistant welcome-message">
@@ -390,6 +526,9 @@ function App() {
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [applyError, setApplyError] = useState<string | null>(null);
   const [generationRunEvents, setGenerationRunEvents] = useState<SidePanelGenerationRunEvent[]>([]);
+  const [apps, setApps] = useState<SourcedManifest[]>([]);
+  const [appsLoading, setAppsLoading] = useState(false);
+  const [appsError, setAppsError] = useState<string | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<AirglowAppDraft | null>(null);
 
@@ -419,6 +558,19 @@ function App() {
     setDraft((current) => current ? { ...current, target: nextTarget, updatedAt: new Date().toISOString() } : current);
   }
 
+  async function loadApps() {
+    setAppsLoading(true);
+    setAppsError(null);
+    try {
+      const response = await sendRuntimeMessage<AppsResponse>({ type: 'airglow:get-dashboard-manifests' });
+      setApps(sidePanelApps(Array.isArray(response.manifests) ? response.manifests : []));
+    } catch (error) {
+      setAppsError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAppsLoading(false);
+    }
+  }
+
   useEffect(() => {
     let cancelled = false;
     let timer: number | null = null;
@@ -440,6 +592,7 @@ function App() {
         setSavedAppId(poll.cloud.appId);
         setSaveState('saved');
         setGenerationPhase('ready');
+        void loadApps();
       } else if ('mode' in poll && poll.mode === 'failed') {
         stopPolling();
         setDraft(poll.draft);
@@ -491,6 +644,10 @@ function App() {
       cancelled = true;
       stopPolling();
     };
+  }, []);
+
+  useEffect(() => {
+    void loadApps();
   }, []);
 
   useEffect(() => {
@@ -563,6 +720,7 @@ function App() {
               setSavedAppId(poll.cloud.appId);
               setSaveState('saved');
               setGenerationPhase('ready');
+              void loadApps();
             } else if ('mode' in poll && poll.mode === 'failed') {
               if (pollTimer !== null) {
                 window.clearInterval(pollTimer);
@@ -599,6 +757,7 @@ function App() {
         setSavedAppId(executed.cloud.appId);
         setSaveState('saved');
         setGenerationPhase('ready');
+        void loadApps();
       } else if ('mode' in executed && executed.mode === 'failed') {
         setSavedAppId(null);
         setSaveState('error');
@@ -665,13 +824,63 @@ function App() {
     await saveDraftToCloud(draft);
   }
 
+  async function openApp(appId: string) {
+    await sendRuntimeMessage({ type: 'airglow:open-app', appId });
+  }
+
   async function openSavedApp() {
     if (!savedAppId) return;
-    await sendRuntimeMessage({ type: 'airglow:open-app', appId: savedAppId });
+    await openApp(savedAppId);
   }
 
   async function openDashboard() {
     await sendRuntimeMessage({ type: 'airglow:open-dashboard' });
+  }
+
+  function startRefineApp(app: SourcedManifest) {
+    const now = new Date();
+    const iso = now.toISOString();
+    const nonce = crypto.randomUUID();
+    const summary = manifestSummary(app);
+    const cloud = previousAppCloudMetadataForManifest(app);
+    const seed = createAppDraft({
+      prompt: `Refine ${app.name}`,
+      target,
+      nonce,
+      now,
+    });
+    const nextDraft: AirglowAppDraft = {
+      ...seed,
+      name: app.name,
+      prompt: '',
+      messages: [{
+        id: `msg-refine-${nonce}`,
+        role: 'assistant',
+        content: [
+          `Selected ${app.name}.`,
+          summary ? `Current app: ${summary}` : '',
+          'Tell me what to change and I’ll generate a new version.',
+        ].filter(Boolean).join('\n\n'),
+        createdAt: iso,
+      }],
+      revision: 0,
+      status: 'saved',
+      persistence: {
+        mode: 'cloud',
+        savedAt: iso,
+        cloud,
+      },
+      generationRun: undefined,
+    };
+    setDraft(nextDraft);
+    setSavedAppId(app.id);
+    setSaveState('saved');
+    setSaveError(null);
+    setGenerationPhase('ready');
+    setApplyState('idle');
+    setApplyError(null);
+    setGenerationRunEvents([]);
+    setChatInput('');
   }
 
   async function refreshTargetPage() {
@@ -704,6 +913,15 @@ function App() {
       <main className="sidepanel">
         <section className="chat-panel">
           <div className="chat-log" ref={chatLogRef} aria-live="polite">
+            <AppsMessage
+              apps={apps}
+              activeAppId={savedAppId}
+              loading={appsLoading}
+              error={appsError}
+              onRefresh={() => void loadApps()}
+              onOpen={(appId) => void openApp(appId)}
+              onRefine={startRefineApp}
+            />
             {draft?.messages.length ? draft.messages.map((message) => (
               <Fragment key={message.id}>
                 {firstAssistantMessageIndex !== -1 && draft.messages[firstAssistantMessageIndex]?.id === message.id && targetContextMessage}

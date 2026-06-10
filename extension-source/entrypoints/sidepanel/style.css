@@ -88,7 +88,8 @@ button {
 }
 
 .chat-message.target-message,
-.chat-message.actions-message {
+.chat-message.actions-message,
+.chat-message.apps-message {
   max-width: min(94%, 560px);
 }
 
@@ -167,6 +168,65 @@ button {
   border-color: var(--border-strong);
   background: var(--surface);
   color: var(--text);
+}
+
+.apps-list {
+  display: grid;
+  gap: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+
+.app-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+
+.app-row:first-child {
+  border-top: 0;
+}
+
+.app-row.active .app-row-main strong {
+  color: var(--accent);
+}
+
+.app-row-main {
+  min-width: 0;
+}
+
+.app-row-main p {
+  overflow-wrap: anywhere;
+}
+
+.app-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.app-row-meta span {
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-muted);
+  color: var(--subtle);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.app-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .progress-steps {
@@ -326,6 +386,18 @@ button {
 .secondary-button:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--surface-muted);
+}
+
+.secondary-button.compact {
+  min-height: 30px;
+  gap: 6px;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.secondary-button.icon-only {
+  width: 30px;
+  padding: 0;
 }
 
 .secondary-button:disabled {
