@@ -2,14 +2,14 @@
 
 :root {
   color-scheme: light;
-  --bg: #f6f7fb;
+  --bg: #fbfaf7;
   --surface: #ffffff;
-  --surface-muted: #f1f4f9;
-  --border: #dce2ec;
-  --border-strong: #bec8d8;
+  --surface-muted: #f4f2ed;
+  --border: #e1ddd4;
+  --border-strong: #c9c3b8;
   --text: #171a21;
-  --muted: #5f6775;
-  --subtle: #838c9a;
+  --muted: #625f57;
+  --subtle: #8a867b;
   --accent: #2563eb;
   --accent-hover: #1d4ed8;
   --ok: #17804a;
@@ -46,9 +46,7 @@ button {
   height: 100vh;
   display: flex;
   overflow: hidden;
-  background:
-    radial-gradient(circle at top left, rgba(37, 99, 235, 0.08), transparent 28%),
-    var(--bg);
+  background: var(--bg);
 }
 
 .chat-panel {
@@ -81,8 +79,8 @@ button {
 
 .chat-message.user {
   margin-left: auto;
-  border-color: #c7d7fe;
-  background: #eaf1ff;
+  border-color: #d8d2c7;
+  background: #f7f5ef;
 }
 
 .chat-message.assistant {
