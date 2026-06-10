@@ -197,17 +197,36 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
       });
       toggle.appendChild(knob);
 
+      const applyDisabledState = (disabled: boolean) => {
+        label.style.color = disabled ? '#999' : '#1a1a1a';
+        toggle.style.background = disabled ? '#ddd' : '#0D3B6E';
+        toggle.setAttribute('aria-pressed', disabled ? 'false' : 'true');
+        toggle.title = disabled ? 'Enable app' : 'Disable app';
+        knob.style.left = disabled ? '2px' : '18px';
+      };
+      applyDisabledState(app.disabled);
+
+      let toggleRequestId = 0;
       toggle.addEventListener('click', (e) => {
         e.stopPropagation();
-        chrome.runtime.sendMessage({ type: 'airglow:toggle-app', appId: app.id }, (res) => {
+        const previousDisabled = app.disabled;
+        const nextDisabled = !app.disabled;
+        const requestId = ++toggleRequestId;
+        app.disabled = nextDisabled;
+        applyDisabledState(nextDisabled);
+
+        chrome.runtime.sendMessage({ type: 'airglow:toggle-app', appId: app.id, disabled: nextDisabled }, (res) => {
+          if (requestId !== toggleRequestId) return;
           if (res?.ok) {
             app.disabled = res.disabled;
-            label.style.color = app.disabled ? '#999' : '#1a1a1a';
-            toggle.style.background = app.disabled ? '#ddd' : '#0D3B6E';
-            knob.style.left = app.disabled ? '2px' : '18px';
+            applyDisabledState(app.disabled);
             needsRefresh = true;
             showRefreshHint();
+            return;
           }
+
+          app.disabled = previousDisabled;
+          applyDisabledState(previousDisabled);
         });
       });
 

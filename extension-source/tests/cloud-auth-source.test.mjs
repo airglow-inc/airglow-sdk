@@ -47,6 +47,29 @@ test('sidepanel treats local fallback as a local draft, not a saved app', async 
   assert.match(sidepanel, /draft\.persistence\?\.mode === 'cloud'/);
 });
 
+test('app enable toggles update optimistically while registration sync remains authoritative', async () => {
+  const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
+  const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
+  const edgeButton = await readFile(new URL('../lib/edge-button.ts', import.meta.url), 'utf8');
+
+  assert.match(edgeButton, /const nextDisabled = !app\.disabled/);
+  assert.match(edgeButton, /applyDisabledState\(nextDisabled\)/);
+  assert.match(edgeButton, /if \(requestId !== toggleRequestId\) return/);
+  assert.match(edgeButton, /app\.disabled = previousDisabled/);
+  assert.match(edgeButton, /type: 'airglow:toggle-app', appId: app\.id, disabled: nextDisabled/);
+  assert.match(dashboard, /const toggleRequestIds = useRef<Record<string, number>>\(\{\}\)/);
+  assert.match(dashboard, /type: 'airglow:toggle-app', appId, disabled: nextDisabled/);
+  assert.match(dashboard, /chrome\.runtime\.lastError \|\| res\?\.error/);
+  assert.match(background, /const nowDisabled = typeof msg\.disabled === 'boolean' \? msg\.disabled : !wasDisabled/);
+  assert.match(background, /function queueAppToggleRegistrationSync\(appId: string\): Promise<void>/);
+  assert.match(background, /await queueAppToggleRegistrationSync\(appId\);\s*sendResponse\(\{ ok: true, disabled: nowDisabled \}\);/);
+
+  const visualIndex = edgeButton.indexOf('applyDisabledState(nextDisabled);');
+  const sendIndex = edgeButton.indexOf("chrome.runtime.sendMessage({ type: 'airglow:toggle-app'");
+  assert.ok(visualIndex > 0, 'edge toggle should update visually');
+  assert.ok(sendIndex > visualIndex, 'edge toggle should update before waiting on background');
+});
+
 test('app UI sandbox reports successful bundle execution to app-shell', async () => {
   const appShell = await readFile(new URL('../entrypoints/app-shell/main.ts', import.meta.url), 'utf8');
   const sandbox = await readFile(new URL('../public/app-ui-sandbox.html', import.meta.url), 'utf8');

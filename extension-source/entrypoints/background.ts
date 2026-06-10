@@ -80,6 +80,7 @@ export default defineBackground(() => {
   // ───── Airglow app platform ─────
   const lastAppHashes = new Map<string, string>(); // appId → _hash
   let loadGeneration = 0; // bumped on each call; stale runs abort before registering
+  let appToggleSyncQueue: Promise<void> = Promise.resolve();
   // Inventory list (both copies of an app that exists in local + cloud sources).
   // Runtime list dedupes local-wins; the dashboard wants to surface both.
   let dashboardAppManifests: SourcedManifest[] = [];
@@ -423,6 +424,35 @@ export default defineBackground(() => {
     runStartupScripts(startupManifests).catch((e) =>
       logger.error('airglow', `startup scripts failed: ${e}`)
     );
+  }
+
+  function queueAppToggleRegistrationSync(appId: string): Promise<void> {
+    const sync = appToggleSyncQueue.then(async () => {
+      const disabled = await getDisabledApps();
+      const nowDisabled = disabled.has(appId);
+      lastAppHashes.delete(appId);
+
+      // Read the authoritative storage state at execution time. If the user
+      // toggled the app back before this queued task ran, skip stale unregisters.
+      if (nowDisabled) {
+        try {
+          const scripts = await chrome.userScripts.getScripts();
+          const ids = scripts.filter(s => s.id.startsWith(appId + '__')).map(s => s.id);
+          if (ids.length > 0) await chrome.userScripts.unregister({ ids });
+        } catch (e: any) {
+          logger.warn('airglow', `unregister scripts for ${appId} failed: ${e?.message ?? e}`);
+        }
+      }
+
+      // force=true to bypass change detection; skipReload=true — user refreshes
+      // their own tabs (side panel hints "Refresh to apply").
+      await loadAndRegisterApps(true, true);
+    });
+
+    appToggleSyncQueue = sync.catch((e) => {
+      logger.error('airglow', `toggle registration sync failed for ${appId}: ${e?.message ?? e}`);
+    });
+    return sync;
   }
 
   let localManifestTimer: ReturnType<typeof setInterval> | undefined;
@@ -1575,27 +1605,11 @@ export default defineBackground(() => {
       const appId = msg.appId;
       getDisabledApps().then(async (disabled) => {
         const wasDisabled = disabled.has(appId);
-        if (wasDisabled) disabled.delete(appId);
-        else disabled.add(appId);
-        const nowDisabled = !wasDisabled;
+        const nowDisabled = typeof msg.disabled === 'boolean' ? msg.disabled : !wasDisabled;
+        if (nowDisabled) disabled.add(appId);
+        else disabled.delete(appId);
         await chrome.storage.local.set({ '__disabled_apps': Array.from(disabled) });
-        lastAppHashes.delete(appId);
-        // Immediately unregister this app's scripts when transitioning to
-        // disabled. Works whether or not the dev server is reachable; the
-        // re-register path below would otherwise no-op when offline and the
-        // already-registered scripts would survive on new page loads.
-        if (nowDisabled) {
-          try {
-            const scripts = await chrome.userScripts.getScripts();
-            const ids = scripts.filter(s => s.id.startsWith(appId + '__')).map(s => s.id);
-            if (ids.length > 0) await chrome.userScripts.unregister({ ids });
-          } catch (e: any) {
-            logger.warn('airglow', `unregister scripts for ${appId} failed: ${e?.message ?? e}`);
-          }
-        }
-        // force=true to bypass change detection; skipReload=true — user
-        // refreshes their own tabs (side panel hints "Refresh to apply").
-        await loadAndRegisterApps(true, true);
+        await queueAppToggleRegistrationSync(appId);
         sendResponse({ ok: true, disabled: nowDisabled });
       }).catch(e => sendResponse({ error: e.message }));
       return true;

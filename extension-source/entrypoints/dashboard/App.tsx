@@ -148,6 +148,7 @@ export default function App() {
   const [error, setError] = useState(false);
   const [reloadingApp, setReloadingApp] = useState<string | null>(null);
   const [disabledApps, setDisabledApps] = useState<Set<string>>(new Set());
+  const toggleRequestIds = useRef<Record<string, number>>({});
   const [sourceOverrides, setSourceOverrides] = useState<AppSourceOverrides>({});
   const [devPort, setDevPort] = useState(DEFAULT_DEV_PORT);
   const [portInput, setPortInput] = useState(String(DEFAULT_DEV_PORT));
@@ -515,12 +516,24 @@ export default function App() {
     if (wasDisabled) next.delete(appId);
     else next.add(appId);
     setDisabledApps(next);
+    const nextDisabled = !wasDisabled;
+    const requestId = (toggleRequestIds.current[appId] || 0) + 1;
+    toggleRequestIds.current[appId] = requestId;
     // Delegate to the same path the side-button toggle uses: the background
     // writes __disabled_apps, unregisters scripts when transitioning to
     // disabled, and re-registers the rest. Previously the dashboard wrote
     // storage itself and called reload-app, which early-returned in the
     // "now-disabled" case and left the userscript registered.
-    chrome.runtime.sendMessage({ type: 'airglow:toggle-app', appId });
+    chrome.runtime.sendMessage({ type: 'airglow:toggle-app', appId, disabled: nextDisabled }, (res) => {
+      const failed = Boolean(chrome.runtime.lastError || res?.error);
+      if (!failed || toggleRequestIds.current[appId] !== requestId) return;
+      setDisabledApps((current) => {
+        const rollback = new Set(current);
+        if (wasDisabled) rollback.add(appId);
+        else rollback.delete(appId);
+        return rollback;
+      });
+    });
   }
 
   function appUrl(appId: string) {
