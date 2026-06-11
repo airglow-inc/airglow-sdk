@@ -26,6 +26,7 @@ const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
 const LLM_TIMEOUT_MS = 60000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
 const RUNTIME_USER_APPROVAL_FLAG = '_airglowRuntimeUserApproved';
+const MAX_REPLACE_EDITOR_TEXT_CHARS = 200_000;
 
 export const RUNTIME_UX_CAPABILITIES = {
   fetchIncludeCookies: 'fetch.includeCookies',
@@ -393,6 +394,139 @@ function runtimeApprovalPrompt(appId: string, msg: any, capability: RuntimeUxCap
   return `Airglow app "${appId}" wants to ${action}${targetFromMessage(msg)}. Allow this action?`;
 }
 
+function normalizeEditorTextFromMessage(msg: any): string {
+  const text = typeof msg?.text === 'string' ? msg.text : '';
+  return text.slice(0, MAX_REPLACE_EDITOR_TEXT_CHARS);
+}
+
+function normalizeEditorSelectorsFromMessage(msg: any): string[] {
+  if (!Array.isArray(msg?.selectors)) return [];
+  return msg.selectors
+    .filter((selector: unknown): selector is string => typeof selector === 'string')
+    .map((selector) => selector.trim())
+    .filter(Boolean)
+    .slice(0, 20);
+}
+
+async function replacePageEditorText(
+  sender: chrome.runtime.MessageSender,
+  text: string,
+  selectors: string[],
+): Promise<unknown> {
+  const tabId = sender.tab?.id;
+  if (tabId == null) throw new Error('No sender tab for page editor insertion');
+  const target: chrome.scripting.InjectionTarget = { tabId };
+  if (typeof sender.frameId === 'number') target.frameIds = [sender.frameId];
+  const [result] = await chrome.scripting.executeScript({
+    target,
+    world: 'MAIN',
+    args: [text, selectors],
+    func: (nextText: string, customSelectors: string[]) => {
+      const defaultSelectors = [
+        '.monaco-editor textarea.inputarea',
+        '.monaco-editor textarea',
+        '.cm-content[contenteditable="true"]',
+        '[contenteditable="true"][role="textbox"]',
+        '[role="textbox"][contenteditable="true"]',
+        'textarea',
+      ];
+      const selectors = [...customSelectors, ...defaultSelectors];
+
+      function textValue(value: unknown): string {
+        return String(value || '');
+      }
+
+      function isVisible(element: Element): boolean {
+        const rect = element.getBoundingClientRect();
+        const style = getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+      }
+
+      function setNativeValue(element: HTMLInputElement | HTMLTextAreaElement, value: string): boolean {
+        element.focus();
+        const proto = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+        const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
+        if (descriptor?.set) descriptor.set.call(element, value);
+        else element.value = value;
+        element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: value }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+
+      function setEditableText(element: HTMLElement, value: string): boolean {
+        element.focus();
+        const selection = getSelection();
+        if (selection) {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        const inserted = document.execCommand('insertText', false, value);
+        if (!inserted) element.textContent = value;
+        element.dispatchEvent(new InputEvent('input', { bubbles: true, composed: true, inputType: 'insertText', data: value }));
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+
+      function scoreMonacoModel(model: any): number {
+        const uri = textValue(model?.uri).toLowerCase();
+        const language = textValue(typeof model?.getLanguageId === 'function' ? model.getLanguageId() : '').toLowerCase();
+        const value = textValue(typeof model?.getValue === 'function' ? model.getValue() : '');
+        let score = 0;
+        if (uri.includes('solution')) score += 50;
+        if (uri.includes('leetcode')) score += 20;
+        if (uri.includes('editor')) score += 10;
+        if (/javascript|typescript|python|java|cpp|c\+\+|golang|go|rust|csharp|kotlin|swift/.test(language)) score += 12;
+        if (/\b(class\s+Solution|function\s+\w+|def\s+\w+|impl\s+Solution|public\s+class|vector\s*<|ListNode|TreeNode)\b/.test(value)) score += 35;
+        if (value.length > 0 && value.length < 20000) score += 5;
+        return score;
+      }
+
+      function replaceMonaco(): { ok: boolean; method?: string; modelUri?: string } {
+        const monaco = (globalThis as any).monaco;
+        const models = monaco?.editor?.getModels?.();
+        if (!Array.isArray(models) || models.length === 0) return { ok: false };
+        const candidates = models
+          .filter((model) => typeof model?.setValue === 'function')
+          .map((model) => ({ model, score: scoreMonacoModel(model) }))
+          .sort((left, right) => right.score - left.score);
+        const chosen = candidates[0]?.model;
+        if (!chosen) return { ok: false };
+        chosen.setValue(nextText);
+        return { ok: true, method: 'monaco', modelUri: textValue(chosen.uri) };
+      }
+
+      const monacoResult = replaceMonaco();
+      if (monacoResult.ok) return monacoResult;
+
+      for (const selector of selectors) {
+        let elements: Element[] = [];
+        try {
+          elements = Array.from(document.querySelectorAll(selector));
+        } catch {
+          continue;
+        }
+        const target = elements.find(isVisible) || elements[0];
+        if (!target) continue;
+        if (target instanceof HTMLTextAreaElement || target instanceof HTMLInputElement) {
+          return setNativeValue(target, nextText)
+            ? { ok: true, method: 'textarea', selector }
+            : { ok: false, method: 'textarea', selector };
+        }
+        if (target instanceof HTMLElement && target.isContentEditable) {
+          return setEditableText(target, nextText)
+            ? { ok: true, method: 'contenteditable', selector }
+            : { ok: false, method: 'contenteditable', selector };
+        }
+      }
+
+      return { ok: false, error: 'No editable code surface found' };
+    },
+  });
+  return result?.result ?? { ok: false, error: 'Page editor insertion returned no result' };
+}
+
 async function requestRuntimeUserApproval(
   appId: string,
   msg: any,
@@ -706,6 +840,16 @@ function dispatchAirglowMessage(
           details: err?.details,
         });
       })().catch((e) => sendResponse({ error: e?.message || String(e), code: 'LLM_NETWORK_ERROR' }));
+      return true;
+    }
+
+    case 'airglow:page:replaceEditorText': {
+      replacePageEditorText(_sender, normalizeEditorTextFromMessage(msg), normalizeEditorSelectorsFromMessage(msg))
+        .then((result) => sendResponse({ result }))
+        .catch((error) => sendResponse({
+          error: error instanceof Error ? error.message : String(error),
+          code: 'PAGE_EDITOR_REPLACE_FAILED',
+        }));
       return true;
     }
 

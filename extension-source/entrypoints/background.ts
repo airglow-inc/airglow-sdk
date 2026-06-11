@@ -1211,7 +1211,18 @@ export default defineBackground(() => {
   type BrowserToolCallRecord = {
     callId: string;
     status: 'queued' | 'claimed' | 'completed' | 'failed' | 'cancelled';
-    toolName: 'browser.current_tab' | 'browser.read_page';
+    toolName:
+      | 'browser.current_tab'
+      | 'browser.read_page'
+      | 'browser.inspect_dom'
+      | 'browser.wait_for_text'
+      | 'browser.click'
+      | 'browser.type_text'
+      | 'browser.list_tabs'
+      | 'browser.open_tab'
+      | 'browser.activate_tab'
+      | 'browser.navigate_tab'
+      | 'browser.reload_tab';
     input?: Record<string, unknown>;
   };
 
@@ -1223,6 +1234,23 @@ export default defineBackground(() => {
   const BROWSER_TOOL_BRIDGE_POLL_MS = 5000;
   const BROWSER_TOOL_BRIDGE_HEADERS_TTL_MS = 5 * 60_000;
   const BROWSER_TOOL_READ_PAGE_MAX_CHARS = 20_000;
+  const BROWSER_TOOL_DOM_RESULT_LIMIT = 20;
+  const BROWSER_TOOL_TEXT_MAX_CHARS = 4000;
+  const BROWSER_TOOL_SELECTOR_MAX_CHARS = 500;
+  const BROWSER_TOOL_WAIT_TIMEOUT_MS = 10_000;
+  const BROWSER_TOOL_NAMES = new Set([
+    'browser.current_tab',
+    'browser.read_page',
+    'browser.inspect_dom',
+    'browser.wait_for_text',
+    'browser.click',
+    'browser.type_text',
+    'browser.list_tabs',
+    'browser.open_tab',
+    'browser.activate_tab',
+    'browser.navigate_tab',
+    'browser.reload_tab',
+  ]);
   let browserToolBridgeTimer: ReturnType<typeof setInterval> | undefined;
   let browserToolBridgeRunning = false;
   let browserToolBridgeHeadersCache: BrowserToolBridgeHeadersCache | null = null;
@@ -1860,7 +1888,8 @@ export default defineBackground(() => {
       if (!call || typeof call !== 'object') return false;
       const record = call as Record<string, unknown>;
       return typeof record.callId === 'string'
-        && (record.toolName === 'browser.current_tab' || record.toolName === 'browser.read_page');
+        && typeof record.toolName === 'string'
+        && BROWSER_TOOL_NAMES.has(record.toolName);
     }).map((call) => ({
       callId: call.callId,
       status: call.status,
@@ -1973,9 +2002,406 @@ export default defineBackground(() => {
     };
   }
 
+  function browserToolString(input: Record<string, unknown> | undefined, key: string, maxChars: number): string {
+    const value = input?.[key];
+    return typeof value === 'string' ? value.trim().slice(0, maxChars) : '';
+  }
+
+  function browserToolBoolean(input: Record<string, unknown> | undefined, key: string, fallback: boolean): boolean {
+    const value = input?.[key];
+    return typeof value === 'boolean' ? value : fallback;
+  }
+
+  function browserToolLimit(input: Record<string, unknown> | undefined, key: string, fallback: number, max: number): number {
+    const raw = typeof input?.[key] === 'number'
+      ? input[key]
+      : typeof input?.[key] === 'string'
+        ? Number(input[key])
+        : fallback;
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.min(Math.max(1, Math.floor(Number(raw))), max);
+  }
+
+  function browserToolTimeout(input: Record<string, unknown> | undefined): number {
+    return browserToolLimit(input, 'timeoutMs', 5000, BROWSER_TOOL_WAIT_TIMEOUT_MS);
+  }
+
+  function browserToolOptionalTabId(input: Record<string, unknown> | undefined): number | undefined {
+    const raw = input?.tabId;
+    const value = typeof raw === 'number'
+      ? raw
+      : typeof raw === 'string'
+        ? Number(raw)
+        : undefined;
+    return Number.isInteger(value) && value > 0 ? value : undefined;
+  }
+
+  function browserToolHttpUrl(input: Record<string, unknown> | undefined, key = 'url'): string {
+    const raw = browserToolString(input, key, 2048);
+    if (!raw) throw new Error(`browser tab tool requires input.${key}`);
+    try {
+      const url = new URL(raw);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+        throw new Error('Only http(s) URLs are supported');
+      }
+      return url.href;
+    } catch (error) {
+      throw new Error(`Invalid browser tab URL: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  function ensureHttpBrowserToolTab(tab: chrome.tabs.Tab): asserts tab is chrome.tabs.Tab & { id: number } {
+    if (typeof tab.id !== 'number') throw new Error('Active tab id is missing');
+    const tabUrl = tab.url || '';
+    if (!/^https?:\/\//i.test(tabUrl)) {
+      throw new Error('Browser testing tools can only run on http(s) tabs');
+    }
+  }
+
+  async function requestBrowserToolUserApproval(tab: chrome.tabs.Tab & { id: number }, message: string): Promise<void> {
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [message],
+      func: (text: string) => window.confirm(text),
+    });
+    if (result?.result !== true) {
+      const error = new Error('User denied browser testing action') as Error & { code?: string };
+      error.code = 'BROWSER_TOOL_USER_DENIED';
+      throw error;
+    }
+  }
+
+  async function getBrowserToolApprovalTab(): Promise<chrome.tabs.Tab & { id: number }> {
+    const tab = await getActiveBrowserToolTab();
+    ensureHttpBrowserToolTab(tab);
+    return tab;
+  }
+
+  function tabMatchesBrowserToolInput(tab: chrome.tabs.Tab, input: Record<string, unknown> | undefined): boolean {
+    const urlNeedle = browserToolString(input, 'url', 2048).toLowerCase();
+    const titleNeedle = browserToolString(input, 'title', 500).toLowerCase();
+    if (urlNeedle && !String(tab.url || '').toLowerCase().includes(urlNeedle)) return false;
+    if (titleNeedle && !String(tab.title || '').toLowerCase().includes(titleNeedle)) return false;
+    return Boolean(urlNeedle || titleNeedle);
+  }
+
+  async function resolveBrowserToolTargetTab(input: Record<string, unknown> | undefined): Promise<chrome.tabs.Tab & { id: number }> {
+    const tabId = browserToolOptionalTabId(input);
+    if (tabId) {
+      const tab = await chrome.tabs.get(tabId);
+      if (typeof tab.id !== 'number') throw new Error(`Browser tab ${tabId} is not available`);
+      return tab as chrome.tabs.Tab & { id: number };
+    }
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((candidate) => typeof candidate.id === 'number' && tabMatchesBrowserToolInput(candidate, input));
+    if (!tab || typeof tab.id !== 'number') {
+      throw new Error('No browser tab matched input.tabId/url/title');
+    }
+    return tab as chrome.tabs.Tab & { id: number };
+  }
+
+  async function executeBrowserListTabsTool(input: Record<string, unknown> | undefined) {
+    const currentWindow = browserToolBoolean(input, 'currentWindow', false);
+    const tabs = await chrome.tabs.query(currentWindow ? { currentWindow: true } : {});
+    return {
+      capturedAt: new Date().toISOString(),
+      currentWindow,
+      tabs: tabs.map(tabForBrowserToolResult),
+    };
+  }
+
+  async function executeBrowserOpenTabTool(input: Record<string, unknown> | undefined) {
+    const url = browserToolHttpUrl(input);
+    const active = browserToolBoolean(input, 'active', true);
+    const approvalTab = await getBrowserToolApprovalTab();
+    await requestBrowserToolUserApproval(approvalTab, `Airglow cloud testing wants to open ${url}. Allow?`);
+    const tab = await chrome.tabs.create({ url, active });
+    return {
+      opened: true,
+      tab: tabForBrowserToolResult(tab),
+      capturedAt: new Date().toISOString(),
+    };
+  }
+
+  async function executeBrowserActivateTabTool(input: Record<string, unknown> | undefined) {
+    const target = await resolveBrowserToolTargetTab(input);
+    const approvalTab = await getBrowserToolApprovalTab();
+    await requestBrowserToolUserApproval(
+      approvalTab,
+      `Airglow cloud testing wants to switch to tab "${target.title || target.url || target.id}". Allow?`,
+    );
+    if (typeof target.windowId === 'number') {
+      await chrome.windows.update(target.windowId, { focused: true });
+    }
+    const tab = await chrome.tabs.update(target.id, { active: true });
+    return {
+      activated: true,
+      tab: tabForBrowserToolResult(tab),
+      capturedAt: new Date().toISOString(),
+    };
+  }
+
+  async function executeBrowserNavigateTabTool(input: Record<string, unknown> | undefined) {
+    const url = browserToolHttpUrl(input);
+    const target = browserToolOptionalTabId(input)
+      ? await resolveBrowserToolTargetTab(input)
+      : await getActiveBrowserToolTab() as chrome.tabs.Tab & { id: number };
+    if (typeof target.id !== 'number') throw new Error('Browser tab id is missing');
+    const approvalTab = await getBrowserToolApprovalTab();
+    await requestBrowserToolUserApproval(
+      approvalTab,
+      `Airglow cloud testing wants to navigate tab "${target.title || target.url || target.id}" to ${url}. Allow?`,
+    );
+    const tab = await chrome.tabs.update(target.id, { url });
+    return {
+      navigated: true,
+      tab: tabForBrowserToolResult(tab),
+      url,
+      capturedAt: new Date().toISOString(),
+    };
+  }
+
+  async function executeBrowserReloadTabTool(input: Record<string, unknown> | undefined) {
+    const target = browserToolOptionalTabId(input)
+      ? await resolveBrowserToolTargetTab(input)
+      : await getActiveBrowserToolTab() as chrome.tabs.Tab & { id: number };
+    if (typeof target.id !== 'number') throw new Error('Browser tab id is missing');
+    const approvalTab = await getBrowserToolApprovalTab();
+    await requestBrowserToolUserApproval(
+      approvalTab,
+      `Airglow cloud testing wants to reload tab "${target.title || target.url || target.id}". Allow?`,
+    );
+    await chrome.tabs.reload(target.id);
+    const tab = await chrome.tabs.get(target.id);
+    return {
+      reloaded: true,
+      tab: tabForBrowserToolResult(tab),
+      capturedAt: new Date().toISOString(),
+    };
+  }
+
+  async function executeBrowserInspectDomTool(input: Record<string, unknown> | undefined) {
+    const tab = await getActiveBrowserToolTab();
+    ensureHttpBrowserToolTab(tab);
+    const selector = browserToolString(input, 'selector', BROWSER_TOOL_SELECTOR_MAX_CHARS);
+    const text = browserToolString(input, 'text', BROWSER_TOOL_TEXT_MAX_CHARS);
+    const limit = browserToolLimit(input, 'limit', 10, BROWSER_TOOL_DOM_RESULT_LIMIT);
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [selector, text, limit],
+      func: (selectorArg: string, textArg: string, limitArg: number) => {
+        const normalize = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+        const selector = selectorArg || 'body *';
+        const text = normalize(textArg).toLowerCase();
+        const nodes = Array.from(document.querySelectorAll(selector)).slice(0, 500);
+        const matches = nodes
+          .filter((node) => {
+            if (!text) return true;
+            const element = node as HTMLElement;
+            return normalize(element.innerText || element.textContent).toLowerCase().includes(text);
+          })
+          .slice(0, limitArg)
+          .map((node) => {
+            const element = node as HTMLElement;
+            const rect = element.getBoundingClientRect();
+            return {
+              tagName: element.tagName.toLowerCase(),
+              id: element.id || '',
+              className: typeof element.className === 'string' ? element.className.slice(0, 240) : '',
+              role: element.getAttribute('role') || '',
+              ariaLabel: element.getAttribute('aria-label') || '',
+              placeholder: element.getAttribute('placeholder') || '',
+              text: normalize(element.innerText || element.textContent).slice(0, 1000),
+              visible: rect.width > 0 && rect.height > 0,
+              rect: {
+                x: Math.round(rect.x),
+                y: Math.round(rect.y),
+                width: Math.round(rect.width),
+                height: Math.round(rect.height),
+              },
+            };
+          });
+        return {
+          page: {
+            title: normalize(document.title),
+            url: location.href,
+            origin: location.origin,
+            capturedAt: new Date().toISOString(),
+          },
+          selector,
+          text: textArg || '',
+          count: matches.length,
+          matches,
+        };
+      },
+    });
+    return { tab: tabForBrowserToolResult(tab), ...(result?.result || {}) };
+  }
+
+  async function executeBrowserWaitForTextTool(input: Record<string, unknown> | undefined) {
+    const tab = await getActiveBrowserToolTab();
+    ensureHttpBrowserToolTab(tab);
+    const text = browserToolString(input, 'text', BROWSER_TOOL_TEXT_MAX_CHARS);
+    if (!text) throw new Error('browser.wait_for_text requires input.text');
+    const selector = browserToolString(input, 'selector', BROWSER_TOOL_SELECTOR_MAX_CHARS);
+    const timeoutMs = browserToolTimeout(input);
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [text, selector, timeoutMs],
+      func: async (textArg: string, selectorArg: string, timeoutArg: number) => {
+        const normalize = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+        const needle = normalize(textArg).toLowerCase();
+        const startedAt = Date.now();
+        while (Date.now() - startedAt <= timeoutArg) {
+          const root = selectorArg ? document.querySelector(selectorArg) : document.body;
+          const haystack = normalize((root as HTMLElement | null)?.innerText || root?.textContent || '').toLowerCase();
+          if (haystack.includes(needle)) {
+            return {
+              found: true,
+              text: textArg,
+              selector: selectorArg || '',
+              elapsedMs: Date.now() - startedAt,
+              page: {
+                title: normalize(document.title),
+                url: location.href,
+                origin: location.origin,
+                capturedAt: new Date().toISOString(),
+              },
+            };
+          }
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        return {
+          found: false,
+          text: textArg,
+          selector: selectorArg || '',
+          elapsedMs: Date.now() - startedAt,
+          page: {
+            title: normalize(document.title),
+            url: location.href,
+            origin: location.origin,
+            capturedAt: new Date().toISOString(),
+          },
+        };
+      },
+    });
+    return { tab: tabForBrowserToolResult(tab), ...(result?.result || {}) };
+  }
+
+  async function executeBrowserClickTool(input: Record<string, unknown> | undefined) {
+    const tab = await getActiveBrowserToolTab();
+    ensureHttpBrowserToolTab(tab);
+    const selector = browserToolString(input, 'selector', BROWSER_TOOL_SELECTOR_MAX_CHARS);
+    const text = browserToolString(input, 'text', BROWSER_TOOL_TEXT_MAX_CHARS);
+    if (!selector && !text) throw new Error('browser.click requires input.selector or input.text');
+    await requestBrowserToolUserApproval(
+      tab,
+      `Airglow cloud testing wants to click ${selector || JSON.stringify(text)} on this page. Allow?`,
+    );
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [selector, text],
+      func: (selectorArg: string, textArg: string) => {
+        const normalize = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+        const needle = normalize(textArg).toLowerCase();
+        const candidates = selectorArg
+          ? Array.from(document.querySelectorAll(selectorArg))
+          : Array.from(document.querySelectorAll('button,a,input,textarea,select,[role="button"],[tabindex],label')).slice(0, 500);
+        const target = candidates.find((node) => {
+          if (!needle) return true;
+          const element = node as HTMLInputElement;
+          const label = normalize(element.innerText || element.textContent || element.value || element.getAttribute('aria-label') || element.getAttribute('title'));
+          return label.toLowerCase().includes(needle);
+        }) as HTMLElement | undefined;
+        if (!target) throw new Error('No clickable element matched browser.click input');
+        target.scrollIntoView({ block: 'center', inline: 'center' });
+        target.click();
+        return {
+          clicked: true,
+          tagName: target.tagName.toLowerCase(),
+          id: target.id || '',
+          text: normalize(target.innerText || target.textContent || (target as HTMLInputElement).value).slice(0, 1000),
+          page: {
+            title: normalize(document.title),
+            url: location.href,
+            origin: location.origin,
+            capturedAt: new Date().toISOString(),
+          },
+        };
+      },
+    });
+    return { tab: tabForBrowserToolResult(tab), ...(result?.result || {}) };
+  }
+
+  async function executeBrowserTypeTextTool(input: Record<string, unknown> | undefined) {
+    const tab = await getActiveBrowserToolTab();
+    ensureHttpBrowserToolTab(tab);
+    const selector = browserToolString(input, 'selector', BROWSER_TOOL_SELECTOR_MAX_CHARS);
+    const text = browserToolString(input, 'text', BROWSER_TOOL_TEXT_MAX_CHARS);
+    const clear = browserToolBoolean(input, 'clear', true);
+    if (!selector) throw new Error('browser.type_text requires input.selector');
+    if (!text) throw new Error('browser.type_text requires input.text');
+    await requestBrowserToolUserApproval(
+      tab,
+      `Airglow cloud testing wants to type text into ${selector} on this page. Allow?`,
+    );
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [selector, text, clear],
+      func: (selectorArg: string, textArg: string, clearArg: boolean) => {
+        const normalize = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+        const target = document.querySelector(selectorArg) as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
+        if (!target) throw new Error('No element matched browser.type_text selector');
+        target.scrollIntoView({ block: 'center', inline: 'center' });
+        (target as HTMLElement).focus?.();
+        if ('value' in target) {
+          const value = clearArg ? textArg : `${target.value || ''}${textArg}`;
+          const proto = target instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+          const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+          if (setter) setter.call(target, value);
+          else target.value = value;
+        } else if ((target as HTMLElement).isContentEditable) {
+          target.textContent = clearArg ? textArg : `${target.textContent || ''}${textArg}`;
+        } else {
+          throw new Error('browser.type_text target must be an input, textarea, or contenteditable element');
+        }
+        target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: textArg }));
+        target.dispatchEvent(new Event('change', { bubbles: true }));
+        return {
+          typed: true,
+          tagName: target.tagName.toLowerCase(),
+          id: target.id || '',
+          textLength: textArg.length,
+          valueLength: 'value' in target ? target.value.length : (target.textContent || '').length,
+          page: {
+            title: normalize(document.title),
+            url: location.href,
+            origin: location.origin,
+            capturedAt: new Date().toISOString(),
+          },
+        };
+      },
+    });
+    return { tab: tabForBrowserToolResult(tab), ...(result?.result || {}) };
+  }
+
   async function executeBrowserToolCall(call: BrowserToolCallRecord): Promise<unknown> {
     if (call.toolName === 'browser.current_tab') return await executeBrowserCurrentTabTool();
     if (call.toolName === 'browser.read_page') return await executeBrowserReadPageTool(call.input);
+    if (call.toolName === 'browser.inspect_dom') return await executeBrowserInspectDomTool(call.input);
+    if (call.toolName === 'browser.wait_for_text') return await executeBrowserWaitForTextTool(call.input);
+    if (call.toolName === 'browser.click') return await executeBrowserClickTool(call.input);
+    if (call.toolName === 'browser.type_text') return await executeBrowserTypeTextTool(call.input);
+    if (call.toolName === 'browser.list_tabs') return await executeBrowserListTabsTool(call.input);
+    if (call.toolName === 'browser.open_tab') return await executeBrowserOpenTabTool(call.input);
+    if (call.toolName === 'browser.activate_tab') return await executeBrowserActivateTabTool(call.input);
+    if (call.toolName === 'browser.navigate_tab') return await executeBrowserNavigateTabTool(call.input);
+    if (call.toolName === 'browser.reload_tab') return await executeBrowserReloadTabTool(call.input);
     throw new Error(`Unsupported browser tool: ${call.toolName}`);
   }
 

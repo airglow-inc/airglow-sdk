@@ -240,6 +240,17 @@ export function buildSdkCode(appId: string): string {
     },
   };
 
+  const page = {
+    async replaceEditorText(text, opts = {}) {
+      const res = await sendMsg({
+        type: 'airglow:page:replaceEditorText',
+        text: String(text ?? ''),
+        selectors: Array.isArray(opts.selectors) ? opts.selectors : undefined,
+      });
+      return res?.result;
+    },
+  };
+
   async function captureTab() {
     const res = await sendMsg({ type: 'airglow:captureTab' });
     if (res?.error) throw new Error(res.error);
@@ -265,6 +276,7 @@ export function buildSdkCode(appId: string): string {
     log,
     rpc,
     llm,
+    page,
     platform,
     identity,
     captureTab,

@@ -50,6 +50,8 @@ function printUsage() {
 Launches a separate Chrome profile, loads a temporary copy of the built
 Airglow extension, points it at an in-process mock cloud source, and verifies:
   browser tool queue claim -> active tab metadata -> active page text capture
+  -> DOM inspection/wait -> user-approved click/type testing tools
+  -> tab list/open/activate/navigate/reload testing tools
   -> browser tool result callback.
 
 The script opens a separate Chrome instance. Ask before running it in an
@@ -90,16 +92,32 @@ async function readJsonBody(req) {
 }
 
 async function startTargetSite() {
-  const server = createServer((_req, res) => {
+  const server = createServer((req, res) => {
+    const url = new URL(req.url || '/', 'http://127.0.0.1');
+    const pageKind = url.pathname.includes('opened')
+      ? 'Opened'
+      : url.pathname.includes('navigated')
+        ? 'Navigated'
+        : 'Smoke';
+    const title = `Airglow Browser Tool ${pageKind} Target`;
     text(res, 200, `<!doctype html>
 <html>
-  <head><title>Airglow Browser Tool Smoke Target</title></head>
+  <head><title>${title}</title></head>
   <body>
     <main>
-      <h1>Airglow Browser Tool Smoke Target</h1>
+      <h1>${title}</h1>
       <p>${UNIQUE_TARGET_TEXT}</p>
+      <p id="page-kind">${pageKind}</p>
       <p>This page must be read by the extension browser tool bridge.</p>
+      <button id="cloud-test-button">Mark ready</button>
+      <textarea id="cloud-test-input"></textarea>
+      <p id="cloud-test-status">Waiting for cloud click.</p>
     </main>
+    <script>
+      document.getElementById('cloud-test-button').addEventListener('click', () => {
+        document.getElementById('cloud-test-status').textContent = 'Cloud click passed.';
+      });
+    </script>
   </body>
 </html>`);
   });
@@ -112,6 +130,8 @@ async function startTargetSite() {
   return {
     baseUrl,
     targetUrl: `${baseUrl}/browser-tool-bridge-smoke`,
+    openedUrl: `${baseUrl}/opened-by-cloud`,
+    navigatedUrl: `${baseUrl}/navigated-by-cloud`,
     close: () => new Promise((resolve) => server.close(resolve)),
   };
 }
@@ -291,6 +311,15 @@ function createCdp(chrome) {
         if (msg.error) reject(new Error(`${msg.error.message} (${msg.error.code})`));
         else resolve(msg.result || {});
       }
+      if (msg.method === 'Page.javascriptDialogOpening') {
+        const message = {
+          id: ++id,
+          method: 'Page.handleJavaScriptDialog',
+          params: { accept: true },
+          ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+        };
+        pipeOut.write(`${JSON.stringify(message)}\0`);
+      }
       end = received.indexOf('\0');
     }
   });
@@ -418,12 +447,40 @@ async function main() {
       toolName: 'browser.read_page',
       input: { maxChars: 12000 },
     });
+    mockCloud.enqueue({
+      callId: 'inspect-dom-smoke',
+      toolName: 'browser.inspect_dom',
+      input: { selector: 'main *', text: UNIQUE_TARGET_TEXT, limit: 5 },
+    });
+    mockCloud.enqueue({
+      callId: 'wait-for-text-smoke',
+      toolName: 'browser.wait_for_text',
+      input: { text: UNIQUE_TARGET_TEXT, timeoutMs: 5000 },
+    });
+    mockCloud.enqueue({
+      callId: 'click-smoke',
+      toolName: 'browser.click',
+      input: { selector: '#cloud-test-button' },
+    });
+    mockCloud.enqueue({
+      callId: 'type-text-smoke',
+      toolName: 'browser.type_text',
+      input: { selector: '#cloud-test-input', text: 'typed from cloud', clear: true },
+    });
 
     const currentTabResult = await waitForToolResult(mockCloud, 'current-tab-smoke');
     const readPageResult = await waitForToolResult(mockCloud, 'read-page-smoke');
+    const inspectDomResult = await waitForToolResult(mockCloud, 'inspect-dom-smoke');
+    const waitForTextResult = await waitForToolResult(mockCloud, 'wait-for-text-smoke');
+    const clickResult = await waitForToolResult(mockCloud, 'click-smoke');
+    const typeTextResult = await waitForToolResult(mockCloud, 'type-text-smoke');
 
     assert(!currentTabResult.body.error, `current tab tool failed: ${JSON.stringify(currentTabResult.body.error)}`);
     assert(!readPageResult.body.error, `read page tool failed: ${JSON.stringify(readPageResult.body.error)}`);
+    assert(!inspectDomResult.body.error, `inspect dom tool failed: ${JSON.stringify(inspectDomResult.body.error)}`);
+    assert(!waitForTextResult.body.error, `wait for text tool failed: ${JSON.stringify(waitForTextResult.body.error)}`);
+    assert(!clickResult.body.error, `click tool failed: ${JSON.stringify(clickResult.body.error)}`);
+    assert(!typeTextResult.body.error, `type text tool failed: ${JSON.stringify(typeTextResult.body.error)}`);
 
     const currentTab = currentTabResult.body.result?.tab || {};
     assert(currentTab.title === 'Airglow Browser Tool Smoke Target', `unexpected active tab title: ${JSON.stringify(currentTab)}`);
@@ -433,6 +490,71 @@ async function main() {
     assert(readPage.title === 'Airglow Browser Tool Smoke Target', `unexpected page title: ${JSON.stringify(readPage)}`);
     assert(readPage.url === targetSite.targetUrl, `unexpected page url: ${JSON.stringify(readPage)}`);
     assert(String(readPage.text || '').includes(UNIQUE_TARGET_TEXT), 'read page result did not include target page text');
+    assert(inspectDomResult.body.result?.count > 0, 'inspect dom result did not include matched elements');
+    assert(waitForTextResult.body.result?.found === true, 'wait for text did not find expected content');
+    assert(clickResult.body.result?.clicked === true, 'click result did not report clicked=true');
+    assert(typeTextResult.body.result?.typed === true, 'type text result did not report typed=true');
+    const finalPageState = await evaluate(cdp, targetPage.sessionId, `({
+      status: document.getElementById('cloud-test-status')?.textContent || '',
+      value: document.getElementById('cloud-test-input')?.value || ''
+    })`);
+    assert(finalPageState.status === 'Cloud click passed.', `click did not update target page: ${JSON.stringify(finalPageState)}`);
+    assert(finalPageState.value === 'typed from cloud', `type did not update target page: ${JSON.stringify(finalPageState)}`);
+
+    mockCloud.enqueue({
+      callId: 'list-tabs-smoke',
+      toolName: 'browser.list_tabs',
+      input: { currentWindow: true },
+    });
+    mockCloud.enqueue({
+      callId: 'open-tab-smoke',
+      toolName: 'browser.open_tab',
+      input: { url: targetSite.openedUrl, active: false },
+    });
+    mockCloud.enqueue({
+      callId: 'navigate-tab-smoke',
+      toolName: 'browser.navigate_tab',
+      input: { url: targetSite.navigatedUrl },
+    });
+    mockCloud.enqueue({
+      callId: 'reload-tab-smoke',
+      toolName: 'browser.reload_tab',
+      input: {},
+    });
+    mockCloud.enqueue({
+      callId: 'activate-tab-smoke',
+      toolName: 'browser.activate_tab',
+      input: { url: targetSite.openedUrl },
+    });
+
+    const listTabsResult = await waitForToolResult(mockCloud, 'list-tabs-smoke');
+    const openTabResult = await waitForToolResult(mockCloud, 'open-tab-smoke');
+    const activateTabResult = await waitForToolResult(mockCloud, 'activate-tab-smoke');
+    const navigateTabResult = await waitForToolResult(mockCloud, 'navigate-tab-smoke');
+    const reloadTabResult = await waitForToolResult(mockCloud, 'reload-tab-smoke');
+
+    assert(!listTabsResult.body.error, `list tabs tool failed: ${JSON.stringify(listTabsResult.body.error)}`);
+    assert(!openTabResult.body.error, `open tab tool failed: ${JSON.stringify(openTabResult.body.error)}`);
+    assert(!activateTabResult.body.error, `activate tab tool failed: ${JSON.stringify(activateTabResult.body.error)}`);
+    assert(!navigateTabResult.body.error, `navigate tab tool failed: ${JSON.stringify(navigateTabResult.body.error)}`);
+    assert(!reloadTabResult.body.error, `reload tab tool failed: ${JSON.stringify(reloadTabResult.body.error)}`);
+
+    assert(
+      listTabsResult.body.result?.tabs?.some((tab) => tab.url === targetSite.targetUrl),
+      'list tabs result did not include original target tab',
+    );
+    assert(openTabResult.body.result?.opened === true, 'open tab result did not report opened=true');
+    assert(
+      openTabResult.body.result?.tab?.url === targetSite.openedUrl ||
+        openTabResult.body.result?.tab?.pendingUrl === targetSite.openedUrl,
+      `open tab result has unexpected URL: ${JSON.stringify(openTabResult.body.result?.tab)}`,
+    );
+    assert(activateTabResult.body.result?.activated === true, 'activate tab result did not report activated=true');
+    assert(activateTabResult.body.result?.tab?.url === targetSite.openedUrl, 'activate tab did not return opened tab');
+    assert(navigateTabResult.body.result?.navigated === true, 'navigate tab result did not report navigated=true');
+    assert(navigateTabResult.body.result?.url === targetSite.navigatedUrl, 'navigate tab result has unexpected URL');
+    assert(reloadTabResult.body.result?.reloaded === true, 'reload tab result did not report reloaded=true');
+    assert(reloadTabResult.body.result?.tab?.url === targetSite.navigatedUrl, 'reload tab result has unexpected URL');
 
     console.log(JSON.stringify({
       ok: true,
@@ -450,6 +572,15 @@ async function main() {
         'browser-tool-calls-claimed',
         'active-tab-returned',
         'active-page-text-returned',
+        'dom-inspection-returned',
+        'wait-for-text-returned',
+        'user-approved-click-executed',
+        'user-approved-type-executed',
+        'tabs-listed',
+        'user-approved-tab-opened',
+        'user-approved-tab-activated',
+        'user-approved-tab-navigated',
+        'user-approved-tab-reloaded',
         'tool-results-posted',
       ],
     }, null, 2));

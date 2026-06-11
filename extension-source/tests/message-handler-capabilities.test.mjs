@@ -60,6 +60,7 @@ function installChromeStub(options = {}) {
   const calls = [];
   const store = {};
   const runtimeApprovalResult = options.runtimeApprovalResult ?? true;
+  const scriptingResult = options.scriptingResult;
   globalThis.chrome = {
     runtime: { lastError: null },
     identity: {
@@ -159,10 +160,14 @@ function installChromeStub(options = {}) {
       },
     },
     scripting: {
-      async executeScript(options) {
-        calls.push(['scripting.executeScript', options]);
-        if (Array.isArray(options.args) && String(options.args[0] || '').startsWith('Airglow app ')) {
+      async executeScript(scriptOptions) {
+        calls.push(['scripting.executeScript', scriptOptions]);
+        if (Array.isArray(scriptOptions.args) && String(scriptOptions.args[0] || '').startsWith('Airglow app ')) {
           return [{ result: runtimeApprovalResult }];
+        }
+        if (scriptingResult !== undefined) return [{ result: scriptingResult }];
+        if (scriptOptions?.world === 'MAIN' && typeof scriptOptions?.args?.[0] === 'string' && Array.isArray(scriptOptions?.args?.[1])) {
+          return [{ result: { ok: true, method: 'monaco', modelUri: 'inmemory://model/solution.js' } }];
         }
         return [{ result: { status: 200, body: '{"ok":true}' } }];
       },
@@ -320,6 +325,46 @@ test('baseline storage, log, identity getter, and safe host fetch do not need UX
     assert.ok(calls.some(([name]) => name === 'fetch'));
     assert.equal(calls.some(([name]) => name === 'tabs.create'), false);
     assert.equal(calls.some(([name]) => name === 'scripting.executeScript'), false);
+  } finally {
+    await handler.cleanup();
+  }
+});
+
+test('page editor replacement runs in the sender frame main world without browser UX capability', async () => {
+  const handler = await loadMessageHandler();
+  try {
+    const { calls } = installChromeStub({
+      scriptingResult: { ok: true, method: 'monaco', modelUri: 'inmemory://model/solution.js' },
+    });
+    handler.setAppManifests([manifest()]);
+
+    assert.equal(
+      handler.requiredRuntimeUxCapabilityForMessage({ type: 'airglow:page:replaceEditorText' }),
+      undefined,
+    );
+    assert.equal(
+      handler.requiredRuntimeUserApprovalCapabilityForMessage({ type: 'airglow:page:replaceEditorText' }),
+      undefined,
+    );
+
+    const result = await invoke(
+      handler,
+      {
+        type: 'airglow:page:replaceEditorText',
+        text: 'class Solution { public: vector<int> twoSum(vector<int>& nums, int target) { return {}; } };',
+        selectors: ['.monaco-editor textarea.inputarea'],
+      },
+      { tab: { id: 99 }, frameId: 2, url: 'https://leetcode.com/problems/two-sum/' },
+    );
+
+    assert.deepEqual(result.response, {
+      result: { ok: true, method: 'monaco', modelUri: 'inmemory://model/solution.js' },
+    });
+    const executeCall = calls.find(([name]) => name === 'scripting.executeScript');
+    assert.ok(executeCall);
+    assert.equal(executeCall[1].world, 'MAIN');
+    assert.deepEqual(executeCall[1].target, { tabId: 99, frameIds: [2] });
+    assert.equal(executeCall[1].args[1][0], '.monaco-editor textarea.inputarea');
   } finally {
     await handler.cleanup();
   }
