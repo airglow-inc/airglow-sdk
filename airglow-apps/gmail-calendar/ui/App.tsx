@@ -115,10 +115,6 @@ function App() {
       name="Gmail Calendar"
       description="Reads email conversations and uses AI to pre-fill Google Calendar events. Click “Create Meeting” next to Reply/Forward in Gmail to extract meeting details."
       preview={<GmailFlowPreview />}
-      secrets={[{
-        name: 'COMPOSIO_API_KEY',
-        note: 'server-side key — set it in the workspace .env (not in the extension); the dev server warns at startup when it is missing.',
-      }]}
     >
       <SettingsSection title="Extraction Log">
         <div className="flex justify-end mb-4 -mt-12">

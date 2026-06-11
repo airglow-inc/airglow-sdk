@@ -579,7 +579,6 @@ function App() {
       name="LinkedIn Researcher"
       description="AI-powered research for LinkedIn profiles using web search — open a profile on LinkedIn and the research panel appears with a structured summary."
       preview={<PanelPreview />}
-      secrets={[{ name: 'ANTHROPIC_API_KEY' }]}
     >
       <ContextSettings />
 

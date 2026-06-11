@@ -4,7 +4,6 @@
   "version": "0.1.0",
   "description": "Floating How-To chat that explains how to do things on the current page",
   "tags": ["ai", "productivity"],
-  "visibility": "hidden",
   "defaultEnabled": false,
   "secrets": {
     "ANTHROPIC_API_KEY": { "label": "Anthropic API Key" }

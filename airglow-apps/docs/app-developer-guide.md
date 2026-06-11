@@ -59,8 +59,8 @@ See [`../../cli/README.md`](../../cli/README.md) for flags and endpoints.
 | `startup` | Path to a startup script. Runs once per extension boot. |
 | `userscripts[]` | Each entry: `{ file, matches, allFrames?, runAt? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns). `runAt` defaults to `"document_idle"`. |
 | `host_permissions` | Chrome match patterns. Required for `airglow.fetch(..., { includeCookies: true })` on the listed origins. |
-| `secrets` | Client-scoped secrets the app needs. Keys appear in the extension's Secrets UI labelled by `label`. Values read via `airglow.storage.get('KEY')`. |
-| `server_env` | Server-scoped env vars the app needs. Keys checked against workspace + per-app `.env` at `pnpm airglow dev` startup; missing keys are warned in the console. Values read via `process.env.KEY` from `server/*.ts`. Declarative only — not enforced. |
+| `secrets` | Client-scoped secrets the app needs. Each entry: `{ label, description? }`. Keys appear in the extension's Secrets UI labelled by `label`; the app page renders them as "Client keys" callouts, annotated with `description`. Values read via `airglow.storage.get('KEY')`. |
+| `server_env` | Server-scoped env vars the app needs. Each entry: `{ label, description? }`. Keys checked against workspace + per-app `.env` at `pnpm airglow dev` startup; missing keys are warned in the console. The app page renders them as "Server keys" callouts, annotated with `description`. Values read via `process.env.KEY` from `server/*.ts`. Declarative only — not enforced. |
 
 ---
 

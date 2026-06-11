@@ -240,8 +240,6 @@ function ModeDetail({ mode, index, totalModes, onUpdate, onUpdateExample, onRemo
             />
           </div>
         </div>
-      </Card>
-
       {ex && (
         <div className="mt-4 rounded-lg p-4 text-base" style={{ background: 'var(--bg-tertiary)' }}>
           <style dangerouslySetInnerHTML={{ __html: PROSE_CSS }} />
@@ -270,7 +268,7 @@ function ModeDetail({ mode, index, totalModes, onUpdate, onUpdateExample, onRemo
       <button
         onClick={generateExample}
         disabled={generating || !mode.system.trim()}
-        className="mt-3 self-start inline-flex items-center gap-2 px-5 py-2 rounded-full text-base cursor-pointer disabled:opacity-40 transition-colors"
+        className="mt-4 inline-flex items-center gap-2 px-5 py-2 rounded-full text-base cursor-pointer disabled:opacity-40 transition-colors"
         style={{
           background: 'var(--bg-white)',
           color: 'var(--fg-secondary)',
@@ -280,6 +278,7 @@ function ModeDetail({ mode, index, totalModes, onUpdate, onUpdateExample, onRemo
         <RefreshCw size={16} className={generating ? 'animate-spin' : ''} />
         {generating ? 'Generating…' : 'Generate example'}
       </button>
+      </Card>
     </>
   );
 }
@@ -428,7 +427,6 @@ function Dashboard() {
       name="Ask Me Anything"
       description="Highlight text on any page and press the trigger shortcut to get AI-powered explanations, translations, or rephrasings — with follow-up chat."
       preview={SearchBarPreview}
-      secrets={[{ name: 'ANTHROPIC_API_KEY' }]}
     >
       <div className="mb-6">
         <button
@@ -447,79 +445,9 @@ function Dashboard() {
         </button>
       </div>
 
-      <div className="grid gap-8" style={{ gridTemplateColumns: '2fr 3fr' }}>
-            {/* Left column */}
-            <div className="space-y-6">
-              {/* How it works */}
-              <Card>
-                <h2 className="text-base font-semibold mb-3" style={{ color: 'var(--fg-primary)' }}>How it works</h2>
-                <ol className="text-base space-y-2 list-decimal list-inside" style={{ color: 'var(--fg-secondary)' }}>
-                  <li><strong>Highlight text</strong> on any page and press the <strong>trigger shortcut</strong></li>
-                  <li>A <strong>search bar</strong> appears at the bottom with your configured <strong>modes</strong></li>
-                  <li>Type your query and press <strong>Enter</strong> — a <strong>chat window</strong> opens with an AI answer</li>
-                  <li>Ask <strong>follow-up questions</strong> in the same conversation</li>
-                </ol>
-                <div className="space-y-2 text-base mt-4" style={{ color: 'var(--fg-secondary)' }}>
-                  <div className="flex items-center gap-3">
-                    <span className="flex-shrink-0"><Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}{parseCombo(shortcut).key.toUpperCase()}</Kbd></span>
-                    <span>Open the search bar</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="flex-shrink-0"><Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}I</Kbd></span>
-                    <span>Cycle between modes</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="flex-shrink-0"><Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}1</Kbd> – <Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}9</Kbd></span>
-                    <span>Jump to a mode directly</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="flex-shrink-0"><Kbd>Enter</Kbd></span>
-                    <span>Submit query</span>
-                  </div>
-                  <div className="flex items-center gap-3">
-                    <span className="flex-shrink-0"><Kbd>Esc</Kbd></span>
-                    <span>Close the bar</span>
-                  </div>
-                </div>
-              </Card>
-
-              {/* Trigger shortcut */}
-              <section>
-                <div className="flex items-center gap-2 mb-3">
-                  <Keyboard size={18} style={{ color: 'var(--fg-tertiary)' }} />
-                  <h2 className="text-base font-semibold">Trigger shortcut</h2>
-                </div>
-                <div className="flex gap-2 flex-wrap items-center">
-                  {SHORTCUT_OPTIONS.map(opt => {
-                    const isActive = shortcut === opt.combo;
-                    return (
-                      <button
-                        key={opt.combo}
-                        onClick={() => setShortcut(opt.combo)}
-                        className="h-9 px-4 rounded-full text-base font-medium cursor-pointer transition-all"
-                        style={{
-                          background: isActive ? 'color-mix(in srgb, var(--clay) 15%, transparent)' : 'var(--bg-white)',
-                          color: isActive ? 'var(--clay)' : 'var(--fg-secondary)',
-                          border: isActive ? '1.5px solid var(--clay)' : '1px solid var(--border-secondary)',
-                        }}
-                      >
-                        {opt.label}
-                      </button>
-                    );
-                  })}
-                  <span className="text-sm mx-1" style={{ color: 'var(--fg-tertiary)' }}>or</span>
-                  <CustomShortcutInput
-                    active={!SHORTCUT_OPTIONS.some(o => o.combo === shortcut)}
-                    currentCombo={shortcut}
-                    onChange={(combo: string) => setShortcut(combo)}
-                  />
-                </div>
-              </section>
-
-            </div>
-
-            {/* Right column — Modes */}
-            <div className="flex flex-col border-l pl-8" style={{ borderColor: 'var(--border-secondary)' }}>
+      <div className="space-y-8">
+            {/* Modes */}
+            <div className="flex flex-col">
               <div className="flex items-center gap-2 mb-4">
                 <MessageSquare size={18} style={{ color: 'var(--fg-tertiary)' }} />
                 <h2 className="text-base font-semibold">Modes</h2>
@@ -585,6 +513,72 @@ function Dashboard() {
                 Kbd={Kbd}
               />
             </div>
+
+              {/* Trigger shortcut */}
+              <section>
+                <div className="flex items-center gap-2 mb-3">
+                  <Keyboard size={18} style={{ color: 'var(--fg-tertiary)' }} />
+                  <h2 className="text-base font-semibold">Trigger shortcut</h2>
+                </div>
+                <div className="flex gap-2 flex-wrap items-center">
+                  {SHORTCUT_OPTIONS.map(opt => {
+                    const isActive = shortcut === opt.combo;
+                    return (
+                      <button
+                        key={opt.combo}
+                        onClick={() => setShortcut(opt.combo)}
+                        className="h-9 px-4 rounded-full text-base font-medium cursor-pointer transition-all"
+                        style={{
+                          background: isActive ? 'color-mix(in srgb, var(--clay) 15%, transparent)' : 'var(--bg-white)',
+                          color: isActive ? 'var(--clay)' : 'var(--fg-secondary)',
+                          border: isActive ? '1.5px solid var(--clay)' : '1px solid var(--border-secondary)',
+                        }}
+                      >
+                        {opt.label}
+                      </button>
+                    );
+                  })}
+                  <span className="text-sm mx-1" style={{ color: 'var(--fg-tertiary)' }}>or</span>
+                  <CustomShortcutInput
+                    active={!SHORTCUT_OPTIONS.some(o => o.combo === shortcut)}
+                    currentCombo={shortcut}
+                    onChange={(combo: string) => setShortcut(combo)}
+                  />
+                </div>
+              </section>
+
+            {/* How it works */}
+              <Card>
+                <h2 className="text-base font-semibold mb-3" style={{ color: 'var(--fg-primary)' }}>How it works</h2>
+                <ol className="text-base space-y-2 list-decimal list-inside" style={{ color: 'var(--fg-secondary)' }}>
+                  <li><strong>Highlight text</strong> on any page and press the <strong>trigger shortcut</strong></li>
+                  <li>A <strong>search bar</strong> appears at the bottom with your configured <strong>modes</strong></li>
+                  <li>Type your query and press <strong>Enter</strong> — a <strong>chat window</strong> opens with an AI answer</li>
+                  <li>Ask <strong>follow-up questions</strong> in the same conversation</li>
+                </ol>
+                <div className="space-y-2 text-base mt-4" style={{ color: 'var(--fg-secondary)' }}>
+                  <div className="flex items-center gap-3">
+                    <span className="flex-shrink-0"><Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}{parseCombo(shortcut).key.toUpperCase()}</Kbd></span>
+                    <span>Open the search bar</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="flex-shrink-0"><Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}I</Kbd></span>
+                    <span>Cycle between modes</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="flex-shrink-0"><Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}1</Kbd> – <Kbd><span style={{fontSize:'0.85em'}}>Ctrl</span>{'\u2009'}+{'\u2009'}9</Kbd></span>
+                    <span>Jump to a mode directly</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="flex-shrink-0"><Kbd>Enter</Kbd></span>
+                    <span>Submit query</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="flex-shrink-0"><Kbd>Esc</Kbd></span>
+                    <span>Close the bar</span>
+                  </div>
+                </div>
+              </Card>
           </div>
     </AppPage>
   );

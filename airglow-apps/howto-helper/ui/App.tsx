@@ -90,13 +90,10 @@ function normalizeDomain(raw: string): string {
 export default function App() {
   const [domains, setDomains] = useState<string[]>([]);
   const [input, setInput] = useState('');
-  const [mounted, setMounted] = useState(false);
-
   useEffect(() => {
     airglow.storage.get(DOMAINS_KEY).then((raw: any) => {
       if (Array.isArray(raw)) setDomains(raw);
       else if (typeof raw === 'string') { try { const p = JSON.parse(raw); if (Array.isArray(p)) setDomains(p); } catch {} }
-      setMounted(true);
     });
   }, []);
 
@@ -116,15 +113,12 @@ export default function App() {
     save(domains.filter(x => x !== d));
   }
 
-  if (!mounted) return null;
-
   return (
     <AppPage
       appId="howto-helper"
       name="How-To Helper"
       description="Adds a floating “How to” button on the websites you choose — click it for an AI chat that explains how to do things on the current page."
       preview={<HowToPillPreview />}
-      secrets={[{ name: 'ANTHROPIC_API_KEY' }]}
     >
       <SettingsSection title="Websites">
         <p className="text-sm mb-4" style={{ color: 'var(--fg-tertiary)' }}>

@@ -4,7 +4,6 @@
   "version": "0.1.0",
   "description": "Highlight text, press Cmd+J, get AI-powered explanations with web search",
   "tags": ["ai", "search", "explain", "translate"],
-  "visibility": "hidden",
   "defaultEnabled": false,
   "userscripts": [
     { "file": "userscripts/global.ts", "matches": ["<all_urls>"], "runAt": "document_idle" }

@@ -102,7 +102,6 @@ export default function App() {
   const [schedule, setSchedule] = useState<Schedule>(DEFAULT_SCHEDULE);
   const [sites, setSites] = useState<SiteFlags>(DEFAULT_SITES);
   const [linkedinFullBlock, setLinkedinFullBlock] = useState<boolean>(true);
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -117,7 +116,6 @@ export default function App() {
         try { setSites({ ...DEFAULT_SITES, ...JSON.parse(sitesVal) }); } catch {}
       }
       if (liFullVal === 'false') setLinkedinFullBlock(false);
-      setMounted(true);
     });
   }, []);
 
@@ -138,8 +136,6 @@ export default function App() {
     setSites(next);
     airglow.storage.set(SITES_KEY, JSON.stringify(next));
   }
-
-  if (!mounted) return null;
 
   const blockedHours = getBlockedHours(schedule.allowStart, schedule.allowEnd);
   const now = new Date().getHours();
