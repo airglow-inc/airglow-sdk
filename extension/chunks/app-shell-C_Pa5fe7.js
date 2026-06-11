@@ -222,6 +222,17 @@ import"./_virtual_wxt-html-plugins-GZrWlJ2F.js";import{n as e}from"./airglow-ide
     },
   };
 
+  const page = {
+    async replaceEditorText(text, opts = {}) {
+      const res = await sendMsg({
+        type: 'airglow:page:replaceEditorText',
+        text: String(text ?? ''),
+        selectors: Array.isArray(opts.selectors) ? opts.selectors : undefined,
+      });
+      return res?.result;
+    },
+  };
+
   async function captureTab() {
     const res = await sendMsg({ type: 'airglow:captureTab' });
     if (res?.error) throw new Error(res.error);
@@ -247,6 +258,7 @@ import"./_virtual_wxt-html-plugins-GZrWlJ2F.js";import{n as e}from"./airglow-ide
     log,
     rpc,
     llm,
+    page,
     platform,
     identity,
     captureTab,
