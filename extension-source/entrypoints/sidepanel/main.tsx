@@ -43,6 +43,7 @@ const QUICK_PROMPTS = [
   'Create a compact research helper for this page.',
   'Extract key data into a small floating app.',
 ];
+const CHAT_PARAGRAPH_SEPARATOR = String.fromCharCode(10, 10);
 
 type GenerationRunRecord = {
   runId: string;
@@ -1046,7 +1047,7 @@ function App() {
           `Selected ${app.name}.`,
           summary ? `Current app: ${summary}` : '',
           'Tell me what to change and I’ll generate a new version.',
-        ].filter(Boolean).join('\n\n'),
+        ].filter(Boolean).join(CHAT_PARAGRAPH_SEPARATOR),
         createdAt: iso,
       }],
       revision: 0,
