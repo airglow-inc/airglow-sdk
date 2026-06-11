@@ -1,8 +1,8 @@
-import { Fragment, type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, MessageSquare, Plus, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert } from 'lucide-react';
+import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, MessageSquare, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert, WandSparkles } from 'lucide-react';
 import './style.css';
 import type { SourcedManifest } from '../../lib/app-resolver';
 import {
@@ -291,6 +291,26 @@ function IconTooltip({ label, children }: { label: string; children: ReactNode }
   );
 }
 
+function InlineIconButton({
+  label,
+  children,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  children: ReactNode;
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <IconTooltip label={label}>
+      <button type="button" className="inline-icon-button" onClick={onClick} disabled={disabled} aria-label={label}>
+        {children}
+      </button>
+    </IconTooltip>
+  );
+}
+
 function ContextPopover({
   draft,
   disclosureText,
@@ -337,6 +357,106 @@ function QuickPromptChips({ onPick }: { onPick: (prompt: string) => void }) {
         </button>
       ))}
     </div>
+  );
+}
+
+function RailButton({
+  label,
+  tooltip,
+  icon,
+  active,
+  disabled,
+  onClick,
+  className,
+  ariaLabel,
+}: {
+  label: string;
+  tooltip: string;
+  icon: ReactNode;
+  active?: boolean;
+  disabled?: boolean;
+  onClick: () => void;
+  className?: string;
+  ariaLabel?: string;
+}) {
+  const buttonClassName = [
+    'sidepanel-tab',
+    className,
+    active ? 'active' : '',
+  ].filter(Boolean).join(' ');
+  return (
+    <IconTooltip label={tooltip}>
+      <button
+        type="button"
+        className={buttonClassName}
+        onClick={onClick}
+        disabled={disabled}
+        aria-current={active ? 'page' : undefined}
+        aria-label={ariaLabel}
+      >
+        {icon}
+        <span>{label}</span>
+      </button>
+    </IconTooltip>
+  );
+}
+
+function SidePanelRail({
+  activeView,
+  generationBusy,
+  onChat,
+  onApps,
+  onNewApp,
+  onDashboard,
+}: {
+  activeView: SidePanelView;
+  generationBusy: boolean;
+  onChat: () => void;
+  onApps: () => void;
+  onNewApp: () => void;
+  onDashboard: () => void;
+}) {
+  return (
+    <nav className="sidepanel-rail" aria-label="Airglow sections">
+      <div className="sidepanel-tabs-primary">
+        <RailButton
+          label="Chat"
+          tooltip="Chat"
+          icon={<MessageSquare size={20} />}
+          active={activeView === 'build'}
+          onClick={onChat}
+        />
+        <RailButton
+          label="Apps"
+          tooltip="Apps"
+          icon={<LayoutGrid size={20} />}
+          active={activeView === 'apps'}
+          onClick={onApps}
+        />
+      </div>
+
+      <div className="rail-actions">
+        <RailButton
+          label="Create"
+          tooltip="Start a new app"
+          icon={<WandSparkles size={20} />}
+          className="create-tab"
+          disabled={generationBusy}
+          onClick={onNewApp}
+          ariaLabel="New app"
+        />
+      </div>
+
+      <div className="rail-bottom">
+        <RailButton
+          label="Dashboard"
+          tooltip="Open dashboard"
+          icon={<LayoutDashboard size={20} />}
+          className="dashboard-tab"
+          onClick={onDashboard}
+        />
+      </div>
+    </nav>
   );
 }
 
@@ -443,11 +563,9 @@ function TargetContextMessage({
     <div className="chat-message assistant target-message">
       <div className="target-message-heading">
         <span>Page context</span>
-        <IconTooltip label="Refresh page context">
-          <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loadingTarget} aria-label="Refresh page context">
-            {loadingTarget ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
-          </button>
-        </IconTooltip>
+        <InlineIconButton label="Refresh page context" onClick={onRefresh} disabled={loadingTarget}>
+          {loadingTarget ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+        </InlineIconButton>
       </div>
       <p><strong>{loadingTarget ? 'Reading selected tab...' : targetLabel(target)}</strong></p>
       <p className="target-meta">{targetError || targetOrigin(target)}</p>
@@ -475,15 +593,10 @@ function AppsTab({
   return (
     <section className="apps-tab-panel" aria-label="Apps">
       <div className="apps-tab-header">
-        <div>
-          <h2>Apps</h2>
-          <p>Saved apps available in this browser context.</p>
-        </div>
-        <IconTooltip label="Refresh apps">
-          <button type="button" className="inline-icon-button" onClick={onRefresh} disabled={loading} aria-label="Refresh apps">
-            {loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
-          </button>
-        </IconTooltip>
+        <h2>Apps</h2>
+        <InlineIconButton label="Refresh apps" onClick={onRefresh} disabled={loading}>
+          {loading ? <Loader2 size={15} className="spin" /> : <RefreshCw size={15} />}
+        </InlineIconButton>
       </div>
       {error ? (
         <p className="apps-empty">{error}</p>
@@ -515,8 +628,9 @@ function AppsTab({
                     </IconTooltip>
                   )}
                   <IconTooltip label="Open app">
-                    <button type="button" className="secondary-button compact icon-only" onClick={() => onOpen(app.id)} aria-label={`Open ${app.name}`}>
+                    <button type="button" className="secondary-button compact" onClick={() => onOpen(app.id)} aria-label={`Open ${app.name}`}>
                       <ExternalLink size={15} />
+                      Open
                     </button>
                   </IconTooltip>
                 </div>
@@ -533,7 +647,7 @@ function WelcomeMessage() {
   return (
     <div className="chat-message assistant welcome-message">
       <span>Airglow</span>
-      <p>Describe the app you want to build.</p>
+      <p>What should Airglow build for this page?</p>
     </div>
   );
 }
@@ -853,6 +967,13 @@ function App() {
     await saveDraftToCloud(draftToSave);
   }
 
+  function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key !== 'Enter' || event.shiftKey || event.nativeEvent.isComposing) return;
+    event.preventDefault();
+    if (!canSend) return;
+    event.currentTarget.form?.requestSubmit();
+  }
+
   async function handleSaveDraft() {
     if (!draft) return;
     await saveDraftToCloud(draft);
@@ -966,6 +1087,7 @@ function App() {
 
   const shouldShowTargetContext = Boolean(draft && draftRequestsCurrentPage(draft) && !draftHasExplicitWebTarget(draft) && (loadingTarget || target || targetError));
   const firstAssistantMessageIndex = draft?.messages.findIndex((message) => message.role === 'assistant') ?? -1;
+  const hasMessages = Boolean(draft?.messages.length);
   const targetContextMessage = shouldShowTargetContext ? (
     <TargetContextMessage
       target={target}
@@ -978,45 +1100,14 @@ function App() {
   return (
     <Tooltip.Provider delayDuration={160} skipDelayDuration={100}>
       <main className="sidepanel">
-        <nav className="sidepanel-tabs" aria-label="Airglow sections">
-          <div className="sidepanel-tabs-primary">
-            <IconTooltip label="Start a new app">
-              <button
-                type="button"
-                className="sidepanel-tab new-app"
-                onClick={startNewApp}
-                disabled={generationBusy}
-                aria-label="New app"
-              >
-                <Plus size={17} />
-                <span>New app</span>
-              </button>
-            </IconTooltip>
-            <button
-              type="button"
-              className={activeView === 'build' ? 'sidepanel-tab active' : 'sidepanel-tab'}
-              onClick={() => setActiveView('build')}
-              aria-current={activeView === 'build' ? 'page' : undefined}
-            >
-              <MessageSquare size={17} />
-              <span>Build</span>
-            </button>
-            <button
-              type="button"
-              className={activeView === 'apps' ? 'sidepanel-tab active' : 'sidepanel-tab'}
-              onClick={showApps}
-              aria-current={activeView === 'apps' ? 'page' : undefined}
-            >
-              <LayoutGrid size={17} />
-              <span>Apps</span>
-            </button>
-          </div>
-          <button type="button" className="sidepanel-tab dashboard-tab" onClick={() => void openDashboard()}>
-            <LayoutDashboard size={17} />
-            <span>Dashboard</span>
-            <ExternalLink size={12} />
-          </button>
-        </nav>
+        <SidePanelRail
+          activeView={activeView}
+          generationBusy={generationBusy}
+          onChat={() => setActiveView('build')}
+          onApps={showApps}
+          onNewApp={startNewApp}
+          onDashboard={() => void openDashboard()}
+        />
         <section className="sidepanel-content">
           {activeView === 'apps' ? (
             <AppsTab
@@ -1030,7 +1121,7 @@ function App() {
             />
           ) : (
             <section className="chat-panel">
-            <div className="chat-log" ref={chatLogRef} aria-live="polite">
+            <div className={hasMessages ? 'chat-log' : 'chat-log empty'} ref={chatLogRef} aria-live="polite">
               {draft?.messages.length ? draft.messages.map((message) => (
                 <Fragment key={message.id}>
                   {firstAssistantMessageIndex !== -1 && draft.messages[firstAssistantMessageIndex]?.id === message.id && targetContextMessage}
@@ -1110,21 +1201,24 @@ function App() {
               )}
             </div>
             <form className="chat-composer" onSubmit={handleSubmitChat}>
-              <div className="composer-row">
-                <ContextPopover draft={draft} disclosureText={disclosureText} />
+              <div className="composer-box">
                 <textarea
                   id="app-prompt"
                   aria-label={draft ? 'Update this app' : 'Create an app'}
                   value={chatInput}
                   onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={handleComposerKeyDown}
                   placeholder={draft ? 'Update this app...' : 'Message Airglow...'}
                   rows={1}
                 />
-                <IconTooltip label={draft ? 'Update app' : 'Generate app'}>
-                  <button type="submit" className="send-button" disabled={!canSend} aria-label={draft ? 'Update app' : 'Generate app'}>
-                    {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
-                  </button>
-                </IconTooltip>
+                <div className="composer-box-footer">
+                  <ContextPopover draft={draft} disclosureText={disclosureText} />
+                  <IconTooltip label={draft ? 'Update app' : 'Generate app'}>
+                    <button type="submit" className="send-button" disabled={!canSend} aria-label={draft ? 'Update app' : 'Generate app'}>
+                      {saveState === 'saving' ? <Loader2 size={17} className="spin" /> : <Send size={17} />}
+                    </button>
+                  </IconTooltip>
+                </div>
               </div>
             </form>
             </section>

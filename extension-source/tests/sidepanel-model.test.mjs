@@ -159,12 +159,18 @@ test('new explicit site prompts start a fresh app instead of refining the saved 
     });
 
     assert.equal(model.promptHasExplicitWebTarget('Сделай саммарайзер для википедии'), true);
+    assert.equal(model.promptHasExplicitWebTarget('Wikipedia summarizer'), true);
+    assert.equal(model.promptHasExplicitWebTarget('Codeforces solver'), true);
+    assert.equal(model.promptHasExplicitWebTarget('Реши задачу на Codeforces'), true);
+    assert.equal(model.promptHasExplicitWebTarget('LeetCode solver'), true);
+    assert.equal(model.promptHasExplicitWebTarget('Реши задачу на LeetCode и вставь ответ'), true);
     assert.equal(model.promptHasExplicitWebTarget('Summarize YouTube mentions on this page'), false);
     assert.equal(model.promptHasExplicitWebTarget('fix app.tsx for v1.2'), false);
     assert.equal(model.promptHasExplicitWebTarget('Create a helper for this page that opens https://status.example.com'), false);
     assert.equal(model.promptRequestsCurrentPage('Create a helper for this page that opens https://status.example.com'), true);
     assert.equal(model.promptRequestsCurrentPage('Сделай штуку для текущей страницы'), true);
     assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'Сделай саммарайзер для википедии'), true);
+    assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'LeetCode solver'), true);
     assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'сделай панель компактнее'), false);
     assert.equal(model.shouldStartNewAppDraftForPrompt(saved, 'make the panel smaller and add a copy button'), false);
 

@@ -91,8 +91,11 @@ test('sidepanel lists apps and can refine private cloud apps', async () => {
   assert.match(sidepanel, /type:\s*'airglow:get-dashboard-manifests'/);
   assert.match(sidepanel, /type SidePanelView = 'build' \| 'apps'/);
   assert.match(sidepanel, /function AppsTab/);
-  assert.match(sidepanel, /className=\{activeView === 'apps' \? 'sidepanel-tab active' : 'sidepanel-tab'\}/);
+  assert.match(sidepanel, /function RailButton/);
+  assert.match(sidepanel, /label="Apps"/);
+  assert.match(sidepanel, /active=\{activeView === 'apps'\}/);
   assert.match(sidepanel, /Refine/);
+  assert.match(sidepanel, /Open/);
   assert.match(sidepanel, /function startRefineApp\(app: SourcedManifest\)/);
   assert.match(sidepanel, /previousAppCloudMetadataForManifest\(app\)/);
   assert.match(sidepanel, /setSavedAppId\(app\.id\)/);
@@ -104,13 +107,21 @@ test('sidepanel exposes dashboard as a top-level tab action', async () => {
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
   const style = await readFile(new URL('../entrypoints/sidepanel/style.css', import.meta.url), 'utf8');
 
-  assert.match(sidepanel, /<nav className="sidepanel-tabs"/);
-  assert.match(sidepanel, /<LayoutDashboard size=\{17\} \/>/);
+  assert.match(sidepanel, /<nav className="sidepanel-rail"/);
+  assert.match(sidepanel, /<LayoutDashboard size=\{20\} \/>/);
   assert.match(sidepanel, /Dashboard/);
   assert.match(sidepanel, /type:\s*'airglow:open-dashboard'/);
   assert.match(style, /\.sidepanel\s*\{[\s\S]*flex-direction:\s*row/);
-  assert.match(style, /\.sidepanel-tabs\s*\{[\s\S]*flex-direction:\s*column/);
-  assert.doesNotMatch(sidepanel, /IconTooltip label="Open dashboard"[\s\S]*actions-message/);
+  assert.match(style, /\.sidepanel-rail\s*\{[\s\S]*flex-direction:\s*column/);
+  assert.match(style, /\.sidepanel-rail\s*\{[\s\S]*order:\s*2/);
+  assert.match(style, /\.sidepanel-content\s*\{[\s\S]*order:\s*1/);
+  assert.match(style, /\.sidepanel-rail\s*\{[\s\S]*border-top-left-radius:\s*0/);
+  assert.match(style, /\.sidepanel-rail\s*\{[\s\S]*border-bottom-left-radius:\s*0/);
+  const actionsBlock = sidepanel.slice(
+    sidepanel.indexOf('actions-message'),
+    sidepanel.indexOf('<form className="chat-composer"'),
+  );
+  assert.doesNotMatch(actionsBlock, /openDashboard|Open dashboard/);
 });
 
 test('sidepanel has an explicit new app action that clears the active draft', async () => {
@@ -119,10 +130,24 @@ test('sidepanel has an explicit new app action that clears the active draft', as
 
   assert.match(sidepanel, /function startNewApp\(\)/);
   assert.match(sidepanel, /Discard current draft and start a new app\?/);
-  assert.match(sidepanel, /aria-label="New app"/);
+  assert.match(sidepanel, /ariaLabel="New app"/);
+  assert.match(sidepanel, /tooltip="Start a new app"/);
   assert.match(sidepanel, /type:\s*'airglow:sidepanel:clear-last-draft'/);
   assert.match(background, /msg\?\.type === 'airglow:sidepanel:clear-last-draft'/);
   assert.match(background, /chrome\.storage\.local\.remove\(SIDEPANEL_LAST_DRAFT_KEY\)/);
+});
+
+test('sidepanel composer uses chat-like keyboard and empty states', async () => {
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+  const style = await readFile(new URL('../entrypoints/sidepanel/style.css', import.meta.url), 'utf8');
+
+  assert.match(sidepanel, /function handleComposerKeyDown/);
+  assert.match(sidepanel, /event\.key !== 'Enter' \|\| event\.shiftKey \|\| event\.nativeEvent\.isComposing/);
+  assert.match(sidepanel, /event\.currentTarget\.form\?\.requestSubmit\(\)/);
+  assert.match(sidepanel, /onKeyDown=\{handleComposerKeyDown\}/);
+  assert.match(style, /\.chat-log\.empty\s*\{[\s\S]*align-content:\s*end/);
+  assert.match(style, /\.send-button:disabled\s*\{[\s\S]*background:\s*var\(--disabled-bg\)/);
+  assert.doesNotMatch(sidepanel, /welcome-screen|welcome-mark/);
 });
 
 test('background polls cloud browser tool calls through extension identity', async () => {
@@ -134,14 +159,28 @@ test('background polls cloud browser tool calls through extension identity', asy
   assert.match(background, /getAirglowIdentityHeaders\(\{\s*requireSession:\s*true\s*\}\)/);
   assert.match(background, /executeBrowserCurrentTabTool/);
   assert.match(background, /executeBrowserReadPageTool/);
+  assert.match(background, /executeBrowserInspectDomTool/);
+  assert.match(background, /executeBrowserWaitForTextTool/);
+  assert.match(background, /executeBrowserClickTool/);
+  assert.match(background, /executeBrowserTypeTextTool/);
+  assert.match(background, /executeBrowserListTabsTool/);
+  assert.match(background, /executeBrowserOpenTabTool/);
+  assert.match(background, /executeBrowserActivateTabTool/);
+  assert.match(background, /executeBrowserNavigateTabTool/);
+  assert.match(background, /executeBrowserReloadTabTool/);
+  assert.match(background, /requestBrowserToolUserApproval/);
+  assert.match(background, /window\.confirm\(text\)/);
+  assert.match(background, /chrome\.tabs\.create/);
+  assert.match(background, /chrome\.tabs\.update/);
+  assert.match(background, /chrome\.tabs\.reload/);
   assert.match(background, /chrome\.scripting\.executeScript/);
-  const bridgeSource = background.slice(
-    background.indexOf('function executeBrowserCurrentTabTool'),
-    background.indexOf('function startBrowserToolBridge'),
+  const passiveReadSource = background.slice(
+    background.indexOf('async function executeBrowserReadPageTool'),
+    background.indexOf('function browserToolString'),
   );
-  assert.doesNotMatch(bridgeSource, /chrome\.tabs\.update/);
-  assert.doesNotMatch(bridgeSource, /chrome\.tabs\.create/);
-  assert.doesNotMatch(bridgeSource, /chrome\.tabs\.reload/);
+  assert.doesNotMatch(passiveReadSource, /chrome\.tabs\.update/);
+  assert.doesNotMatch(passiveReadSource, /chrome\.tabs\.create/);
+  assert.doesNotMatch(passiveReadSource, /chrome\.tabs\.reload/);
 });
 
 test('app enable toggles update optimistically while registration sync remains authoritative', async () => {

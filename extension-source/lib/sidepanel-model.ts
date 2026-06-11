@@ -479,10 +479,26 @@ export function appendDraftUserMessage(draft: AirglowAppDraft, input: AppendDraf
   };
 }
 
-const EXPLICIT_WEB_TARGETS: Array<{ key: string; hosts: string[]; terms: RegExp[] }> = [
-  { key: 'wikipedia', hosts: ['wikipedia.org'], terms: [/\bwikipedia(?:\.org)?\b/i, /википед[а-яё]*/i] },
+const EXPLICIT_WEB_TARGETS: Array<{ key: string; hosts: string[]; terms: RegExp[]; standaloneIntent?: RegExp }> = [
+  {
+    key: 'wikipedia',
+    hosts: ['wikipedia.org'],
+    terms: [/\bwikipedia(?:\.org)?\b/i, /википед[а-яё]*/i],
+    standaloneIntent: /\b(?:summari[sz](?:e|er|ation)?|summary|саммар[а-яё]*|суммар[а-яё]*|резюм[а-яё]*|кратк[а-яё]*)\b/i,
+  },
   { key: 'youtube', hosts: ['youtube.com'], terms: [/\byoutube(?:\.com)?\b/i, /ютуб[а-яё]*/i, /ютьюб[а-яё]*/i] },
-  { key: 'codeforces', hosts: ['codeforces.com'], terms: [/\bcodeforces(?:\.com)?\b/i, /кодфорс[а-яё]*/i] },
+  {
+    key: 'codeforces',
+    hosts: ['codeforces.com'],
+    terms: [/\bcodeforces(?:\.com)?\b/i, /кодфорс[а-яё]*/i],
+    standaloneIntent: /\b(?:solve|solver|solution|решател[а-яё]*|решени[а-яё]*|задач[а-яё]*|алгоритм[а-яё]*)\b/i,
+  },
+  {
+    key: 'leetcode',
+    hosts: ['leetcode.com'],
+    terms: [/\bleet\s*code(?:\.com)?\b/i, /\bleetcode(?:\.com)?\b/i, /литкод[а-яё]*/i],
+    standaloneIntent: /\b(?:solve|solver|solution|решател[а-яё]*|решени[а-яё]*|задач[а-яё]*|алгоритм[а-яё]*|insert|встав[а-яё]*)\b/i,
+  },
 ];
 
 const PROMPT_TARGET_PREFIX = String.raw`(?:for|on|at|inside|target(?:ing)?|для|на|в|под|сайт(?:е|а)?|страниц(?:е|ах|у|ы)?)`;
@@ -569,7 +585,9 @@ function looksLikeRefinementRequest(prompt: string): boolean {
 }
 
 function explicitPromptTargetKey(prompt: string): string | undefined {
-  const explicit = EXPLICIT_WEB_TARGETS.find((target) => target.terms.some((term) => targetMentionIsExplicit(prompt, term)));
+  const explicit = EXPLICIT_WEB_TARGETS.find((target) => target.terms.some((term) => (
+    targetMentionIsExplicit(prompt, term) || targetMentionLooksLikeAppTitle(prompt, term, target.standaloneIntent)
+  )));
   return explicit?.key;
 }
 
@@ -594,6 +612,16 @@ function targetMentionIsExplicit(prompt: string, term: RegExp): boolean {
   if (!match || match.index === undefined) return false;
   const before = prompt.slice(0, match.index);
   return new RegExp(String.raw`(?:^|[\s(])${PROMPT_TARGET_PREFIX}\s+(?:the\s+|сайт\s+)?$`, 'iu').test(before);
+}
+
+function targetMentionLooksLikeAppTitle(prompt: string, term: RegExp, standaloneIntent: RegExp | undefined): boolean {
+  if (!standaloneIntent) return false;
+  term.lastIndex = 0;
+  const match = term.exec(prompt);
+  if (!match || match.index === undefined) return false;
+  const after = prompt.slice(match.index + match[0].length);
+  standaloneIntent.lastIndex = 0;
+  return /^\s+/.test(after) && standaloneIntent.test(after);
 }
 
 function domainMentionFromPrompt(prompt: string): string | undefined {
