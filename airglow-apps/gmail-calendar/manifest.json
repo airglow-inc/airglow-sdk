@@ -4,7 +4,6 @@
   "version": "0.1.0",
   "description": "Reads email conversations and uses AI to pre-fill Google Calendar events",
   "tags": ["gmail", "calendar", "meeting", "sonnet"],
-  "visibility": "hidden",
   "defaultEnabled": false,
   "host_permissions": ["*://*.google.com/*"],
   "userscripts": [
@@ -13,6 +12,13 @@
   ],
   "secrets": { },
   "server_env": {
-    "COMPOSIO_API_KEY": { "label": "Composio API Key" }
+    "COMPOSIO_API_KEY": {
+      "label": "Composio API Key",
+      "description": "used to read Gmail and check the OAuth connection"
+    },
+    "ANTHROPIC_API_KEY": {
+      "label": "Anthropic API Key",
+      "description": "used by the meeting-extraction server function"
+    }
   }
 }

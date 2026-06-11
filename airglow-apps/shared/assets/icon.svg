@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="245 250 520 520">
+  <g transform="translate(52, 18) scale(0.98)">
+    <!-- Black trapezoid -->
+    <path fill="#1c1917" d="M416.6 246.2 L200.8 753.5 L707.6 753.5 L490.8 246.2 Z"/>
+    <!-- Golden A with transparent inner triangle hole -->
+    <path fill="#F8BB5B" fill-rule="evenodd" d="M416.6 246.2 L210.4 731 L313 649.9 L326.7 649.9 L446.9 551.2 L539.7 639.1 L560.2 640.1 L698 731 L490.8 246.2 Z M392.1 543.3 L510.4 543.3 L450.8 382.1 Z"/>
+    <!-- Left mountain -->
+    <path fill="#F99E3D" d="M200.8 753.5 L318.8 753.5 L355 678.2 L393.1 697.8 L448.8 634.2 L473.3 659.6 L468.4 634.2 L475.2 627.4 L446.9 570.7 L334.5 667.5 Z"/>
+    <!-- Right mountain -->
+    <path fill="#F99E3D" d="M595.4 753.5 L707.6 753.5 L556.3 669.4 Z"/>
+  </g>
+</svg>

@@ -161,8 +161,8 @@ function loadEnvFiles(paths: string[]): void {
 interface AppManifest {
   id: string;
   name: string;
-  secrets?: Record<string, { label?: string } | true>;
-  server_env?: Record<string, { label?: string } | true>;
+  secrets?: Record<string, { label?: string; description?: string } | true>;
+  server_env?: Record<string, { label?: string; description?: string } | true>;
   [key: string]: any;
 }
 

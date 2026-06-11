@@ -1,6 +1,7 @@
 import { useState, useEffect, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Clock, Shield, Youtube, Instagram, Twitter, Linkedin, Mail, MessageCircle } from 'lucide-react';
+import { Clock, Youtube, Instagram, Twitter, Linkedin, Mail, MessageCircle } from 'lucide-react';
+import { AppPage } from '../../shared/components';
 declare const airglow: any;
 
 const SCHEDULE_KEY = 'focus_hider_schedule';
@@ -58,11 +59,49 @@ function Toggle({ on, onToggle, testId }: { on: boolean; onToggle: () => void; t
   );
 }
 
+// The focus banner the YouTube userscript injects in place of the feed,
+// matching its real markup (focus-hider/userscripts/youtube.ts): the analog
+// clock face with indigo accents plus the motivational copy. Static preview.
+function FocusBannerPreview() {
+  const ticks = Array.from({ length: 12 }, (_, i) => {
+    const a = ((i * 30 - 90) * Math.PI) / 180;
+    return (
+      <line
+        key={i}
+        x1={100 + 80 * Math.cos(a)} y1={100 + 80 * Math.sin(a)}
+        x2={100 + 88 * Math.cos(a)} y2={100 + 88 * Math.sin(a)}
+        stroke="#6366f1" strokeWidth="2" strokeLinecap="round"
+      />
+    );
+  });
+  return (
+    <div
+      className="rounded-xl px-6 py-8 text-center"
+      style={{ background: '#1a1d2e', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif' }}
+    >
+      <svg width="96" height="96" viewBox="0 0 200 200" style={{ margin: '0 auto 16px', display: 'block' }}>
+        <circle cx="100" cy="100" r="95" fill="#252545" stroke="#2a2a4a" strokeWidth="2" />
+        <circle cx="100" cy="100" r="88" fill="none" stroke="#2a2a4a" strokeWidth="0.5" />
+        {ticks}
+        <line x1="100" y1="100" x2="118" y2="60" stroke="#e0e0e0" strokeWidth="3.5" strokeLinecap="round" />
+        <line x1="100" y1="100" x2="140" y2="120" stroke="#e0e0e0" strokeWidth="2" strokeLinecap="round" />
+        <line x1="100" y1="100" x2="80" y2="48" stroke="#6366f1" strokeWidth="1" strokeLinecap="round" />
+        <circle cx="100" cy="100" r="4" fill="#6366f1" />
+      </svg>
+      <p className="m-0" style={{ fontSize: 22, fontWeight: 700, letterSpacing: '-0.5px', lineHeight: 1.2, color: '#e2e4eb' }}>
+        Time to do great things
+      </p>
+      <p className="m-0" style={{ fontSize: 15, marginTop: 8, color: '#9ca3af' }}>
+        Your feed is hidden — stay focused on what matters.
+      </p>
+    </div>
+  );
+}
+
 export default function App() {
   const [schedule, setSchedule] = useState<Schedule>(DEFAULT_SCHEDULE);
   const [sites, setSites] = useState<SiteFlags>(DEFAULT_SITES);
   const [linkedinFullBlock, setLinkedinFullBlock] = useState<boolean>(true);
-  const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
     Promise.all([
@@ -77,7 +116,6 @@ export default function App() {
         try { setSites({ ...DEFAULT_SITES, ...JSON.parse(sitesVal) }); } catch {}
       }
       if (liFullVal === 'false') setLinkedinFullBlock(false);
-      setMounted(true);
     });
   }, []);
 
@@ -99,8 +137,6 @@ export default function App() {
     airglow.storage.set(SITES_KEY, JSON.stringify(next));
   }
 
-  if (!mounted) return null;
-
   const blockedHours = getBlockedHours(schedule.allowStart, schedule.allowEnd);
   const now = new Date().getHours();
   const isCurrentlyBlocked = schedule.enabled && sites.gmail && (() => {
@@ -110,13 +146,13 @@ export default function App() {
   })();
 
   return (
-    <div className="min-h-screen p-8 font-sans" style={{ background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}>
-      <div className="max-w-[600px] mx-auto">
-        <div className="flex items-center gap-3 mb-8">
-          <Shield size={24} style={{ color: 'var(--clay)' }} />
-          <h1 className="text-2xl font-semibold" style={{ letterSpacing: '-0.02em' }}>Focus Hider</h1>
-        </div>
-
+    <AppPage
+      appId="focus-hider"
+      name="Focus Hider"
+      description="Hides distracting content on YouTube, Instagram, X, LinkedIn, WhatsApp/Telegram, and Gmail — feeds and suggestions are replaced with a calm focus screen, with optional time-based access for Gmail."
+      preview={<FocusBannerPreview />}
+    >
+      <div>
         {/* Sites list */}
         <div className="rounded-md" style={{ background: 'var(--bg-white)', boxShadow: 'var(--shadow-card)' }}>
           {SITES.map((site, i) => {
@@ -250,7 +286,7 @@ export default function App() {
           Changes apply on next page load.
         </p>
       </div>
-    </div>
+    </AppPage>
   );
 }
 

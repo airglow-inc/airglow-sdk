@@ -59,8 +59,8 @@ See [`../../cli/README.md`](../../cli/README.md) for flags and endpoints.
 | `startup` | Path to a startup script. Runs once per extension boot. |
 | `userscripts[]` | Each entry: `{ file, matches, allFrames?, runAt? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns). `runAt` defaults to `"document_idle"`. |
 | `host_permissions` | Chrome match patterns. Required for `airglow.fetch(..., { includeCookies: true })` on the listed origins. |
-| `secrets` | Client-scoped secrets the app needs. Keys appear in the extension's Secrets UI labelled by `label`. Values read via `airglow.storage.get('KEY')`. |
-| `server_env` | Server-scoped env vars the app needs. Keys checked against workspace + per-app `.env` at `pnpm airglow dev` startup; missing keys are warned in the console. Values read via `process.env.KEY` from `server/*.ts`. Declarative only — not enforced. |
+| `secrets` | Client-scoped secrets the app needs. Each entry: `{ label, description? }`. Keys appear in the extension's Secrets UI labelled by `label`; the app page renders them as "Client keys" callouts, annotated with `description`. Values read via `airglow.storage.get('KEY')`. |
+| `server_env` | Server-scoped env vars the app needs. Each entry: `{ label, description? }`. Keys checked against workspace + per-app `.env` at `pnpm airglow dev` startup; missing keys are warned in the console. The app page renders them as "Server keys" callouts, annotated with `description`. Values read via `process.env.KEY` from `server/*.ts`. Declarative only — not enforced. |
 
 ---
 
@@ -80,7 +80,7 @@ The user must have "Allow User Scripts" enabled on the extension detail page (Ch
 
 ## UI
 
-A React + Tailwind SPA that runs inside a sandboxed iframe at `app-shell.html?app=<id>`, opened from the extension toolbar.
+A React + Tailwind SPA that runs inside a sandboxed iframe at `app-shell.html?app=<id>`, opened from the extension toolbar. Every app must ship one, built on the shared `AppPage` layout (`shared/components`) — see the "Every app ships an app page" rule in `AGENTS.md` for the required structure (name, description, injected-UI preview, settings).
 
 ```
 package.json     # react, react-dom, tailwindcss, @tailwindcss/cli

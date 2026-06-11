@@ -4,7 +4,6 @@
   "version": "0.1.0",
   "description": "AI-powered research for LinkedIn profiles using web search",
   "tags": ["ai-model", "research"],
-  "visibility": "hidden",
   "defaultEnabled": false,
   "userscripts": [
     {
