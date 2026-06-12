@@ -94,6 +94,9 @@ test('extension requires real account sign-in for Airglow identity', async () =>
   assert.match(dashboard, /signInAirglowWithGoogle/);
   assert.match(dashboard, /signOutAirglowIdentity/);
   assert.doesNotMatch(dashboard, /Sign out of Airglow on this browser/);
+  assert.doesNotMatch(dashboard, /Identity<\/span>\s*email/);
+  assert.doesNotMatch(dashboard, /saveUserEmail/);
+  assert.doesNotMatch(dashboard, /user-email-input/);
 });
 
 test('background clears runtime apps when the extension is signed out', async () => {

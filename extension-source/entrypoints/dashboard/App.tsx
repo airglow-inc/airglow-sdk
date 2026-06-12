@@ -25,7 +25,6 @@ import {
   getAirglowAuthProviderConfig,
   getAirglowIdentityHeaders,
   getVerifiedAirglowAuthState,
-  normalizeUserEmail,
   signInAirglowWithGoogle,
   signInAirglowWithPassword,
   signOutAirglowIdentity,
@@ -189,9 +188,6 @@ export default function App() {
   // null = native host disabled for this build (hide); true/false = liveness.
   const [nativeHostConnected, setNativeHostConnected] = useState<boolean | null>(null);
   const [identityLoaded, setIdentityLoaded] = useState(false);
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [emailInput, setEmailInput] = useState('');
-  const [emailError, setEmailError] = useState<string | null>(null);
   const [authState, setAuthState] = useState<AirglowAuthState>({ authenticated: false });
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
@@ -412,17 +408,14 @@ export default function App() {
         });
       });
 
-    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
+    chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
       const port = (result[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT;
-      const savedEmail = normalizeUserEmail(result[USER_EMAIL_KEY]) || '';
       const nh = result['__native_host_connected'];
       setNativeHostConnected(nh === undefined ? null : (nh as boolean));
       setDevPort(port);
       setPortInput(String(port));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
       setSourceOverrides((result['__app_source_override'] as AppSourceOverrides | undefined) || {});
-      setUserEmail(savedEmail || null);
-      setEmailInput(savedEmail);
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setGitPullDueRemote(!!result['__git_pull_due_remote']);
       refreshAuthState().catch(() => setAuthState({ authenticated: false }));
@@ -440,9 +433,6 @@ export default function App() {
         });
       }
       if (USER_EMAIL_KEY in changes) {
-        const next = normalizeUserEmail(changes[USER_EMAIL_KEY].newValue) || '';
-        setUserEmail(next || null);
-        setEmailInput(next);
         refreshAuthState().catch(() => setAuthState({ authenticated: false }));
         chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       }
@@ -499,8 +489,6 @@ export default function App() {
     const state = await getVerifiedAirglowAuthState();
     setAuthState(state);
     if (state.email) {
-      setUserEmail(state.email);
-      setEmailInput(state.email);
       setAccountEmail(state.email);
     }
   }
@@ -510,13 +498,10 @@ export default function App() {
     setAuthBusy(true);
     setAuthError(null);
     setAuthNotice(null);
-    setEmailError(null);
     try {
       const state = await signInAirglowWithGoogle();
       setAuthState(state);
       if (state.email) {
-        setUserEmail(state.email);
-        setEmailInput(state.email);
         setAccountEmail(state.email);
       }
       setAccountPassword('');
@@ -534,15 +519,12 @@ export default function App() {
     setAuthBusy(true);
     setAuthError(null);
     setAuthNotice(null);
-    setEmailError(null);
     try {
       const state = accountMode === 'create'
         ? await createAirglowAccountWithPassword(accountEmail, accountPassword)
         : await signInAirglowWithPassword(accountEmail, accountPassword);
       setAuthState(state);
       if (state.email) {
-        setUserEmail(state.email);
-        setEmailInput(state.email);
         setAccountEmail(state.email);
       }
       setAccountPassword('');
@@ -570,8 +552,6 @@ export default function App() {
     try {
       const state = await signOutAirglowIdentity();
       setAuthState(state);
-      setUserEmail(null);
-      setEmailInput('');
       setAccountPassword('');
       chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       await loadAll();
@@ -580,23 +560,6 @@ export default function App() {
     } finally {
       setAuthBusy(false);
     }
-  }
-
-  function saveUserEmail() {
-    const trimmed = normalizeUserEmail(emailInput);
-    if (!trimmed) {
-      setEmailError('Enter a valid email address.');
-      return;
-    }
-    chrome.storage.local.set({ [USER_EMAIL_KEY]: trimmed }, () => {
-      setUserEmail(trimmed);
-      setEmailInput(trimmed);
-      setEmailError(null);
-      chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => {
-        void chrome.runtime.lastError;
-        loadAll();
-      });
-    });
   }
 
   async function submitFeedback(event: FormEvent<HTMLFormElement>) {
@@ -617,15 +580,13 @@ export default function App() {
     try {
       const visitorId = await getFeedbackVisitorId();
       const endpoint = await getFeedbackEndpoint();
-      const stored = await chrome.storage.local.get([USER_EMAIL_KEY]);
-      const userEmail = normalizeUserEmail(stored[USER_EMAIL_KEY]);
       const identityHeaders = await getAirglowIdentityHeaders({ requireSession: true });
       const res = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...identityHeaders },
         body: JSON.stringify({
           visitorId,
-          userEmail,
+          userEmail: authState.email,
           kind: feedbackKind,
           message,
           appId: 'dashboard',
@@ -1394,37 +1355,6 @@ export default function App() {
                 <div className="text-sm mt-1" style={{ color: 'var(--olive)' }}>{authNotice}</div>
               )}
             </div>
-            <div className="px-1 pt-3">
-              <label className="text-base font-medium flex items-center gap-1.5" style={{ color: 'var(--fg-tertiary)' }}>
-                <Mail size={14} />
-                <span style={{ color: 'var(--olive)', fontWeight: 600 }}>Identity</span> email
-              </label>
-              <div className="flex items-center gap-2 mt-1">
-                <input
-                  type="email"
-                  value={emailInput}
-                  onChange={(e) => { setEmailInput(e.target.value); setEmailError(null); }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') saveUserEmail(); }}
-                  placeholder="you@example.com"
-                  className="min-w-0 flex-1 h-8 px-2 text-base rounded-sm border outline-none"
-                  style={{ borderColor: emailError ? 'var(--error)' : 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
-                  data-testid="user-email-input"
-                />
-                <button
-                  onClick={saveUserEmail}
-                  className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-                  style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
-                  data-testid="save-user-email-button"
-                >
-                  Save
-                </button>
-              </div>
-              {emailError && (
-                <div className="text-sm mt-1" style={{ color: 'var(--error)' }}>{emailError}</div>
-              )}
-            </div>
             {/* Only surfaced when the debug bridge is down; silent when connected or disabled. */}
             {nativeHostConnected === false && (
               <div className="px-1 pt-2.5" data-testid="native-host-status">
@@ -2063,9 +1993,9 @@ Airglow — for those who create
           >
             <div className="mb-5">
               <h3 className="text-2xl font-bold" style={{ color: 'var(--fg-primary)' }}>Secrets</h3>
-              {userEmail && (
+              {authState.email && (
                 <p className="text-sm mt-1" style={{ color: 'var(--fg-tertiary)' }} data-testid="secrets-modal-email">
-                  Registered as <strong style={{ color: 'var(--fg-secondary)' }}>{userEmail}</strong>
+                  Registered as <strong style={{ color: 'var(--fg-secondary)' }}>{authState.email}</strong>
                 </p>
               )}
             </div>
