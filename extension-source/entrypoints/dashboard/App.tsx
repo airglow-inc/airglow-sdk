@@ -21,9 +21,11 @@ import {
   USER_EMAIL_KEY,
   type AirglowAuthProviderConfig,
   type AirglowAuthState,
+  clearLastAirglowAuthError,
   createAirglowAccountWithPassword,
   getAirglowAuthProviderConfig,
   getAirglowIdentityHeaders,
+  getLastAirglowAuthErrorMessage,
   getVerifiedAirglowAuthState,
   signInAirglowWithGoogle,
   signInAirglowWithPassword,
@@ -491,6 +493,10 @@ export default function App() {
     if (state.email) {
       setAccountEmail(state.email);
     }
+    if (!state.authenticated) {
+      const lastError = await getLastAirglowAuthErrorMessage();
+      if (lastError) setAuthError(lastError);
+    }
   }
 
   async function signInWithGoogle() {
@@ -499,6 +505,7 @@ export default function App() {
     setAuthError(null);
     setAuthNotice(null);
     try {
+      await clearLastAirglowAuthError();
       const state = await signInAirglowWithGoogle();
       setAuthState(state);
       if (state.email) {
@@ -520,6 +527,7 @@ export default function App() {
     setAuthError(null);
     setAuthNotice(null);
     try {
+      await clearLastAirglowAuthError();
       const state = accountMode === 'create'
         ? await createAirglowAccountWithPassword(accountEmail, accountPassword)
         : await signInAirglowWithPassword(accountEmail, accountPassword);

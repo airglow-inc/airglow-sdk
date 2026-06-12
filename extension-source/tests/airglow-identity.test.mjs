@@ -406,7 +406,26 @@ test('verified auth state signs out terminally rejected sessions', async () => {
 
   try {
     assert.deepEqual(await identity.getVerifiedAirglowAuthState(), { authenticated: false });
-    assert.deepEqual(store, {});
+    assert.equal(store.__airglow_session_token, undefined);
+    assert.equal(store.__airglow_refresh_token, undefined);
+    assert.equal(store.__airglow_user_id, undefined);
+    assert.equal(store.__airglow_user_email, undefined);
+    assert.equal(store.__airglow_auth_provider, undefined);
+    assert.equal(typeof store.__airglow_auth_last_error.ts, 'number');
+    assert.deepEqual({
+      ...store.__airglow_auth_last_error,
+      ts: 0,
+    }, {
+      message: 'Airglow identity session is invalid',
+      code: 'AIRGLOW_IDENTITY_INVALID',
+      status: 401,
+      requestId: 'req-invalid',
+      ts: 0,
+    });
+    assert.match(
+      await identity.getLastAirglowAuthErrorMessage(),
+      /Airglow identity session is invalid \(AIRGLOW_IDENTITY_INVALID, HTTP 401, request req-invalid\)\. Please sign in again\./,
+    );
   } finally {
     globalThis.fetch = originalFetch;
     delete globalThis.chrome;

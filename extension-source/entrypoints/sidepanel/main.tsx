@@ -28,7 +28,9 @@ import {
   type AirglowAuthProviderConfig,
   type AirglowAuthState,
   createAirglowAccountWithPassword,
+  clearLastAirglowAuthError,
   getAirglowAuthProviderConfig,
+  getLastAirglowAuthErrorMessage,
   getVerifiedAirglowAuthState,
   signInAirglowWithGoogle,
   signInAirglowWithPassword,
@@ -982,10 +984,14 @@ function App() {
       });
     const refresh = () => {
       getVerifiedAirglowAuthState()
-        .then((state) => {
+        .then(async (state) => {
           if (cancelled) return;
           setAuthState(state);
           if (state.email) setAuthEmail(state.email);
+          if (!state.authenticated) {
+            const lastError = await getLastAirglowAuthErrorMessage();
+            if (!cancelled && lastError) setAuthError(lastError);
+          }
         })
         .catch(() => {
           if (!cancelled) setAuthState({ authenticated: false });
@@ -1221,6 +1227,7 @@ function App() {
     setAuthError(null);
     setAuthNotice(null);
     try {
+      await clearLastAirglowAuthError();
       const nextState = await signInAirglowWithGoogle();
       await applyAuthState(nextState);
       setAuthPassword('');
@@ -1237,6 +1244,7 @@ function App() {
     setAuthError(null);
     setAuthNotice(null);
     try {
+      await clearLastAirglowAuthError();
       const nextState = authMode === 'create'
         ? await createAirglowAccountWithPassword(authEmail, authPassword)
         : await signInAirglowWithPassword(authEmail, authPassword);

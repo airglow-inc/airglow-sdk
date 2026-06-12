@@ -5,6 +5,7 @@ export const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
 export const AIRGLOW_SESSION_TOKEN_KEY = '__airglow_session_token';
 export const AIRGLOW_REFRESH_TOKEN_KEY = '__airglow_refresh_token';
 export const AIRGLOW_AUTH_PROVIDER_KEY = '__airglow_auth_provider';
+export const AIRGLOW_AUTH_LAST_ERROR_KEY = '__airglow_auth_last_error';
 export const AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE = 'Check your email to confirm your Airglow account, then sign in.';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -124,6 +125,14 @@ type AirglowIdentitySessionError = Error & {
   requestId?: string;
 };
 
+type AirglowAuthLastError = {
+  message: string;
+  code?: string;
+  status?: number;
+  requestId?: string;
+  ts: number;
+};
+
 function isTerminalIdentitySessionError(error: unknown): boolean {
   const sessionError = error as AirglowIdentitySessionError;
   if (sessionError?.status === 401 || sessionError?.status === 403) return true;
@@ -152,6 +161,43 @@ function parseIdentityError(text: string): { message: string; code?: string; req
       message: text.slice(0, 500) || 'Airglow identity session failed',
     };
   }
+}
+
+function describeIdentitySessionError(error: unknown): AirglowAuthLastError {
+  const sessionError = error as AirglowIdentitySessionError;
+  return {
+    message: sessionError?.message || 'Airglow identity session failed',
+    ...(sessionError?.code ? { code: sessionError.code } : {}),
+    ...(typeof sessionError?.status === 'number' ? { status: sessionError.status } : {}),
+    ...(sessionError?.requestId ? { requestId: sessionError.requestId } : {}),
+    ts: Date.now(),
+  };
+}
+
+async function rememberAirglowAuthError(error: unknown): Promise<void> {
+  await chrome.storage.local.set({
+    [AIRGLOW_AUTH_LAST_ERROR_KEY]: describeIdentitySessionError(error),
+  });
+}
+
+export async function getLastAirglowAuthErrorMessage(): Promise<string | null> {
+  const stored = await chrome.storage.local.get(AIRGLOW_AUTH_LAST_ERROR_KEY);
+  const error = stored[AIRGLOW_AUTH_LAST_ERROR_KEY] as Partial<AirglowAuthLastError> | undefined;
+  if (!error || typeof error !== 'object' || typeof error.message !== 'string' || !error.message.trim()) {
+    return null;
+  }
+  const details = [
+    error.code,
+    typeof error.status === 'number' ? `HTTP ${error.status}` : '',
+    error.requestId ? `request ${error.requestId}` : '',
+  ].filter(Boolean);
+  return details.length > 0
+    ? `${error.message} (${details.join(', ')}). Please sign in again.`
+    : `${error.message}. Please sign in again.`;
+}
+
+export async function clearLastAirglowAuthError(): Promise<void> {
+  await chrome.storage.local.remove(AIRGLOW_AUTH_LAST_ERROR_KEY);
 }
 
 async function fetchIdentitySession(
@@ -279,6 +325,7 @@ async function persistAuthenticatedSupabaseSession({
   if (!nextRefreshToken) removals.push(AIRGLOW_REFRESH_TOKEN_KEY);
   if (!email) removals.push(USER_EMAIL_KEY);
   if (removals.length > 0) await chrome.storage.local.remove(removals);
+  await clearLastAirglowAuthError();
 
   return {
     authenticated: true,
@@ -373,14 +420,16 @@ export async function createAirglowAccountWithPassword(emailInput: string, passw
   });
 }
 
-export async function signOutAirglowIdentity(): Promise<AirglowAuthState> {
-  await chrome.storage.local.remove([
+export async function signOutAirglowIdentity(options: { keepLastError?: boolean } = {}): Promise<AirglowAuthState> {
+  const keys = [
     AIRGLOW_SESSION_TOKEN_KEY,
     AIRGLOW_REFRESH_TOKEN_KEY,
     AIRGLOW_AUTH_PROVIDER_KEY,
     USER_EMAIL_KEY,
     AIRGLOW_USER_ID_KEY,
-  ]);
+  ];
+  if (!options.keepLastError) keys.push(AIRGLOW_AUTH_LAST_ERROR_KEY);
+  await chrome.storage.local.remove(keys);
   return { authenticated: false };
 }
 
@@ -392,7 +441,8 @@ export async function getVerifiedAirglowAuthState(): Promise<AirglowAuthState> {
     return getStoredAirglowAuthState();
   } catch (error) {
     if (isTerminalIdentitySessionError(error)) {
-      return signOutAirglowIdentity();
+      await rememberAirglowAuthError(error);
+      return signOutAirglowIdentity({ keepLastError: true });
     }
     return storedState;
   }
