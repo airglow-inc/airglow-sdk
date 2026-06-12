@@ -22,6 +22,7 @@ import {
   type AirglowAuthState,
   createAirglowAccountWithPassword,
   getAirglowAuthProviderConfig,
+  getAirglowIdentityHeaders,
   getStoredAirglowAuthState,
   normalizeUserEmail,
   signInAirglowWithGoogle,
@@ -595,6 +596,10 @@ export default function App() {
       setFeedbackStatus({ type: 'error', text: 'Add at least 3 characters.' });
       return;
     }
+    if (!authState.authenticated) {
+      setFeedbackStatus({ type: 'error', text: 'Sign in to Airglow to send feedback.' });
+      return;
+    }
     setFeedbackSubmitting(true);
     setFeedbackStatus({ type: 'info', text: 'Sending…' });
     try {
@@ -602,9 +607,10 @@ export default function App() {
       const endpoint = await getFeedbackEndpoint();
       const stored = await chrome.storage.local.get([USER_EMAIL_KEY]);
       const userEmail = normalizeUserEmail(stored[USER_EMAIL_KEY]);
+      const identityHeaders = await getAirglowIdentityHeaders({ requireSession: true });
       const res = await fetch(endpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...identityHeaders },
         body: JSON.stringify({
           visitorId,
           userEmail,
@@ -1770,33 +1776,35 @@ Airglow — for those who create
         </>)}
       </main>
 
-      <button
-        onClick={() => {
-          setFeedbackOpen(true);
-          setFeedbackStatus(null);
-        }}
-        className="fixed right-5 bottom-5 z-40 h-12 px-4 rounded-full text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-2"
-        style={{
-          color: 'var(--bg-white)',
-          borderColor: 'color-mix(in srgb, var(--clay) 80%, transparent)',
-          background: 'var(--clay)',
-          boxShadow: '0 14px 34px rgba(28,25,23,0.22)',
-        }}
-        onMouseEnter={(e) => {
-          e.currentTarget.style.transform = 'translateY(-1px)';
-          e.currentTarget.style.boxShadow = '0 18px 42px rgba(28,25,23,0.26)';
-        }}
-        onMouseLeave={(e) => {
-          e.currentTarget.style.transform = 'translateY(0)';
-          e.currentTarget.style.boxShadow = '0 14px 34px rgba(28,25,23,0.22)';
-        }}
-        data-testid="feedback-button"
-        aria-label="Open feedback"
-        title="Feedback"
-      >
-        <MessageSquare size={17} />
-        Feedback
-      </button>
+      {authState.authenticated ? (
+        <button
+          onClick={() => {
+            setFeedbackOpen(true);
+            setFeedbackStatus(null);
+          }}
+          className="fixed right-5 bottom-5 z-40 h-12 px-4 rounded-full text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-2"
+          style={{
+            color: 'var(--bg-white)',
+            borderColor: 'color-mix(in srgb, var(--clay) 80%, transparent)',
+            background: 'var(--clay)',
+            boxShadow: '0 14px 34px rgba(28,25,23,0.22)',
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.transform = 'translateY(-1px)';
+            e.currentTarget.style.boxShadow = '0 18px 42px rgba(28,25,23,0.26)';
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.transform = 'translateY(0)';
+            e.currentTarget.style.boxShadow = '0 14px 34px rgba(28,25,23,0.22)';
+          }}
+          data-testid="feedback-button"
+          aria-label="Open feedback"
+          title="Feedback"
+        >
+          <MessageSquare size={17} />
+          Feedback
+        </button>
+      ) : null}
 
       {/* Private app details modal */}
       {privateAppEdit && (
