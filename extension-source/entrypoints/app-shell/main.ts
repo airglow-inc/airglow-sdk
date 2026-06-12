@@ -11,7 +11,12 @@
 import '../../lib/airglow-base.css';
 import { logger } from '../../lib/logger';
 import { buildSdkCode } from '../../lib/airglow-sdk';
-import { getAirglowIdentityHeaders } from '../../lib/airglow-identity';
+import {
+  AIRGLOW_AUTH_PROVIDER_KEY,
+  AIRGLOW_REFRESH_TOKEN_KEY,
+  AIRGLOW_SESSION_TOKEN_KEY,
+  getAirglowIdentityHeaders,
+} from '../../lib/airglow-identity';
 
 const APP_SOURCES_KEY = '__app_sources';
 const APP_MANIFESTS_KEY = '__app_manifests';
@@ -26,10 +31,99 @@ type AppSource = { url: string; type: 'local' | 'cloud' };
 const params = new URLSearchParams(window.location.search);
 const appId = params.get('app');
 
-if (!appId) {
-  document.getElementById('loading')!.textContent = 'Missing app parameter';
-} else {
+void bootAppShell();
+
+async function bootAppShell() {
+  if (!appId) {
+    document.getElementById('loading')!.textContent = 'Missing app parameter';
+    return;
+  }
+
+  try {
+    await getAirglowIdentityHeaders({ requireSession: true });
+  } catch {
+    renderAuthRequiredMessage();
+    return;
+  }
+
   loadApp(appId);
+}
+
+function renderAuthRequiredMessage() {
+  const root = document.getElementById('root');
+  const loading = document.getElementById('loading');
+  if (loading) loading.remove();
+  if (!root) return;
+
+  root.textContent = '';
+  const wrap = document.createElement('div');
+  wrap.id = 'airglow-app-auth-required';
+  wrap.style.cssText = [
+    'position:fixed',
+    'inset:0',
+    'display:flex',
+    'align-items:center',
+    'justify-content:center',
+    'padding:24px',
+    'background:#f5f5f4',
+    'color:#1c1917',
+  ].join(';');
+
+  const card = document.createElement('div');
+  card.style.cssText = [
+    'width:min(520px,100%)',
+    'border:1px solid #e7e5e4',
+    'border-radius:8px',
+    'background:#fff',
+    'padding:24px',
+    'box-shadow:0 12px 32px rgba(28,25,23,.10)',
+  ].join(';');
+
+  const eyebrow = document.createElement('div');
+  eyebrow.textContent = 'Airglow account required';
+  eyebrow.style.cssText = 'font-size:13px;color:#78716c;margin-bottom:6px';
+
+  const title = document.createElement('div');
+  title.textContent = 'Sign in to open this app';
+  title.style.cssText = 'font-size:22px;font-weight:700;line-height:1.2;margin-bottom:8px;color:#1c1917';
+
+  const copy = document.createElement('p');
+  copy.textContent = 'Airglow apps, page injection, and cloud generation are unavailable until this browser is signed in.';
+  copy.style.cssText = 'font-size:14px;line-height:1.5;color:#57534e;margin:0 0 18px';
+
+  const actions = document.createElement('div');
+  actions.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap';
+
+  const dashboardButton = document.createElement('button');
+  dashboardButton.type = 'button';
+  dashboardButton.textContent = 'Open dashboard';
+  dashboardButton.style.cssText = 'height:38px;padding:0 14px;border:0;border-radius:8px;background:#1c1917;color:#fff;font-size:14px;font-weight:650;cursor:pointer';
+  dashboardButton.addEventListener('click', () => {
+    window.location.href = chrome.runtime.getURL('dashboard.html');
+  });
+
+  const reloadButton = document.createElement('button');
+  reloadButton.type = 'button';
+  reloadButton.textContent = 'Retry';
+  reloadButton.style.cssText = 'height:38px;padding:0 14px;border:1px solid #d6d3d1;border-radius:8px;background:#fff;color:#44403c;font-size:14px;font-weight:650;cursor:pointer';
+  reloadButton.addEventListener('click', () => location.reload());
+
+  actions.append(dashboardButton, reloadButton);
+  card.append(eyebrow, title, copy, actions);
+  wrap.append(card);
+  root.append(wrap);
+
+  const listener = (changes: Record<string, chrome.storage.StorageChange>) => {
+    if (
+      AIRGLOW_SESSION_TOKEN_KEY in changes ||
+      AIRGLOW_REFRESH_TOKEN_KEY in changes ||
+      AIRGLOW_AUTH_PROVIDER_KEY in changes
+    ) {
+      chrome.storage.local.onChanged.removeListener(listener);
+      location.reload();
+    }
+  };
+  chrome.storage.local.onChanged.addListener(listener);
 }
 
 function renderOfflineMessage(appId: string) {

@@ -642,6 +642,27 @@ async function main() {
       'extension service worker',
     );
     const serviceWorkerSession = await attach(cdp, serviceWorker.targetId);
+
+    const signedOutSidepanel = await openExtensionPage(cdp, extensionId, 'sidepanel.html');
+    await waitForExpression(
+      cdp,
+      signedOutSidepanel.sessionId,
+      `document.body.innerText.includes('Sign in to Airglow') && document.body.innerText.includes('Airglow apps, page injection, and cloud generation require an account.')`,
+      'signed-out sidepanel auth gate',
+      10000,
+    );
+    await closeTarget(cdp, signedOutSidepanel.targetId);
+
+    const signedOutAppShell = await openExtensionPage(cdp, extensionId, 'app-shell.html?app=private-browser-smoke');
+    await waitForExpression(
+      cdp,
+      signedOutAppShell.sessionId,
+      `Boolean(document.getElementById('airglow-app-auth-required')) && document.body.innerText.includes('Sign in to open this app') && !document.querySelector('iframe')`,
+      'signed-out app-shell auth gate',
+      10000,
+    );
+    await closeTarget(cdp, signedOutAppShell.targetId);
+
     await evaluate(cdp, serviceWorkerSession, `
       chrome.storage.local.set({
         __airglow_session_token: 'mock-access-owner',
@@ -706,6 +727,8 @@ async function main() {
       requests: mockCloud.requests.map((request) => `${request.method} ${request.path}`),
       checks: [
         'extension-loaded',
+        'signed-out-sidepanel-auth-gate',
+        'signed-out-app-shell-auth-gate',
         'user-scripts-enabled',
         'sidepanel-save-message',
         'private-app-registered',

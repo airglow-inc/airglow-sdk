@@ -50,6 +50,7 @@ test('extension requires real account sign-in for Airglow identity', async () =>
   const identity = await readFile(new URL('../lib/airglow-identity.ts', import.meta.url), 'utf8');
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
   const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
+  const appShell = await readFile(new URL('../entrypoints/app-shell/main.ts', import.meta.url), 'utf8');
 
   assert.match(identity, /signInAirglowWithGoogle/);
   assert.match(identity, /createClient/);
@@ -73,6 +74,11 @@ test('extension requires real account sign-in for Airglow identity', async () =>
   assert.match(sidepanel, /signOutAirglowIdentity/);
   assert.match(sidepanel, /authState\.authenticated && chatInput\.trim\(\)\.length > 0/);
   assert.doesNotMatch(sidepanel, /Sign out of Airglow on this browser/);
+  assert.match(appShell, /bootAppShell/);
+  assert.match(appShell, /getAirglowIdentityHeaders\(\{\s*requireSession:\s*true\s*\}\)/);
+  assert.match(appShell, /renderAuthRequiredMessage/);
+  assert.match(appShell, /Airglow apps, page injection, and cloud generation are unavailable until this browser is signed in/);
+  assert.match(appShell, /Open dashboard/);
   assert.match(dashboard, /sign-in-airglow-button/);
   assert.match(dashboard, /Sign in with Google/);
   assert.match(dashboard, /sign-in-google-button/);
