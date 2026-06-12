@@ -102,7 +102,7 @@ export async function getStoredAirglowAuthState(): Promise<AirglowAuthState> {
   const provider = typeof stored[AIRGLOW_AUTH_PROVIDER_KEY] === 'string' ? stored[AIRGLOW_AUTH_PROVIDER_KEY] : '';
   const token = typeof stored[AIRGLOW_SESSION_TOKEN_KEY] === 'string' ? stored[AIRGLOW_SESSION_TOKEN_KEY] : '';
   return {
-    authenticated: Boolean(token && userId.startsWith('supabase:')),
+    authenticated: Boolean(token && userId.startsWith('supabase:') && provider === 'google'),
     ...(userId ? { userId } : {}),
     ...(email ? { email } : {}),
     ...(provider ? { provider } : {}),

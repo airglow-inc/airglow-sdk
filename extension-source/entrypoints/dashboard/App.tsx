@@ -492,7 +492,7 @@ export default function App() {
   }
 
   async function signOut() {
-    if (authBusy || !window.confirm('Sign out of Airglow on this browser?')) return;
+    if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
     try {

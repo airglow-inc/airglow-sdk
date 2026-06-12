@@ -61,9 +61,11 @@ test('extension surfaces Google sign-in for Airglow identity', async () => {
   assert.match(sidepanel, /Sign in with Google/);
   assert.match(sidepanel, /signInAirglowWithGoogle/);
   assert.match(sidepanel, /signOutAirglowIdentity/);
+  assert.doesNotMatch(sidepanel, /Sign out of Airglow on this browser/);
   assert.match(dashboard, /Sign in with Google/);
   assert.match(dashboard, /sign-in-google-button/);
   assert.match(dashboard, /signOutAirglowIdentity/);
+  assert.doesNotMatch(dashboard, /Sign out of Airglow on this browser/);
 });
 
 test('dashboard can edit and delete owner-scoped private apps through background', async () => {

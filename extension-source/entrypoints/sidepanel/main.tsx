@@ -1065,7 +1065,6 @@ function App() {
     setAuthBusy(true);
     setAuthError(null);
     try {
-      if (authState.authenticated && !window.confirm('Sign out of Airglow on this browser?')) return;
       const nextState = authState.authenticated
         ? await signOutAirglowIdentity()
         : await signInAirglowWithGoogle();

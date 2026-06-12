@@ -174,3 +174,29 @@ test('Airglow sign-out clears stored auth identity', async () => {
     await identity.cleanup();
   }
 });
+
+test('anonymous Supabase sessions do not make the UI look Google signed-in', async () => {
+  const identity = await loadIdentityModule();
+  const { store } = installChromeStub();
+  Object.assign(store, {
+    __airglow_session_token: 'anonymous-token',
+    __airglow_refresh_token: 'anonymous-refresh',
+    __airglow_user_id: 'supabase:anonymous-user',
+  });
+
+  try {
+    assert.deepEqual(await identity.getStoredAirglowAuthState(), {
+      authenticated: false,
+      userId: 'supabase:anonymous-user',
+    });
+    store.__airglow_auth_provider = 'google';
+    assert.deepEqual(await identity.getStoredAirglowAuthState(), {
+      authenticated: true,
+      userId: 'supabase:anonymous-user',
+      provider: 'google',
+    });
+  } finally {
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
