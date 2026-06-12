@@ -30,6 +30,7 @@
   "dependencies": {
     "@radix-ui/react-popover": "^1.1.16",
     "@radix-ui/react-tooltip": "^1.2.9",
+    "@supabase/supabase-js": "^2.108.1",
     "lucide-react": "^0.460.0",
     "posthog-js-lite": "^4.6.32"
   }

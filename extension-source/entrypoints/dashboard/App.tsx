@@ -1,5 +1,5 @@
 import { type FormEvent, useState, useEffect, useRef } from 'react';
-import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, MessageSquare, Send, X } from 'lucide-react';
+import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, AlertCircle, Info, Pin, FileCode2, TriangleAlert, ScrollText, Mail, MessageSquare, Send, X, LogIn, LogOut } from 'lucide-react';
 import logoUrl from '../../lib/branding/logo.svg';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
@@ -12,7 +12,18 @@ function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { siz
   );
 }
 import LogsPage from './LogsPage';
-import { normalizeUserEmail, USER_EMAIL_KEY } from '../../lib/airglow-identity';
+import {
+  AIRGLOW_AUTH_PROVIDER_KEY,
+  AIRGLOW_REFRESH_TOKEN_KEY,
+  AIRGLOW_SESSION_TOKEN_KEY,
+  AIRGLOW_USER_ID_KEY,
+  USER_EMAIL_KEY,
+  type AirglowAuthState,
+  getStoredAirglowAuthState,
+  normalizeUserEmail,
+  signInAirglowWithGoogle,
+  signOutAirglowIdentity,
+} from '../../lib/airglow-identity';
 import { getCloudAppSourceUrl } from '../../lib/app-source-config';
 
 const DEV_PORT_KEY = '__dev_port';
@@ -175,6 +186,9 @@ export default function App() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
   const [emailInput, setEmailInput] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [authState, setAuthState] = useState<AirglowAuthState>({ authenticated: false });
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const [unseenErrorCount, setUnseenErrorCount] = useState(0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackKind, setFeedbackKind] = useState<FeedbackKind>('general');
@@ -377,6 +391,7 @@ export default function App() {
       setEmailInput(savedEmail);
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setGitPullDueRemote(!!result['__git_pull_due_remote']);
+      refreshAuthState().catch(() => setAuthState({ authenticated: false }));
       setIdentityLoaded(true);
       loadAll(port);
     });
@@ -394,7 +409,16 @@ export default function App() {
         const next = normalizeUserEmail(changes[USER_EMAIL_KEY].newValue) || '';
         setUserEmail(next || null);
         setEmailInput(next);
+        refreshAuthState().catch(() => setAuthState({ authenticated: false }));
         chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
+      }
+      if (
+        AIRGLOW_USER_ID_KEY in changes ||
+        AIRGLOW_SESSION_TOKEN_KEY in changes ||
+        AIRGLOW_REFRESH_TOKEN_KEY in changes ||
+        AIRGLOW_AUTH_PROVIDER_KEY in changes
+      ) {
+        refreshAuthState().catch(() => setAuthState({ authenticated: false }));
       }
       if ('__native_host_connected' in changes) {
         const v = changes['__native_host_connected'].newValue;
@@ -436,6 +460,54 @@ export default function App() {
     const id = setInterval(tick, 5000);
     return () => { cancelled = true; clearInterval(id); };
   }, [localOnline, devPort]);
+
+  async function refreshAuthState() {
+    const state = await getStoredAirglowAuthState();
+    setAuthState(state);
+    if (state.email) {
+      setUserEmail(state.email);
+      setEmailInput(state.email);
+    }
+  }
+
+  async function signInWithGoogle() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    setEmailError(null);
+    try {
+      const state = await signInAirglowWithGoogle();
+      setAuthState(state);
+      if (state.email) {
+        setUserEmail(state.email);
+        setEmailInput(state.email);
+      }
+      chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
+      await loadAll();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    if (authBusy || !window.confirm('Sign out of Airglow on this browser?')) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const state = await signOutAirglowIdentity();
+      setAuthState(state);
+      setUserEmail(null);
+      setEmailInput('');
+      chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
+      await loadAll();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
 
   function saveUserEmail() {
     const trimmed = normalizeUserEmail(emailInput);
@@ -1125,6 +1197,49 @@ export default function App() {
                   {localOnline === null ? '' : localOnline ? 'Online' : 'Offline'}
                 </span>
               </div>
+            </div>
+            <div className="px-1 pt-3">
+              <label className="text-base font-medium flex items-center gap-1.5" style={{ color: 'var(--fg-tertiary)' }}>
+                <Mail size={14} />
+                <span style={{ color: 'var(--olive)', fontWeight: 600 }}>Airglow</span> account
+              </label>
+              <div className="flex items-center gap-2 mt-1">
+                {authState.authenticated ? (
+                  <>
+                    <div
+                      className="min-w-0 flex-1 h-8 px-2 text-base rounded-sm border flex items-center"
+                      style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-secondary)' }}
+                      title={authState.userId || ''}
+                    >
+                      <span className="truncate">{authState.email || authState.userId || 'Signed in'}</span>
+                    </div>
+                    <button
+                      onClick={() => void signOut()}
+                      disabled={authBusy}
+                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
+                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                      data-testid="sign-out-button"
+                    >
+                      {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogOut size={14} />}
+                      Sign out
+                    </button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => void signInWithGoogle()}
+                    disabled={authBusy}
+                    className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
+                    style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                    data-testid="sign-in-google-button"
+                  >
+                    {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogIn size={14} />}
+                    Sign in with Google
+                  </button>
+                )}
+              </div>
+              {authError && (
+                <div className="text-sm mt-1" style={{ color: 'var(--error)' }}>{authError}</div>
+              )}
             </div>
             <div className="px-1 pt-3">
               <label className="text-base font-medium flex items-center gap-1.5" style={{ color: 'var(--fg-tertiary)' }}>

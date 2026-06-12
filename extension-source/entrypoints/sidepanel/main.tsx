@@ -2,7 +2,7 @@ import { Fragment, type FormEvent, type KeyboardEvent, type ReactNode, useEffect
 import { createRoot } from 'react-dom/client';
 import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, MessageSquare, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert, WandSparkles } from 'lucide-react';
+import { Check, CircleHelp, ExternalLink, LayoutDashboard, LayoutGrid, Loader2, LogIn, LogOut, MessageSquare, RefreshCw, Send, ShieldCheck, Sparkles, TriangleAlert, WandSparkles } from 'lucide-react';
 import './style.css';
 import type { SourcedManifest } from '../../lib/app-resolver';
 import {
@@ -18,6 +18,17 @@ import {
   draftRequestsCurrentPage,
   shouldStartNewAppDraftForPrompt,
 } from '../../lib/sidepanel-model';
+import {
+  AIRGLOW_AUTH_PROVIDER_KEY,
+  AIRGLOW_REFRESH_TOKEN_KEY,
+  AIRGLOW_SESSION_TOKEN_KEY,
+  AIRGLOW_USER_ID_KEY,
+  USER_EMAIL_KEY,
+  type AirglowAuthState,
+  getStoredAirglowAuthState,
+  signInAirglowWithGoogle,
+  signOutAirglowIdentity,
+} from '../../lib/airglow-identity';
 
 type TargetResponse = {
   target?: SidePanelTargetTab | null;
@@ -405,18 +416,25 @@ function RailButton({
 function SidePanelRail({
   activeView,
   generationBusy,
+  authState,
+  authBusy,
   onChat,
   onApps,
   onNewApp,
+  onAuth,
   onDashboard,
 }: {
   activeView: SidePanelView;
   generationBusy: boolean;
+  authState: AirglowAuthState;
+  authBusy: boolean;
   onChat: () => void;
   onApps: () => void;
   onNewApp: () => void;
+  onAuth: () => void;
   onDashboard: () => void;
 }) {
+  const signedIn = authState.authenticated;
   return (
     <nav className="sidepanel-rail" aria-label="Airglow sections">
       <div className="sidepanel-tabs-primary">
@@ -449,6 +467,15 @@ function SidePanelRail({
       </div>
 
       <div className="rail-bottom">
+        <RailButton
+          label={signedIn ? 'Account' : 'Sign in'}
+          tooltip={signedIn ? `Signed in${authState.email ? ` as ${authState.email}` : ''}` : 'Sign in with Google'}
+          icon={authBusy ? <Loader2 size={20} className="spin" /> : signedIn ? <LogOut size={20} /> : <LogIn size={20} />}
+          className={signedIn ? 'auth-tab signed-in' : 'auth-tab'}
+          disabled={authBusy}
+          onClick={onAuth}
+          ariaLabel={signedIn ? 'Sign out' : 'Sign in with Google'}
+        />
         <RailButton
           label="Dashboard"
           tooltip="Open dashboard"
@@ -676,6 +703,9 @@ function App() {
   const [appsLoading, setAppsLoading] = useState(false);
   const [appsError, setAppsError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<SidePanelView>('build');
+  const [authState, setAuthState] = useState<AirglowAuthState>({ authenticated: false });
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<AirglowAppDraft | null>(null);
 
@@ -795,6 +825,35 @@ function App() {
 
   useEffect(() => {
     void loadApps();
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = () => {
+      getStoredAirglowAuthState()
+        .then((state) => {
+          if (!cancelled) setAuthState(state);
+        })
+        .catch(() => {
+          if (!cancelled) setAuthState({ authenticated: false });
+        });
+    };
+    refresh();
+    const authKeys = new Set([
+      USER_EMAIL_KEY,
+      AIRGLOW_USER_ID_KEY,
+      AIRGLOW_SESSION_TOKEN_KEY,
+      AIRGLOW_REFRESH_TOKEN_KEY,
+      AIRGLOW_AUTH_PROVIDER_KEY,
+    ]);
+    const onStorageChanged = (changes: Record<string, chrome.storage.StorageChange>) => {
+      if (Object.keys(changes).some((key) => authKeys.has(key))) refresh();
+    };
+    chrome.storage.local.onChanged.addListener(onStorageChanged);
+    return () => {
+      cancelled = true;
+      chrome.storage.local.onChanged.removeListener(onStorageChanged);
+    };
   }, []);
 
   useEffect(() => {
@@ -993,6 +1052,25 @@ function App() {
     await sendRuntimeMessage({ type: 'airglow:open-dashboard' });
   }
 
+  async function handleAuthAction() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      if (authState.authenticated && !window.confirm('Sign out of Airglow on this browser?')) return;
+      const nextState = authState.authenticated
+        ? await signOutAirglowIdentity()
+        : await signInAirglowWithGoogle();
+      setAuthState(nextState);
+      await sendRuntimeMessage({ type: 'airglow:reload-apps' }).catch(() => {});
+      await loadApps();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   function hasUnsavedDraft(): boolean {
     if (!draft?.messages.length) return false;
     if (saveState === 'saved' || saveState === 'local') return false;
@@ -1104,9 +1182,12 @@ function App() {
         <SidePanelRail
           activeView={activeView}
           generationBusy={generationBusy}
+          authState={authState}
+          authBusy={authBusy}
           onChat={() => setActiveView('build')}
           onApps={showApps}
           onNewApp={startNewApp}
+          onAuth={handleAuthAction}
           onDashboard={() => void openDashboard()}
         />
         <section className="sidepanel-content">
@@ -1166,6 +1247,11 @@ function App() {
               {applyState === 'error' && (
                 <AssistantStatusMessage tone="error" title="Refresh failed">
                   {applyError || 'Could not refresh the target page.'}
+                </AssistantStatusMessage>
+              )}
+              {authError && (
+                <AssistantStatusMessage tone="error" title="Sign-in failed">
+                  {authError}
                 </AssistantStatusMessage>
               )}
               {draft && saveState !== 'saving' && (

@@ -183,6 +183,10 @@ button {
   font-size: 10px;
 }
 
+.sidepanel-tab.auth-tab.signed-in {
+  color: var(--ok);
+}
+
 .sidepanel-tab:disabled {
   cursor: default;
   color: var(--disabled-fg);

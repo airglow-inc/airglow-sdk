@@ -37,6 +37,26 @@ test('sidepanel private generation uses cloud identity, private endpoints, and r
   assert.match(sidepanelModel, /This Airglow Cloud server does not support private app save yet/);
 });
 
+test('extension surfaces Google sign-in for Airglow identity', async () => {
+  const identity = await readFile(new URL('../lib/airglow-identity.ts', import.meta.url), 'utf8');
+  const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
+  const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
+
+  assert.match(identity, /signInAirglowWithGoogle/);
+  assert.match(identity, /createClient/);
+  assert.match(identity, /signInWithOAuth/);
+  assert.match(identity, /exchangeCodeForSession/);
+  assert.match(identity, /chrome\.identity\.launchWebAuthFlow/);
+  assert.match(identity, /provider:\s*'google'/);
+  assert.match(identity, /\/api\/identity\/session/);
+  assert.match(sidepanel, /Sign in with Google/);
+  assert.match(sidepanel, /signInAirglowWithGoogle/);
+  assert.match(sidepanel, /signOutAirglowIdentity/);
+  assert.match(dashboard, /Sign in with Google/);
+  assert.match(dashboard, /sign-in-google-button/);
+  assert.match(dashboard, /signOutAirglowIdentity/);
+});
+
 test('dashboard can edit and delete owner-scoped private apps through background', async () => {
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
   const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
