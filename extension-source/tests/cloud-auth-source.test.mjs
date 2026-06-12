@@ -99,7 +99,7 @@ test('extension requires real account sign-in for Airglow identity', async () =>
 test('background clears runtime apps when the extension is signed out', async () => {
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
 
-  assert.match(background, /getStoredAirglowAuthState/);
+  assert.match(background, /getVerifiedAirglowAuthState/);
   assert.match(background, /clearRuntimeAppsForSignedOutUser/);
   assert.match(background, /\[APP_MANIFESTS_KEY\]: \[\]/);
   assert.match(background, /chrome\.userScripts\.unregister\(\)/);

@@ -19,7 +19,7 @@ import {
   AIRGLOW_USER_ID_KEY,
   USER_EMAIL_KEY,
   getAirglowIdentityHeaders,
-  getStoredAirglowAuthState,
+  getVerifiedAirglowAuthState,
   normalizeUserEmail,
 } from '../lib/airglow-identity';
 import { getCloudAppSourceUrl } from '../lib/app-source-config';
@@ -339,7 +339,7 @@ export default defineBackground(() => {
 
   async function loadAndRegisterApps(force = false, skipReload = false) {
     const gen = ++loadGeneration;
-    const authState = await getStoredAirglowAuthState().catch(() => ({ authenticated: false }));
+    const authState = await getVerifiedAirglowAuthState().catch(() => ({ authenticated: false }));
     if (!authState.authenticated) {
       await clearRuntimeAppsForSignedOutUser();
       return;

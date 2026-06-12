@@ -123,6 +123,14 @@ type AirglowIdentitySessionError = Error & {
   requestId?: string;
 };
 
+function isTerminalIdentitySessionError(error: unknown): boolean {
+  const sessionError = error as AirglowIdentitySessionError;
+  if (sessionError?.status === 401 || sessionError?.status === 403) return true;
+  return sessionError?.code === 'AIRGLOW_IDENTITY_REQUIRED'
+    || sessionError?.code === 'AIRGLOW_IDENTITY_INVALID'
+    || sessionError?.code === 'AIRGLOW_IDENTITY_ANONYMOUS';
+}
+
 function parseIdentityError(text: string): { message: string; code?: string; requestId?: string } {
   try {
     const json = JSON.parse(text);
@@ -373,6 +381,20 @@ export async function signOutAirglowIdentity(): Promise<AirglowAuthState> {
     AIRGLOW_USER_ID_KEY,
   ]);
   return { authenticated: false };
+}
+
+export async function getVerifiedAirglowAuthState(): Promise<AirglowAuthState> {
+  const storedState = await getStoredAirglowAuthState();
+  if (!storedState.authenticated) return storedState;
+  try {
+    await getAirglowIdentityHeaders({ requireSession: true });
+    return getStoredAirglowAuthState();
+  } catch (error) {
+    if (isTerminalIdentitySessionError(error)) {
+      return signOutAirglowIdentity();
+    }
+    return storedState;
+  }
 }
 
 export async function getAirglowIdentityHeaders(options: AirglowIdentityHeadersOptions = {}): Promise<AirglowIdentityHeaders> {

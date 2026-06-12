@@ -28,7 +28,7 @@ import {
   type AirglowAuthState,
   createAirglowAccountWithPassword,
   getAirglowAuthProviderConfig,
-  getStoredAirglowAuthState,
+  getVerifiedAirglowAuthState,
   signInAirglowWithGoogle,
   signInAirglowWithPassword,
   signOutAirglowIdentity,
@@ -976,7 +976,7 @@ function App() {
         }
       });
     const refresh = () => {
-      getStoredAirglowAuthState()
+      getVerifiedAirglowAuthState()
         .then((state) => {
           if (cancelled) return;
           setAuthState(state);

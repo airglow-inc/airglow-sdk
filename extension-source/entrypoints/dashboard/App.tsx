@@ -23,7 +23,7 @@ import {
   createAirglowAccountWithPassword,
   getAirglowAuthProviderConfig,
   getAirglowIdentityHeaders,
-  getStoredAirglowAuthState,
+  getVerifiedAirglowAuthState,
   normalizeUserEmail,
   signInAirglowWithGoogle,
   signInAirglowWithPassword,
@@ -299,7 +299,7 @@ export default function App() {
   }, []);
 
   async function loadAll(port?: number) {
-    const state = await getStoredAirglowAuthState().catch(() => ({ authenticated: false } as AirglowAuthState));
+    const state = await getVerifiedAirglowAuthState().catch(() => ({ authenticated: false } as AirglowAuthState));
     if (!state.authenticated) {
       setApps([]);
       setFullManifests([]);
@@ -494,7 +494,7 @@ export default function App() {
   }, [localOnline, devPort]);
 
   async function refreshAuthState() {
-    const state = await getStoredAirglowAuthState();
+    const state = await getVerifiedAirglowAuthState();
     setAuthState(state);
     if (state.email) {
       setUserEmail(state.email);

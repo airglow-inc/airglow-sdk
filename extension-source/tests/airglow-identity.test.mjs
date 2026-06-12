@@ -337,3 +337,74 @@ test('required identity headers reject signed-out users instead of creating anon
     await identity.cleanup();
   }
 });
+
+test('verified auth state signs out terminally rejected sessions', async () => {
+  const identity = await loadIdentityModule();
+  const { store } = installChromeStub();
+  Object.assign(store, {
+    __airglow_session_token: 'stale-token',
+    __airglow_refresh_token: 'stale-refresh',
+    __airglow_user_id: 'supabase:user-123',
+    __airglow_user_email: 'user@example.com',
+    __airglow_auth_provider: 'email',
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url) === 'https://cloud.test/api/identity/session') {
+      return new Response(JSON.stringify({
+        error: {
+          code: 'AIRGLOW_IDENTITY_INVALID',
+          message: 'Airglow identity session is invalid',
+          requestId: 'req-invalid',
+        },
+      }), { status: 401, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    assert.deepEqual(await identity.getVerifiedAirglowAuthState(), { authenticated: false });
+    assert.deepEqual(store, {});
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
+
+test('verified auth state keeps local state on transient cloud failures', async () => {
+  const identity = await loadIdentityModule();
+  const { store } = installChromeStub();
+  Object.assign(store, {
+    __airglow_session_token: 'valid-looking-token',
+    __airglow_refresh_token: 'valid-looking-refresh',
+    __airglow_user_id: 'supabase:user-123',
+    __airglow_user_email: 'user@example.com',
+    __airglow_auth_provider: 'email',
+  });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url) === 'https://cloud.test/api/identity/session') {
+      return new Response('temporary outage', { status: 503 });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    assert.deepEqual(await identity.getVerifiedAirglowAuthState(), {
+      authenticated: true,
+      userId: 'supabase:user-123',
+      email: 'user@example.com',
+      provider: 'email',
+    });
+    assert.equal(store.__airglow_session_token, 'valid-looking-token');
+    assert.equal(store.__airglow_refresh_token, 'valid-looking-refresh');
+    assert.equal(store.__airglow_user_id, 'supabase:user-123');
+    assert.equal(store.__airglow_user_email, 'user@example.com');
+    assert.equal(store.__airglow_auth_provider, 'email');
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
