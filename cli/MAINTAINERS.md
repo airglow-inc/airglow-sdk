@@ -40,7 +40,7 @@ airglow upload <app-id-or-path> [options]
 |---|---|---|
 | `POST` | `/api/admin/apps/upload` | Upload zipped archive, returns `{ appKey, versionKey }` |
 | `POST` | `/api/admin/apps/<appKey>/versions/<versionKey>/publish` | Publish version (only with `--publish`) |
-| `GET` | `/api/apps/manifests` | Visibility check (only with `--publish` and either `--visible-to` or `--visibility development`) |
+| `GET` | `/api/apps/manifests` | Visibility check with Admin Basic auth plus viewer headers (only with `--publish` and either `--visible-to` or `--visibility development`) |
 
 All admin endpoints use HTTP Basic auth.
 

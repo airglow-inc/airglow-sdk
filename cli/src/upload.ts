@@ -74,6 +74,7 @@ export async function upload(opts: UploadOptions): Promise<void> {
   if (opts.visibleTo && opts.publish) {
     await assertManifestVisible({
       cloudUrl,
+      authHeader,
       appId: uploadResult.appKey,
       userEmail: opts.visibleTo,
     });
@@ -81,6 +82,7 @@ export async function upload(opts: UploadOptions): Promise<void> {
   } else if (visibility === 'development' && opts.publish) {
     await assertManifestVisible({
       cloudUrl,
+      authHeader,
       appId: uploadResult.appKey,
       userEmail: DEFAULT_DEV_EMAIL,
     });
@@ -242,9 +244,10 @@ async function publishVersion(input: {
   if (!res.ok) throw new Error(`publish failed (${res.status}): ${body?.error || JSON.stringify(body)}`);
 }
 
-async function assertManifestVisible(input: { cloudUrl: string; appId: string; userEmail: string }): Promise<void> {
+async function assertManifestVisible(input: { cloudUrl: string; authHeader: string; appId: string; userEmail: string }): Promise<void> {
   const res = await fetch(`${input.cloudUrl}/api/apps/manifests`, {
     headers: {
+      Authorization: input.authHeader,
       'X-Airglow-User-Id': 'airglow-cli',
       'X-Airglow-User-Email': input.userEmail,
     },
