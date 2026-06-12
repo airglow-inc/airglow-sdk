@@ -57,7 +57,7 @@ export type AirglowAuthState = {
   authenticated: boolean;
   userId?: string;
   email?: string;
-  provider?: string;
+  provider?: 'airglow' | 'google';
 };
 
 type PublicRuntimeConfig = {
@@ -101,11 +101,12 @@ export async function getStoredAirglowAuthState(): Promise<AirglowAuthState> {
   const email = normalizeUserEmail(stored[USER_EMAIL_KEY]);
   const provider = typeof stored[AIRGLOW_AUTH_PROVIDER_KEY] === 'string' ? stored[AIRGLOW_AUTH_PROVIDER_KEY] : '';
   const token = typeof stored[AIRGLOW_SESSION_TOKEN_KEY] === 'string' ? stored[AIRGLOW_SESSION_TOKEN_KEY] : '';
+  const signedInProvider = provider === 'airglow' || provider === 'google' ? provider : undefined;
   return {
-    authenticated: Boolean(token && userId.startsWith('supabase:') && provider === 'google'),
+    authenticated: Boolean(token && userId.startsWith('supabase:') && signedInProvider),
     ...(userId ? { userId } : {}),
     ...(email ? { email } : {}),
-    ...(provider ? { provider } : {}),
+    ...(signedInProvider ? { provider: signedInProvider } : {}),
   };
 }
 
@@ -270,6 +271,37 @@ export async function signInAirglowWithGoogle(): Promise<AirglowAuthState> {
     userId,
     ...(email ? { email } : {}),
     provider: 'google',
+  };
+}
+
+export async function signInAirglowIdentity(): Promise<AirglowAuthState> {
+  const session = await fetchIdentitySession();
+  const token = session.accessToken || '';
+  const refreshToken = session.refreshToken || '';
+  const userId = typeof session.userId === 'string' && session.userId ? session.userId : '';
+  const email = normalizeUserEmail(session.userEmail);
+  if (!token) throw new Error('Airglow sign-in did not return an access token.');
+  if (!userId) throw new Error('Airglow sign-in did not return a user id.');
+
+  const updates: Record<string, string> = {
+    [AIRGLOW_SESSION_TOKEN_KEY]: token,
+    [AIRGLOW_USER_ID_KEY]: userId,
+    [AIRGLOW_AUTH_PROVIDER_KEY]: 'airglow',
+  };
+  if (refreshToken) updates[AIRGLOW_REFRESH_TOKEN_KEY] = refreshToken;
+  if (email) updates[USER_EMAIL_KEY] = email;
+  await chrome.storage.local.set(updates);
+
+  const removals: string[] = [];
+  if (!refreshToken) removals.push(AIRGLOW_REFRESH_TOKEN_KEY);
+  if (!email) removals.push(USER_EMAIL_KEY);
+  if (removals.length > 0) await chrome.storage.local.remove(removals);
+
+  return {
+    authenticated: true,
+    userId,
+    ...(email ? { email } : {}),
+    provider: 'airglow',
   };
 }
 

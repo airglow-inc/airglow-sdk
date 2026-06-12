@@ -21,6 +21,7 @@ import {
   type AirglowAuthState,
   getStoredAirglowAuthState,
   normalizeUserEmail,
+  signInAirglowIdentity,
   signInAirglowWithGoogle,
   signOutAirglowIdentity,
 } from '../../lib/airglow-identity';
@@ -477,6 +478,27 @@ export default function App() {
     setEmailError(null);
     try {
       const state = await signInAirglowWithGoogle();
+      setAuthState(state);
+      if (state.email) {
+        setUserEmail(state.email);
+        setEmailInput(state.email);
+      }
+      chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
+      await loadAll();
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signInWithAirglow() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    setEmailError(null);
+    try {
+      const state = await signInAirglowIdentity();
       setAuthState(state);
       if (state.email) {
         setUserEmail(state.email);
@@ -1225,16 +1247,29 @@ export default function App() {
                     </button>
                   </>
                 ) : (
-                  <button
-                    onClick={() => void signInWithGoogle()}
-                    disabled={authBusy}
-                    className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
-                    style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                    data-testid="sign-in-google-button"
-                  >
-                    {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogIn size={14} />}
-                    Sign in with Google
-                  </button>
+                  <>
+                    <button
+                      onClick={() => void signInWithAirglow()}
+                      disabled={authBusy}
+                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
+                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                      data-testid="sign-in-airglow-button"
+                    >
+                      {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogIn size={14} />}
+                      Sign in
+                    </button>
+                    <button
+                      onClick={() => void signInWithGoogle()}
+                      disabled={authBusy}
+                      aria-label="Sign in with Google"
+                      title="Sign in with Google"
+                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
+                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                      data-testid="sign-in-google-button"
+                    >
+                      Google
+                    </button>
+                  </>
                 )}
               </div>
               {authError && (

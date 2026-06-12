@@ -26,7 +26,7 @@ import {
   USER_EMAIL_KEY,
   type AirglowAuthState,
   getStoredAirglowAuthState,
-  signInAirglowWithGoogle,
+  signInAirglowIdentity,
   signOutAirglowIdentity,
 } from '../../lib/airglow-identity';
 
@@ -472,12 +472,12 @@ function SidePanelRail({
       <div className="rail-bottom">
         <RailButton
           label={signedIn ? 'Account' : 'Sign in'}
-          tooltip={signedIn ? `Signed in${authState.email ? ` as ${authState.email}` : ''}` : 'Sign in with Google'}
+          tooltip={signedIn ? `Signed in${authState.email ? ` as ${authState.email}` : ''}` : 'Sign in to Airglow'}
           icon={authBusy ? <Loader2 size={20} className="spin" /> : signedIn ? <LogOut size={20} /> : <LogIn size={20} />}
           className={signedIn ? 'auth-tab signed-in' : 'auth-tab'}
           disabled={authBusy}
           onClick={onAuth}
-          ariaLabel={signedIn ? 'Sign out' : 'Sign in with Google'}
+          ariaLabel={signedIn ? 'Sign out' : 'Sign in to Airglow'}
         />
         <RailButton
           label="Dashboard"
@@ -1067,7 +1067,7 @@ function App() {
     try {
       const nextState = authState.authenticated
         ? await signOutAirglowIdentity()
-        : await signInAirglowWithGoogle();
+        : await signInAirglowIdentity();
       setAuthState(nextState);
       await sendRuntimeMessage({ type: 'airglow:reload-apps' }).catch(() => {});
       await loadApps();

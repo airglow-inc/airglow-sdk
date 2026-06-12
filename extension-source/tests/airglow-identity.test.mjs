@@ -175,6 +175,41 @@ test('Airglow sign-out clears stored auth identity', async () => {
   }
 });
 
+test('Airglow first-party sign-in stores an explicit Airglow auth state', async () => {
+  const identity = await loadIdentityModule();
+  const { store } = installChromeStub();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url) === 'https://cloud.test/api/identity/session') {
+      assert.equal(init.headers.Authorization, undefined);
+      assert.deepEqual(JSON.parse(String(init.body)), {});
+      return new Response(JSON.stringify({
+        ok: true,
+        accessToken: 'airglow-access',
+        refreshToken: 'airglow-refresh',
+        userId: 'supabase:airglow-user',
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    assert.deepEqual(await identity.signInAirglowIdentity(), {
+      authenticated: true,
+      userId: 'supabase:airglow-user',
+      provider: 'airglow',
+    });
+    assert.equal(store.__airglow_session_token, 'airglow-access');
+    assert.equal(store.__airglow_refresh_token, 'airglow-refresh');
+    assert.equal(store.__airglow_user_id, 'supabase:airglow-user');
+    assert.equal(store.__airglow_auth_provider, 'airglow');
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
+
 test('anonymous Supabase sessions do not make the UI look Google signed-in', async () => {
   const identity = await loadIdentityModule();
   const { store } = installChromeStub();
@@ -188,6 +223,12 @@ test('anonymous Supabase sessions do not make the UI look Google signed-in', asy
     assert.deepEqual(await identity.getStoredAirglowAuthState(), {
       authenticated: false,
       userId: 'supabase:anonymous-user',
+    });
+    store.__airglow_auth_provider = 'airglow';
+    assert.deepEqual(await identity.getStoredAirglowAuthState(), {
+      authenticated: true,
+      userId: 'supabase:anonymous-user',
+      provider: 'airglow',
     });
     store.__airglow_auth_provider = 'google';
     assert.deepEqual(await identity.getStoredAirglowAuthState(), {
