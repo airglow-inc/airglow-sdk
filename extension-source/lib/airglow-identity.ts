@@ -57,7 +57,7 @@ export type AirglowAuthState = {
   authenticated: boolean;
   userId?: string;
   email?: string;
-  provider?: 'airglow' | 'google';
+  provider?: 'email' | 'google';
 };
 
 type PublicRuntimeConfig = {
@@ -101,7 +101,7 @@ export async function getStoredAirglowAuthState(): Promise<AirglowAuthState> {
   const email = normalizeUserEmail(stored[USER_EMAIL_KEY]);
   const provider = typeof stored[AIRGLOW_AUTH_PROVIDER_KEY] === 'string' ? stored[AIRGLOW_AUTH_PROVIDER_KEY] : '';
   const token = typeof stored[AIRGLOW_SESSION_TOKEN_KEY] === 'string' ? stored[AIRGLOW_SESSION_TOKEN_KEY] : '';
-  const signedInProvider = provider === 'airglow' || provider === 'google' ? provider : undefined;
+  const signedInProvider = provider === 'email' || provider === 'google' ? provider : undefined;
   return {
     authenticated: Boolean(token && userId.startsWith('supabase:') && signedInProvider),
     ...(userId ? { userId } : {}),
@@ -208,12 +208,62 @@ function createSupabaseAuthClient(supabaseUrl: string, publishableKey: string) {
   });
 }
 
-export async function signInAirglowWithGoogle(): Promise<AirglowAuthState> {
+async function fetchSupabaseAuthConfig(): Promise<{ supabaseUrl: string; publishableKey: string; googleOAuthEnabled: boolean }> {
   const config = await fetchPublicRuntimeConfig();
   const identity = config.identity || {};
   const supabaseUrl = String(identity.supabaseUrl || '').replace(/\/+$/, '');
   const publishableKey = String(identity.supabasePublishableKey || '').trim();
-  if (!identity.googleOAuthEnabled || !supabaseUrl || !publishableKey) {
+  return {
+    supabaseUrl,
+    publishableKey,
+    googleOAuthEnabled: Boolean(identity.googleOAuthEnabled),
+  };
+}
+
+async function persistAuthenticatedSupabaseSession({
+  accessToken,
+  refreshToken,
+  provider,
+  fallbackEmail,
+}: {
+  accessToken: string;
+  refreshToken?: string;
+  provider: 'email' | 'google';
+  fallbackEmail?: string;
+}): Promise<AirglowAuthState> {
+  if (!accessToken) throw new Error('Airglow sign-in did not return an access token.');
+  const session = await fetchIdentitySession(accessToken, refreshToken || undefined);
+  const token = session.accessToken || accessToken;
+  const nextRefreshToken = session.refreshToken || refreshToken || '';
+  const userId = typeof session.userId === 'string' && session.userId ? session.userId : '';
+  const email = normalizeUserEmail(session.userEmail) || normalizeUserEmail(fallbackEmail);
+  if (!userId) throw new Error('Airglow sign-in did not return a user id.');
+
+  const updates: Record<string, string> = {
+    [AIRGLOW_SESSION_TOKEN_KEY]: token,
+    [AIRGLOW_USER_ID_KEY]: userId,
+    [AIRGLOW_AUTH_PROVIDER_KEY]: provider,
+  };
+  if (nextRefreshToken) updates[AIRGLOW_REFRESH_TOKEN_KEY] = nextRefreshToken;
+  if (email) updates[USER_EMAIL_KEY] = email;
+  await chrome.storage.local.set(updates);
+
+  const removals: string[] = [];
+  if (!nextRefreshToken) removals.push(AIRGLOW_REFRESH_TOKEN_KEY);
+  if (!email) removals.push(USER_EMAIL_KEY);
+  if (removals.length > 0) await chrome.storage.local.remove(removals);
+
+  return {
+    authenticated: true,
+    userId,
+    ...(email ? { email } : {}),
+    provider,
+  };
+}
+
+export async function signInAirglowWithGoogle(): Promise<AirglowAuthState> {
+  const { supabaseUrl, publishableKey, googleOAuthEnabled } = await fetchSupabaseAuthConfig();
+  if (!googleOAuthEnabled || !supabaseUrl || !publishableKey) {
     throw new Error('Google sign-in is not configured for this Airglow Cloud server.');
   }
 
@@ -244,65 +294,56 @@ export async function signInAirglowWithGoogle(): Promise<AirglowAuthState> {
     accessToken = exchanged.data.session?.access_token || '';
     refreshToken = exchanged.data.session?.refresh_token || '';
   }
-  if (!accessToken) throw new Error('Google sign-in did not return an access token.');
-
-  const session = await fetchIdentitySession(accessToken, refreshToken || undefined);
-  const token = session.accessToken || accessToken;
-  const nextRefreshToken = session.refreshToken || refreshToken;
-  const userId = typeof session.userId === 'string' && session.userId ? session.userId : '';
-  const email = normalizeUserEmail(session.userEmail);
-  if (!userId) throw new Error('Google sign-in did not return an Airglow user id.');
-
-  const updates: Record<string, string> = {
-    [AIRGLOW_SESSION_TOKEN_KEY]: token,
-    [AIRGLOW_USER_ID_KEY]: userId,
-    [AIRGLOW_AUTH_PROVIDER_KEY]: 'google',
-  };
-  if (nextRefreshToken) updates[AIRGLOW_REFRESH_TOKEN_KEY] = nextRefreshToken;
-  if (email) updates[USER_EMAIL_KEY] = email;
-  await chrome.storage.local.set(updates);
-  const removals: string[] = [];
-  if (!nextRefreshToken) removals.push(AIRGLOW_REFRESH_TOKEN_KEY);
-  if (!email) removals.push(USER_EMAIL_KEY);
-  if (removals.length > 0) await chrome.storage.local.remove(removals);
-
-  return {
-    authenticated: true,
-    userId,
-    ...(email ? { email } : {}),
+  return persistAuthenticatedSupabaseSession({
+    accessToken,
+    refreshToken,
     provider: 'google',
-  };
+  });
 }
 
-export async function signInAirglowIdentity(): Promise<AirglowAuthState> {
-  const session = await fetchIdentitySession();
-  const token = session.accessToken || '';
-  const refreshToken = session.refreshToken || '';
-  const userId = typeof session.userId === 'string' && session.userId ? session.userId : '';
-  const email = normalizeUserEmail(session.userEmail);
-  if (!token) throw new Error('Airglow sign-in did not return an access token.');
-  if (!userId) throw new Error('Airglow sign-in did not return a user id.');
+export async function signInAirglowWithPassword(emailInput: string, password: string): Promise<AirglowAuthState> {
+  const email = normalizeUserEmail(emailInput);
+  if (!email) throw new Error('Enter a valid email address.');
+  if (!password) throw new Error('Enter your password.');
+  const { supabaseUrl, publishableKey } = await fetchSupabaseAuthConfig();
+  if (!supabaseUrl || !publishableKey) {
+    throw new Error('Airglow account sign-in is not configured for this Airglow Cloud server.');
+  }
+  const supabase = createSupabaseAuthClient(supabaseUrl, publishableKey);
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  if (error) throw error;
+  const accessToken = data.session?.access_token || '';
+  const refreshToken = data.session?.refresh_token || '';
+  return persistAuthenticatedSupabaseSession({
+    accessToken,
+    refreshToken,
+    provider: 'email',
+    fallbackEmail: data.user?.email || email,
+  });
+}
 
-  const updates: Record<string, string> = {
-    [AIRGLOW_SESSION_TOKEN_KEY]: token,
-    [AIRGLOW_USER_ID_KEY]: userId,
-    [AIRGLOW_AUTH_PROVIDER_KEY]: 'airglow',
-  };
-  if (refreshToken) updates[AIRGLOW_REFRESH_TOKEN_KEY] = refreshToken;
-  if (email) updates[USER_EMAIL_KEY] = email;
-  await chrome.storage.local.set(updates);
-
-  const removals: string[] = [];
-  if (!refreshToken) removals.push(AIRGLOW_REFRESH_TOKEN_KEY);
-  if (!email) removals.push(USER_EMAIL_KEY);
-  if (removals.length > 0) await chrome.storage.local.remove(removals);
-
-  return {
-    authenticated: true,
-    userId,
-    ...(email ? { email } : {}),
-    provider: 'airglow',
-  };
+export async function createAirglowAccountWithPassword(emailInput: string, password: string): Promise<AirglowAuthState> {
+  const email = normalizeUserEmail(emailInput);
+  if (!email) throw new Error('Enter a valid email address.');
+  if (password.length < 8) throw new Error('Password must be at least 8 characters.');
+  const { supabaseUrl, publishableKey } = await fetchSupabaseAuthConfig();
+  if (!supabaseUrl || !publishableKey) {
+    throw new Error('Airglow account sign-up is not configured for this Airglow Cloud server.');
+  }
+  const supabase = createSupabaseAuthClient(supabaseUrl, publishableKey);
+  const { data, error } = await supabase.auth.signUp({ email, password });
+  if (error) throw error;
+  const accessToken = data.session?.access_token || '';
+  const refreshToken = data.session?.refresh_token || '';
+  if (!accessToken) {
+    throw new Error('Check your email to confirm your Airglow account, then sign in.');
+  }
+  return persistAuthenticatedSupabaseSession({
+    accessToken,
+    refreshToken,
+    provider: 'email',
+    fallbackEmail: data.user?.email || email,
+  });
 }
 
 export async function signOutAirglowIdentity(): Promise<AirglowAuthState> {
@@ -317,6 +358,12 @@ export async function signOutAirglowIdentity(): Promise<AirglowAuthState> {
 }
 
 export async function getAirglowIdentityHeaders(options: AirglowIdentityHeadersOptions = {}): Promise<AirglowIdentityHeaders> {
+  const authState = await getStoredAirglowAuthState();
+  if (!authState.authenticated) {
+    if (options.requireSession) throw new Error('Sign in to Airglow to continue.');
+    const identity = await getAirglowIdentity();
+    return buildIdentityHeaders(identity);
+  }
   const identity = await getAirglowIdentity();
   const stored = await chrome.storage.local.get([AIRGLOW_SESSION_TOKEN_KEY, AIRGLOW_REFRESH_TOKEN_KEY]);
   const existingToken = typeof stored[AIRGLOW_SESSION_TOKEN_KEY] === 'string' ? stored[AIRGLOW_SESSION_TOKEN_KEY] : '';

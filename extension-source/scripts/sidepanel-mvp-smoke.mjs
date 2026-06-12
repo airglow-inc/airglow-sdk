@@ -644,8 +644,11 @@ async function main() {
     const serviceWorkerSession = await attach(cdp, serviceWorker.targetId);
     await evaluate(cdp, serviceWorkerSession, `
       chrome.storage.local.set({
-        __airglow_user_id: 'browser-smoke-owner',
+        __airglow_session_token: 'mock-access-owner',
+        __airglow_refresh_token: 'mock-refresh-owner',
+        __airglow_user_id: 'supabase:browser-smoke-owner',
         __airglow_user_email: 'browser-smoke@airglow.local',
+        __airglow_auth_provider: 'email',
         __airglow_skip_dev_seed: true
       })
     `);

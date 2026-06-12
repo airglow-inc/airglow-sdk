@@ -12,7 +12,16 @@ import {
 import { APP_INVENTORY_MANIFESTS_KEY, APP_MANIFESTS_KEY, APP_SOURCES_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, cleanupDevSecrets, type AppManifest, type AppSource, type AppSourceOverrides, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackInstalled } from '../lib/analytics';
-import { USER_EMAIL_KEY, getAirglowIdentityHeaders, normalizeUserEmail } from '../lib/airglow-identity';
+import {
+  AIRGLOW_AUTH_PROVIDER_KEY,
+  AIRGLOW_REFRESH_TOKEN_KEY,
+  AIRGLOW_SESSION_TOKEN_KEY,
+  AIRGLOW_USER_ID_KEY,
+  USER_EMAIL_KEY,
+  getAirglowIdentityHeaders,
+  getStoredAirglowAuthState,
+  normalizeUserEmail,
+} from '../lib/airglow-identity';
 import { getCloudAppSourceUrl } from '../lib/app-source-config';
 import {
   SIDEPANEL_DRAFTS_KEY,
@@ -312,8 +321,29 @@ export default defineBackground(() => {
     }
   });
 
+  async function clearRuntimeAppsForSignedOutUser() {
+    lastAppHashes.clear();
+    dashboardAppManifests = [];
+    setAppManifests([]);
+    await chrome.storage.local.set({
+      [APP_SOURCES_KEY]: {},
+      [APP_MANIFESTS_KEY]: [],
+      [APP_INVENTORY_MANIFESTS_KEY]: [],
+    });
+    try {
+      if (chrome.userScripts) await chrome.userScripts.unregister();
+    } catch (error) {
+      logger.warn('airglow', `signed-out userscript cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   async function loadAndRegisterApps(force = false, skipReload = false) {
     const gen = ++loadGeneration;
+    const authState = await getStoredAirglowAuthState().catch(() => ({ authenticated: false }));
+    if (!authState.authenticated) {
+      await clearRuntimeAppsForSignedOutUser();
+      return;
+    }
     // If the user just flipped "Allow User Scripts" on, force re-registration:
     // chrome.userScripts works again, but the per-app hash gate below would
     // otherwise skip re-running registerAllUserscripts and leave userscripts
@@ -480,9 +510,15 @@ export default defineBackground(() => {
   scheduleLocalManifestPolling();
 
   chrome.storage.local.onChanged.addListener((changes) => {
-    if (USER_EMAIL_KEY in changes) {
+    if (
+      USER_EMAIL_KEY in changes ||
+      AIRGLOW_USER_ID_KEY in changes ||
+      AIRGLOW_SESSION_TOKEN_KEY in changes ||
+      AIRGLOW_REFRESH_TOKEN_KEY in changes ||
+      AIRGLOW_AUTH_PROVIDER_KEY in changes
+    ) {
       loadAndRegisterApps(true, true).catch((e) =>
-        logger.error('airglow', `email-scoped app refresh failed: ${e}`)
+        logger.error('airglow', `auth-scoped app refresh failed: ${e}`)
       );
     }
   });

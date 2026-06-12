@@ -427,11 +427,22 @@ async function main() {
   try {
     const loaded = await cdp.send('Extensions.loadUnpacked', { path: patched.extensionDir });
     const extensionId = loaded.id;
-    await waitForTarget(
+    const serviceWorker = await waitForTarget(
       cdp,
       (target) => target.type === 'service_worker' && target.url.includes(extensionId),
       'extension service worker',
     );
+    const serviceWorkerSession = await attach(cdp, serviceWorker.targetId);
+    await evaluate(cdp, serviceWorkerSession, `
+      chrome.storage.local.set({
+        __airglow_session_token: 'mock-browser-tool-access-token',
+        __airglow_refresh_token: 'mock-browser-tool-refresh-token',
+        __airglow_user_id: 'supabase:browser-tool-smoke-owner',
+        __airglow_user_email: 'browser-tool-smoke@airglow.local',
+        __airglow_auth_provider: 'email',
+        __airglow_skip_dev_seed: true
+      })
+    `);
 
     const targetPage = await openPage(cdp, targetSite.targetUrl);
     const pageText = await evaluate(cdp, targetPage.sessionId, 'document.body.innerText');

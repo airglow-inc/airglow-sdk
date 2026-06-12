@@ -25,8 +25,10 @@ import {
   AIRGLOW_USER_ID_KEY,
   USER_EMAIL_KEY,
   type AirglowAuthState,
+  createAirglowAccountWithPassword,
   getStoredAirglowAuthState,
-  signInAirglowIdentity,
+  signInAirglowWithGoogle,
+  signInAirglowWithPassword,
   signOutAirglowIdentity,
 } from '../../lib/airglow-identity';
 
@@ -445,14 +447,16 @@ function SidePanelRail({
           label="Chat"
           tooltip="Chat"
           icon={<MessageSquare size={20} />}
-          active={activeView === 'build'}
+          active={signedIn && activeView === 'build'}
+          disabled={!signedIn}
           onClick={onChat}
         />
         <RailButton
           label="Apps"
           tooltip="Apps"
           icon={<LayoutGrid size={20} />}
-          active={activeView === 'apps'}
+          active={signedIn && activeView === 'apps'}
+          disabled={!signedIn}
           onClick={onApps}
         />
       </div>
@@ -463,7 +467,7 @@ function SidePanelRail({
           tooltip="Start a new app"
           icon={<WandSparkles size={20} />}
           className="create-tab"
-          disabled={generationBusy}
+          disabled={generationBusy || !signedIn}
           onClick={onNewApp}
           ariaLabel="New app"
         />
@@ -471,8 +475,8 @@ function SidePanelRail({
 
       <div className="rail-bottom">
         <RailButton
-          label={signedIn ? 'Account' : 'Sign in'}
-          tooltip={signedIn ? `Signed in${authState.email ? ` as ${authState.email}` : ''}` : 'Sign in to Airglow'}
+          label={signedIn ? 'Sign out' : 'Sign in'}
+          tooltip={signedIn ? `Sign out${authState.email ? ` ${authState.email}` : ''}` : 'Sign in to Airglow'}
           icon={authBusy ? <Loader2 size={20} className="spin" /> : signedIn ? <LogOut size={20} /> : <LogIn size={20} />}
           className={signedIn ? 'auth-tab signed-in' : 'auth-tab'}
           disabled={authBusy}
@@ -488,6 +492,90 @@ function SidePanelRail({
         />
       </div>
     </nav>
+  );
+}
+
+function AuthGate({
+  authBusy,
+  authError,
+  email,
+  password,
+  mode,
+  onEmailChange,
+  onPasswordChange,
+  onModeChange,
+  onPasswordSubmit,
+  onGoogleSignIn,
+}: {
+  authBusy: boolean;
+  authError: string | null;
+  email: string;
+  password: string;
+  mode: 'sign-in' | 'create';
+  onEmailChange: (value: string) => void;
+  onPasswordChange: (value: string) => void;
+  onModeChange: (mode: 'sign-in' | 'create') => void;
+  onPasswordSubmit: () => void;
+  onGoogleSignIn: () => void;
+}) {
+  const createMode = mode === 'create';
+  return (
+    <section className="auth-gate" aria-label="Airglow sign in">
+      <div className="auth-gate-panel">
+        <div className="auth-gate-mark">
+          <ShieldCheck size={22} />
+        </div>
+        <h1>Sign in to Airglow</h1>
+        <p>Airglow apps, page injection, and cloud generation require an account.</p>
+        <button
+          type="button"
+          className="auth-google-button"
+          onClick={onGoogleSignIn}
+          disabled={authBusy}
+        >
+          {authBusy ? <Loader2 size={16} className="spin" /> : <LogIn size={16} />}
+          Sign in with Google
+        </button>
+        <div className="auth-divider"><span>or</span></div>
+        <form
+          className="auth-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onPasswordSubmit();
+          }}
+        >
+          <input
+            type="email"
+            value={email}
+            onChange={(event) => onEmailChange(event.target.value)}
+            placeholder="Email"
+            autoComplete="email"
+            disabled={authBusy}
+          />
+          <input
+            type="password"
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+            placeholder="Password"
+            autoComplete={createMode ? 'new-password' : 'current-password'}
+            disabled={authBusy}
+          />
+          <button type="submit" className="auth-submit-button" disabled={authBusy}>
+            {authBusy ? <Loader2 size={16} className="spin" /> : <LogIn size={16} />}
+            {createMode ? 'Create account' : 'Sign in'}
+          </button>
+        </form>
+        <button
+          type="button"
+          className="auth-mode-button"
+          onClick={() => onModeChange(createMode ? 'sign-in' : 'create')}
+          disabled={authBusy}
+        >
+          {createMode ? 'I already have an account' : 'Create an Airglow account'}
+        </button>
+        {authError && <div className="auth-error">{authError}</div>}
+      </div>
+    </section>
   );
 }
 
@@ -712,8 +800,12 @@ function App() {
   const [appsError, setAppsError] = useState<string | null>(null);
   const [activeView, setActiveView] = useState<SidePanelView>('build');
   const [authState, setAuthState] = useState<AirglowAuthState>({ authenticated: false });
+  const [authLoaded, setAuthLoaded] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authMode, setAuthMode] = useState<'sign-in' | 'create'>('sign-in');
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<AirglowAppDraft | null>(null);
 
@@ -744,6 +836,12 @@ function App() {
   }
 
   async function loadApps() {
+    if (!authState.authenticated) {
+      setApps([]);
+      setAppsLoading(false);
+      setAppsError(null);
+      return;
+    }
     setAppsLoading(true);
     setAppsError(null);
     try {
@@ -757,6 +855,7 @@ function App() {
   }
 
   useEffect(() => {
+    if (!authLoaded || !authState.authenticated) return;
     let cancelled = false;
     let timer: number | null = null;
 
@@ -829,21 +928,33 @@ function App() {
       cancelled = true;
       stopPolling();
     };
-  }, []);
+  }, [authLoaded, authState.authenticated]);
 
   useEffect(() => {
+    if (!authLoaded) return;
+    if (!authState.authenticated) {
+      setApps([]);
+      setAppsLoading(false);
+      setAppsError(null);
+      return;
+    }
     void loadApps();
-  }, []);
+  }, [authLoaded, authState.authenticated]);
 
   useEffect(() => {
     let cancelled = false;
     const refresh = () => {
       getStoredAirglowAuthState()
         .then((state) => {
-          if (!cancelled) setAuthState(state);
+          if (cancelled) return;
+          setAuthState(state);
+          if (state.email) setAuthEmail(state.email);
         })
         .catch(() => {
           if (!cancelled) setAuthState({ authenticated: false });
+        })
+        .finally(() => {
+          if (!cancelled) setAuthLoaded(true);
         });
     };
     refresh();
@@ -871,7 +982,7 @@ function App() {
   }, [draft?.messages.length, draft?.target?.id, generationPhase, saveState, generationRunEvents.length, applyState, saveError, applyError]);
 
   const generationBusy = generationPhase === 'reading_context' || generationPhase === 'generating' || saveState === 'saving';
-  const canSend = chatInput.trim().length > 0 && !generationBusy;
+  const canSend = authState.authenticated && chatInput.trim().length > 0 && !generationBusy;
 
   const disclosureText = useMemo(() => {
     if (loadingTarget) return 'Reading selected page context for this app request.';
@@ -1048,6 +1159,7 @@ function App() {
   }
 
   async function openApp(appId: string) {
+    if (!authState.authenticated) return;
     await sendRuntimeMessage({ type: 'airglow:open-app', appId });
   }
 
@@ -1060,17 +1172,60 @@ function App() {
     await sendRuntimeMessage({ type: 'airglow:open-dashboard' });
   }
 
-  async function handleAuthAction() {
+  async function applyAuthState(nextState: AirglowAuthState) {
+    setAuthState(nextState);
+    if (nextState.email) setAuthEmail(nextState.email);
+    await sendRuntimeMessage({ type: 'airglow:reload-apps' }).catch(() => {});
+  }
+
+  async function handleGoogleSignIn() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
     try {
-      const nextState = authState.authenticated
-        ? await signOutAirglowIdentity()
-        : await signInAirglowIdentity();
+      const nextState = await signInAirglowWithGoogle();
+      await applyAuthState(nextState);
+      setAuthPassword('');
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handlePasswordAuth() {
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const nextState = authMode === 'create'
+        ? await createAirglowAccountWithPassword(authEmail, authPassword)
+        : await signInAirglowWithPassword(authEmail, authPassword);
+      await applyAuthState(nextState);
+      setAuthPassword('');
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function handleAuthAction() {
+    if (!authState.authenticated) {
+      setAuthError(null);
+      return;
+    }
+    if (authBusy) return;
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      const nextState = await signOutAirglowIdentity();
       setAuthState(nextState);
+      setApps([]);
+      setSavedAppId(null);
+      setSaveState('idle');
+      setGenerationPhase('idle');
       await sendRuntimeMessage({ type: 'airglow:reload-apps' }).catch(() => {});
-      await loadApps();
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -1085,6 +1240,7 @@ function App() {
   }
 
   function startNewApp() {
+    if (!authState.authenticated) return;
     if (generationBusy) return;
     if (hasUnsavedDraft() && !window.confirm('Discard current draft and start a new app?')) return;
     setDraft(null);
@@ -1104,11 +1260,13 @@ function App() {
   }
 
   function showApps() {
+    if (!authState.authenticated) return;
     setActiveView('apps');
     void loadApps();
   }
 
   function startRefineApp(app: SourcedManifest) {
+    if (!authState.authenticated) return;
     const now = new Date();
     const iso = now.toISOString();
     const nonce = crypto.randomUUID();
@@ -1198,7 +1356,27 @@ function App() {
           onDashboard={() => void openDashboard()}
         />
         <section className="sidepanel-content">
-          {activeView === 'apps' ? (
+          {!authLoaded ? (
+            <section className="auth-gate" aria-label="Loading Airglow account">
+              <div className="auth-gate-panel">
+                <Loader2 size={22} className="spin" />
+                <h1>Checking account</h1>
+              </div>
+            </section>
+          ) : !authState.authenticated ? (
+            <AuthGate
+              authBusy={authBusy}
+              authError={authError}
+              email={authEmail}
+              password={authPassword}
+              mode={authMode}
+              onEmailChange={setAuthEmail}
+              onPasswordChange={setAuthPassword}
+              onModeChange={setAuthMode}
+              onPasswordSubmit={handlePasswordAuth}
+              onGoogleSignIn={handleGoogleSignIn}
+            />
+          ) : activeView === 'apps' ? (
             <AppsTab
               apps={apps}
               activeAppId={savedAppId}

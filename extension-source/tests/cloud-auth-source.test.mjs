@@ -46,7 +46,7 @@ test('sidepanel private generation uses cloud identity, private endpoints, and r
   assert.match(sidepanelModel, /This Airglow Cloud server does not support private app save yet/);
 });
 
-test('extension surfaces Google sign-in for Airglow identity', async () => {
+test('extension requires real account sign-in for Airglow identity', async () => {
   const identity = await readFile(new URL('../lib/airglow-identity.ts', import.meta.url), 'utf8');
   const sidepanel = await readFile(new URL('../entrypoints/sidepanel/main.tsx', import.meta.url), 'utf8');
   const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
@@ -57,21 +57,41 @@ test('extension surfaces Google sign-in for Airglow identity', async () => {
   assert.match(identity, /exchangeCodeForSession/);
   assert.match(identity, /chrome\.identity\.launchWebAuthFlow/);
   assert.match(identity, /provider:\s*'google'/);
-  assert.match(identity, /signInAirglowIdentity/);
-  assert.match(identity, /provider:\s*'airglow'/);
+  assert.match(identity, /signInAirglowWithPassword/);
+  assert.match(identity, /createAirglowAccountWithPassword/);
+  assert.match(identity, /signInWithPassword/);
+  assert.match(identity, /signUp/);
+  assert.match(identity, /provider:\s*'email'/);
+  assert.match(identity, /Sign in to Airglow to continue/);
+  assert.doesNotMatch(identity, /provider:\s*'airglow'/);
   assert.match(identity, /\/api\/identity\/session/);
   assert.match(sidepanel, /Sign in to Airglow/);
-  assert.match(sidepanel, /signInAirglowIdentity/);
-  assert.doesNotMatch(sidepanel, /signInAirglowWithGoogle/);
+  assert.match(sidepanel, /Airglow apps, page injection, and cloud generation require an account/);
+  assert.match(sidepanel, /signInAirglowWithPassword/);
+  assert.match(sidepanel, /createAirglowAccountWithPassword/);
+  assert.match(sidepanel, /signInAirglowWithGoogle/);
   assert.match(sidepanel, /signOutAirglowIdentity/);
+  assert.match(sidepanel, /authState\.authenticated && chatInput\.trim\(\)\.length > 0/);
   assert.doesNotMatch(sidepanel, /Sign out of Airglow on this browser/);
   assert.match(dashboard, /sign-in-airglow-button/);
   assert.match(dashboard, /Sign in with Google/);
   assert.match(dashboard, /sign-in-google-button/);
-  assert.match(dashboard, /signInAirglowIdentity/);
+  assert.match(dashboard, /signInAirglowWithPassword/);
+  assert.match(dashboard, /createAirglowAccountWithPassword/);
   assert.match(dashboard, /signInAirglowWithGoogle/);
   assert.match(dashboard, /signOutAirglowIdentity/);
   assert.doesNotMatch(dashboard, /Sign out of Airglow on this browser/);
+});
+
+test('background clears runtime apps when the extension is signed out', async () => {
+  const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
+
+  assert.match(background, /getStoredAirglowAuthState/);
+  assert.match(background, /clearRuntimeAppsForSignedOutUser/);
+  assert.match(background, /\[APP_MANIFESTS_KEY\]: \[\]/);
+  assert.match(background, /chrome\.userScripts\.unregister\(\)/);
+  assert.match(background, /AIRGLOW_AUTH_PROVIDER_KEY in changes/);
+  assert.match(background, /AIRGLOW_SESSION_TOKEN_KEY in changes/);
 });
 
 test('dashboard can edit and delete owner-scoped private apps through background', async () => {
@@ -130,7 +150,8 @@ test('sidepanel lists apps and can refine private cloud apps', async () => {
   assert.match(sidepanel, /function AppsTab/);
   assert.match(sidepanel, /function RailButton/);
   assert.match(sidepanel, /label="Apps"/);
-  assert.match(sidepanel, /active=\{activeView === 'apps'\}/);
+  assert.match(sidepanel, /active=\{signedIn && activeView === 'apps'\}/);
+  assert.match(sidepanel, /disabled=\{!signedIn\}/);
   assert.match(sidepanel, /Refine/);
   assert.match(sidepanel, /Open/);
   assert.match(sidepanel, /function startRefineApp\(app: SourcedManifest\)/);

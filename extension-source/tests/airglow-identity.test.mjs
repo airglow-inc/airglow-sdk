@@ -175,34 +175,59 @@ test('Airglow sign-out clears stored auth identity', async () => {
   }
 });
 
-test('Airglow first-party sign-in stores an explicit Airglow auth state', async () => {
+test('Airglow email sign-in stores a real authenticated account state', async () => {
   const identity = await loadIdentityModule();
   const { store } = installChromeStub();
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init = {}) => {
+    if (String(url) === 'https://cloud.test/api/config') {
+      return new Response(JSON.stringify({
+        identity: {
+          googleOAuthEnabled: true,
+          supabaseUrl: 'https://example.supabase.co',
+          supabasePublishableKey: 'sb_publishable_test',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url) === 'https://example.supabase.co/auth/v1/token?grant_type=password') {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.email, 'user@example.com');
+      assert.equal(body.password, 'correct-password');
+      return new Response(JSON.stringify({
+        access_token: 'email-access',
+        refresh_token: 'email-refresh',
+        token_type: 'bearer',
+        expires_in: 3600,
+        user: {
+          id: 'email-user',
+          email: 'User@Example.com',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (String(url) === 'https://cloud.test/api/identity/session') {
-      assert.equal(init.headers.Authorization, undefined);
-      assert.deepEqual(JSON.parse(String(init.body)), {});
+      assert.equal(init.headers.Authorization, 'Bearer email-access');
+      assert.deepEqual(JSON.parse(String(init.body)), { refreshToken: 'email-refresh' });
       return new Response(JSON.stringify({
         ok: true,
-        accessToken: 'airglow-access',
-        refreshToken: 'airglow-refresh',
-        userId: 'supabase:airglow-user',
+        userId: 'supabase:email-user',
+        userEmail: 'User@Example.com',
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
     return new Response('not found', { status: 404 });
   };
 
   try {
-    assert.deepEqual(await identity.signInAirglowIdentity(), {
+    assert.deepEqual(await identity.signInAirglowWithPassword('User@Example.com', 'correct-password'), {
       authenticated: true,
-      userId: 'supabase:airglow-user',
-      provider: 'airglow',
+      userId: 'supabase:email-user',
+      email: 'user@example.com',
+      provider: 'email',
     });
-    assert.equal(store.__airglow_session_token, 'airglow-access');
-    assert.equal(store.__airglow_refresh_token, 'airglow-refresh');
-    assert.equal(store.__airglow_user_id, 'supabase:airglow-user');
-    assert.equal(store.__airglow_auth_provider, 'airglow');
+    assert.equal(store.__airglow_session_token, 'email-access');
+    assert.equal(store.__airglow_refresh_token, 'email-refresh');
+    assert.equal(store.__airglow_user_id, 'supabase:email-user');
+    assert.equal(store.__airglow_user_email, 'user@example.com');
+    assert.equal(store.__airglow_auth_provider, 'email');
   } finally {
     globalThis.fetch = originalFetch;
     delete globalThis.chrome;
@@ -210,7 +235,7 @@ test('Airglow first-party sign-in stores an explicit Airglow auth state', async 
   }
 });
 
-test('anonymous Supabase sessions do not make the UI look Google signed-in', async () => {
+test('anonymous Supabase sessions do not make the UI look signed-in', async () => {
   const identity = await loadIdentityModule();
   const { store } = installChromeStub();
   Object.assign(store, {
@@ -226,9 +251,14 @@ test('anonymous Supabase sessions do not make the UI look Google signed-in', asy
     });
     store.__airglow_auth_provider = 'airglow';
     assert.deepEqual(await identity.getStoredAirglowAuthState(), {
+      authenticated: false,
+      userId: 'supabase:anonymous-user',
+    });
+    store.__airglow_auth_provider = 'email';
+    assert.deepEqual(await identity.getStoredAirglowAuthState(), {
       authenticated: true,
       userId: 'supabase:anonymous-user',
-      provider: 'airglow',
+      provider: 'email',
     });
     store.__airglow_auth_provider = 'google';
     assert.deepEqual(await identity.getStoredAirglowAuthState(), {
@@ -237,6 +267,29 @@ test('anonymous Supabase sessions do not make the UI look Google signed-in', asy
       provider: 'google',
     });
   } finally {
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
+
+test('required identity headers reject signed-out users instead of creating anonymous sessions', async () => {
+  const identity = await loadIdentityModule();
+  installChromeStub();
+  const originalFetch = globalThis.fetch;
+  let fetchCount = 0;
+  globalThis.fetch = async () => {
+    fetchCount += 1;
+    return new Response('unexpected', { status: 500 });
+  };
+
+  try {
+    await assert.rejects(
+      () => identity.getAirglowIdentityHeaders({ requireSession: true }),
+      /Sign in to Airglow to continue/,
+    );
+    assert.equal(fetchCount, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
     delete globalThis.chrome;
     await identity.cleanup();
   }

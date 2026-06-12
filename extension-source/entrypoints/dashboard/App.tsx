@@ -19,10 +19,11 @@ import {
   AIRGLOW_USER_ID_KEY,
   USER_EMAIL_KEY,
   type AirglowAuthState,
+  createAirglowAccountWithPassword,
   getStoredAirglowAuthState,
   normalizeUserEmail,
-  signInAirglowIdentity,
   signInAirglowWithGoogle,
+  signInAirglowWithPassword,
   signOutAirglowIdentity,
 } from '../../lib/airglow-identity';
 import { getCloudAppSourceUrl } from '../../lib/app-source-config';
@@ -190,6 +191,9 @@ export default function App() {
   const [authState, setAuthState] = useState<AirglowAuthState>({ authenticated: false });
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [accountEmail, setAccountEmail] = useState('');
+  const [accountPassword, setAccountPassword] = useState('');
+  const [accountMode, setAccountMode] = useState<'sign-in' | 'create'>('sign-in');
   const [unseenErrorCount, setUnseenErrorCount] = useState(0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackKind, setFeedbackKind] = useState<FeedbackKind>('general');
@@ -287,6 +291,15 @@ export default function App() {
   }, []);
 
   async function loadAll(port?: number) {
+    const state = await getStoredAirglowAuthState().catch(() => ({ authenticated: false } as AirglowAuthState));
+    if (!state.authenticated) {
+      setApps([]);
+      setFullManifests([]);
+      setLocalOnline(false);
+      setError(false);
+      setUpdateStatus(null);
+      return;
+    }
     const localUrl = `http://127.0.0.1:${port ?? devPort}`;
 
     // The background loader runs against both local + cloud sources and
@@ -468,6 +481,7 @@ export default function App() {
     if (state.email) {
       setUserEmail(state.email);
       setEmailInput(state.email);
+      setAccountEmail(state.email);
     }
   }
 
@@ -482,7 +496,9 @@ export default function App() {
       if (state.email) {
         setUserEmail(state.email);
         setEmailInput(state.email);
+        setAccountEmail(state.email);
       }
+      setAccountPassword('');
       chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       await loadAll();
     } catch (error) {
@@ -492,18 +508,22 @@ export default function App() {
     }
   }
 
-  async function signInWithAirglow() {
+  async function signInWithAirglowAccount() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
     setEmailError(null);
     try {
-      const state = await signInAirglowIdentity();
+      const state = accountMode === 'create'
+        ? await createAirglowAccountWithPassword(accountEmail, accountPassword)
+        : await signInAirglowWithPassword(accountEmail, accountPassword);
       setAuthState(state);
       if (state.email) {
         setUserEmail(state.email);
         setEmailInput(state.email);
+        setAccountEmail(state.email);
       }
+      setAccountPassword('');
       chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       await loadAll();
     } catch (error) {
@@ -522,6 +542,7 @@ export default function App() {
       setAuthState(state);
       setUserEmail(null);
       setEmailInput('');
+      setAccountPassword('');
       chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       await loadAll();
     } catch (error) {
@@ -1247,18 +1268,54 @@ export default function App() {
                     </button>
                   </>
                 ) : (
-                  <>
+                  <form
+                    className="w-full flex flex-wrap items-center gap-2"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void signInWithAirglowAccount();
+                    }}
+                  >
+                    <input
+                      value={accountEmail}
+                      onChange={(event) => setAccountEmail(event.target.value)}
+                      placeholder="Email"
+                      type="email"
+                      autoComplete="email"
+                      disabled={authBusy}
+                      className="h-8 min-w-[180px] flex-1 px-2 rounded-md border text-base"
+                      style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                    />
+                    <input
+                      value={accountPassword}
+                      onChange={(event) => setAccountPassword(event.target.value)}
+                      placeholder="Password"
+                      type="password"
+                      autoComplete={accountMode === 'create' ? 'new-password' : 'current-password'}
+                      disabled={authBusy}
+                      className="h-8 min-w-[150px] flex-1 px-2 rounded-md border text-base"
+                      style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                    />
                     <button
-                      onClick={() => void signInWithAirglow()}
+                      type="submit"
                       disabled={authBusy}
                       className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
                       style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
                       data-testid="sign-in-airglow-button"
                     >
                       {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogIn size={14} />}
-                      Sign in
+                      {accountMode === 'create' ? 'Create' : 'Sign in'}
                     </button>
                     <button
+                      type="button"
+                      onClick={() => setAccountMode(accountMode === 'create' ? 'sign-in' : 'create')}
+                      disabled={authBusy}
+                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                    >
+                      {accountMode === 'create' ? 'Use existing' : 'Create account'}
+                    </button>
+                    <button
+                      type="button"
                       onClick={() => void signInWithGoogle()}
                       disabled={authBusy}
                       aria-label="Sign in with Google"
@@ -1269,7 +1326,7 @@ export default function App() {
                     >
                       Google
                     </button>
-                  </>
+                  </form>
                 )}
               </div>
               {authError && (
