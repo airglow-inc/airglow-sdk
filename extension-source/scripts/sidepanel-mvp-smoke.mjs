@@ -663,6 +663,16 @@ async function main() {
     );
     await closeTarget(cdp, signedOutAppShell.targetId);
 
+    const signedOutTargetPage = await openPage(cdp, targetSite.targetUrl);
+    await sleep(1000);
+    const signedOutEdgeButtonVisible = await evaluate(
+      cdp,
+      signedOutTargetPage.sessionId,
+      `Boolean(document.querySelector('[data-testid="airglow-edge-button"]'))`,
+    );
+    assert(!signedOutEdgeButtonVisible, 'signed-out page should not show the Airglow edge button');
+    await closeTarget(cdp, signedOutTargetPage.targetId);
+
     await evaluate(cdp, serviceWorkerSession, `
       chrome.storage.local.set({
         __airglow_session_token: 'mock-access-owner',
@@ -684,6 +694,13 @@ async function main() {
     assert(saveResponse.cloud?.userScriptsEnabled === true, `user scripts were not enabled: ${JSON.stringify(saveResponse.cloud)}`);
 
     const targetPage = await openPage(cdp, targetSite.targetUrl);
+    await waitForExpression(
+      cdp,
+      targetPage.sessionId,
+      `Boolean(document.querySelector('[data-testid="airglow-edge-button"]'))`,
+      'signed-in page edge button',
+      10000,
+    );
     await waitForExpression(
       cdp,
       targetPage.sessionId,
@@ -729,9 +746,11 @@ async function main() {
         'extension-loaded',
         'signed-out-sidepanel-auth-gate',
         'signed-out-app-shell-auth-gate',
+        'signed-out-page-edge-button-hidden',
         'user-scripts-enabled',
         'sidepanel-save-message',
         'private-app-registered',
+        'signed-in-page-edge-button',
         'page-userscript-injected',
         'app-shell-loaded',
         'dashboard-my-apps',

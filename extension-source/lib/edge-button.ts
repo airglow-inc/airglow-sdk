@@ -464,6 +464,12 @@ export function createEdgeButton() {
   document.addEventListener('mouseout', onMouseOut);
 }
 
+export function removeEdgeButtonSurfaces() {
+  document.querySelectorAll('[data-airglow-edge-button-root="true"], [data-testid="airglow-edge-popup"]').forEach((el) => {
+    el.remove();
+  });
+}
+
 /**
  * Persistent always-visible button for extension pages (app-shell).
  * Fullscreen iframes block parent mousemove, so edge-peek doesn't work.

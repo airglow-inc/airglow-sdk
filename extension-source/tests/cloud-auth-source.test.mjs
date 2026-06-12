@@ -100,6 +100,21 @@ test('background clears runtime apps when the extension is signed out', async ()
   assert.match(background, /AIRGLOW_SESSION_TOKEN_KEY in changes/);
 });
 
+test('page edge button is hidden until the browser is signed in', async () => {
+  const contentScript = await readFile(new URL('../entrypoints/edge-button.content.ts', import.meta.url), 'utf8');
+  const edgeButton = await readFile(new URL('../lib/edge-button.ts', import.meta.url), 'utf8');
+
+  assert.match(contentScript, /browserIsSignedInToAirglow/);
+  assert.match(contentScript, /__airglow_session_token/);
+  assert.match(contentScript, /__airglow_auth_provider/);
+  assert.match(contentScript, /provider === 'email' \|\| provider === 'google'/);
+  assert.match(contentScript, /if \(signedIn\) createEdgeButton\(\)/);
+  assert.match(contentScript, /else removeEdgeButtonSurfaces\(\)/);
+  assert.match(contentScript, /chrome\.storage\.local\.onChanged\.addListener/);
+  assert.match(edgeButton, /export function removeEdgeButtonSurfaces/);
+  assert.match(edgeButton, /\[data-airglow-edge-button-root="true"\], \[data-testid="airglow-edge-popup"\]/);
+});
+
 test('dashboard can edit and delete owner-scoped private apps through background', async () => {
   const background = await readFile(new URL('../entrypoints/background.ts', import.meta.url), 'utf8');
   const dashboard = await readFile(new URL('../entrypoints/dashboard/App.tsx', import.meta.url), 'utf8');
