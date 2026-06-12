@@ -39,6 +39,8 @@ cli/
 
 ### Dev server (default `:3222`)
 
+These endpoints are local-only. Airglow Cloud app delivery endpoints require an authenticated Airglow account, or Admin Basic auth for maintainer visibility checks.
+
 | Endpoint | Purpose |
 |---|---|
 | `GET /api/healthz` | Liveness probe. |
