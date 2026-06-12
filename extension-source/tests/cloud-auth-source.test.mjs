@@ -199,6 +199,11 @@ test('background polls cloud browser tool calls through extension identity', asy
   assert.match(background, /executeBrowserReloadTabTool/);
   assert.match(background, /browser\.smoke_generated_app/);
   assert.match(background, /executeBrowserSmokeGeneratedAppTool/);
+  assert.match(background, /observedTexts/);
+  assert.match(background, /runtimeErrors/);
+  assert.match(background, /consoleErrors/);
+  assert.match(background, /consoleWarnings/);
+  assert.match(background, /unhandledrejection/);
   assert.match(background, /requestBrowserToolUserApproval/);
   assert.match(background, /window\.confirm\(text\)/);
   assert.match(background, /chrome\.tabs\.create/);

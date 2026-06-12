@@ -2434,6 +2434,28 @@ export default defineBackground(() => {
         let executionError = '';
         let clickError = '';
         let clickedPrimaryAction = false;
+        const runtimeErrors: string[] = [];
+        const consoleErrors: string[] = [];
+        const consoleWarnings: string[] = [];
+        const runtimeErrorListener = (event: ErrorEvent) => {
+          runtimeErrors.push(normalize(event.message || event.error?.message || event.error || 'Runtime error').slice(0, 800));
+        };
+        const unhandledRejectionListener = (event: PromiseRejectionEvent) => {
+          const reason = event.reason instanceof Error ? event.reason.message : event.reason;
+          runtimeErrors.push(normalize(reason || 'Unhandled promise rejection').slice(0, 800));
+        };
+        const previousConsoleError = console.error;
+        const previousConsoleWarn = console.warn;
+        console.error = (...args: unknown[]) => {
+          consoleErrors.push(normalize(args.map((arg) => arg instanceof Error ? arg.message : String(arg)).join(' ')).slice(0, 800));
+          previousConsoleError.apply(console, args);
+        };
+        console.warn = (...args: unknown[]) => {
+          consoleWarnings.push(normalize(args.map((arg) => arg instanceof Error ? arg.message : String(arg)).join(' ')).slice(0, 800));
+          previousConsoleWarn.apply(console, args);
+        };
+        window.addEventListener('error', runtimeErrorListener, true);
+        window.addEventListener('unhandledrejection', unhandledRejectionListener, true);
 
         globalScope.airglow = {
           storage: {
@@ -2488,7 +2510,11 @@ export default defineBackground(() => {
           const style = getComputedStyle(element);
           return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
         });
-        const visibleText = normalize(visibleNodes.map((node) => (node as HTMLElement).innerText || node.textContent).join(' ')).slice(0, 4000);
+        const observedTexts = visibleNodes
+          .map((node) => normalize((node as HTMLElement).innerText || node.textContent))
+          .filter(Boolean)
+          .slice(0, 12);
+        const visibleText = normalize(observedTexts.join(' ')).slice(0, 4000);
         const expectedMissing = expectedTextArg
           .map((text) => normalize(text))
           .filter((text) => text && !visibleText.toLowerCase().includes(text.toLowerCase()));
@@ -2518,10 +2544,16 @@ export default defineBackground(() => {
           }
         }
 
+        window.removeEventListener('error', runtimeErrorListener, true);
+        window.removeEventListener('unhandledrejection', unhandledRejectionListener, true);
+        console.error = previousConsoleError;
+        console.warn = previousConsoleWarn;
         if (previousAirglow === undefined) delete globalScope.airglow;
         else globalScope.airglow = previousAirglow;
 
         const ok = !executionError
+          && runtimeErrors.length === 0
+          && consoleErrors.length === 0
           && visibleNodes.length > 0
           && expectedMissing.length === 0
           && (!clickPrimaryActionArg || clickedPrimaryAction);
@@ -2530,6 +2562,8 @@ export default defineBackground(() => {
           reason: ok
             ? ''
             : executionError
+              || runtimeErrors[0]
+              || consoleErrors[0]
               || clickError
               || (visibleNodes.length === 0
                 ? 'Generated app did not create a visible panel'
@@ -2538,11 +2572,15 @@ export default defineBackground(() => {
           appName: appNameArg,
           visibleElementCount: visibleNodes.length,
           visibleText,
+          observedTexts,
           expectedMissing,
           clickedPrimaryAction,
           llmCallCount: llmCalls.length,
           storageWriteCount: storageWrites.length,
           editorInsertionCount: editorInsertions.length,
+          runtimeErrors,
+          consoleErrors,
+          consoleWarnings,
           page: {
             title: normalize(document.title),
             url: location.href,
