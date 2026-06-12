@@ -5,6 +5,7 @@ export const AIRGLOW_USER_ID_KEY = '__airglow_user_id';
 export const AIRGLOW_SESSION_TOKEN_KEY = '__airglow_session_token';
 export const AIRGLOW_REFRESH_TOKEN_KEY = '__airglow_refresh_token';
 export const AIRGLOW_AUTH_PROVIDER_KEY = '__airglow_auth_provider';
+export const AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE = 'Check your email to confirm your Airglow account, then sign in.';
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const DEFAULT_CLOUD_APP_SOURCE_URL = 'https://mvp-api.airglow.dev';
@@ -362,7 +363,7 @@ export async function createAirglowAccountWithPassword(emailInput: string, passw
   const accessToken = data.session?.access_token || '';
   const refreshToken = data.session?.refresh_token || '';
   if (!accessToken) {
-    throw new Error('Check your email to confirm your Airglow account, then sign in.');
+    throw new Error(AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE);
   }
   return persistAuthenticatedSupabaseSession({
     accessToken,

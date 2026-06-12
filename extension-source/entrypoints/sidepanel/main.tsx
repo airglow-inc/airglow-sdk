@@ -19,6 +19,7 @@ import {
   shouldStartNewAppDraftForPrompt,
 } from '../../lib/sidepanel-model';
 import {
+  AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE,
   AIRGLOW_AUTH_PROVIDER_KEY,
   AIRGLOW_REFRESH_TOKEN_KEY,
   AIRGLOW_SESSION_TOKEN_KEY,
@@ -500,6 +501,7 @@ function SidePanelRail({
 function AuthGate({
   authBusy,
   authError,
+  authNotice,
   email,
   password,
   mode,
@@ -512,6 +514,7 @@ function AuthGate({
 }: {
   authBusy: boolean;
   authError: string | null;
+  authNotice: string | null;
   email: string;
   password: string;
   mode: 'sign-in' | 'create';
@@ -587,6 +590,7 @@ function AuthGate({
         ) : (
           <div className="auth-error">Airglow account sign-in is not configured for this server.</div>
         )}
+        {authNotice && <div className="auth-notice">{authNotice}</div>}
         {authError && <div className="auth-error">{authError}</div>}
       </div>
     </section>
@@ -817,6 +821,7 @@ function App() {
   const [authLoaded, setAuthLoaded] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState<'sign-in' | 'create'>('sign-in');
@@ -1214,6 +1219,7 @@ function App() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthNotice(null);
     try {
       const nextState = await signInAirglowWithGoogle();
       await applyAuthState(nextState);
@@ -1229,6 +1235,7 @@ function App() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthNotice(null);
     try {
       const nextState = authMode === 'create'
         ? await createAirglowAccountWithPassword(authEmail, authPassword)
@@ -1236,7 +1243,14 @@ function App() {
       await applyAuthState(nextState);
       setAuthPassword('');
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (authMode === 'create' && message === AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE) {
+        setAuthMode('sign-in');
+        setAuthPassword('');
+        setAuthNotice(message);
+      } else {
+        setAuthError(message);
+      }
     } finally {
       setAuthBusy(false);
     }
@@ -1245,11 +1259,13 @@ function App() {
   async function handleAuthAction() {
     if (!authState.authenticated) {
       setAuthError(null);
+      setAuthNotice(null);
       return;
     }
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthNotice(null);
     try {
       const nextState = await signOutAirglowIdentity();
       setAuthState(nextState);
@@ -1399,12 +1415,25 @@ function App() {
             <AuthGate
               authBusy={authBusy}
               authError={authError}
+              authNotice={authNotice}
               email={authEmail}
               password={authPassword}
               mode={authMode}
-              onEmailChange={setAuthEmail}
-              onPasswordChange={setAuthPassword}
-              onModeChange={setAuthMode}
+              onEmailChange={(value) => {
+                setAuthEmail(value);
+                setAuthError(null);
+                setAuthNotice(null);
+              }}
+              onPasswordChange={(value) => {
+                setAuthPassword(value);
+                setAuthError(null);
+                setAuthNotice(null);
+              }}
+              onModeChange={(mode) => {
+                setAuthMode(mode);
+                setAuthError(null);
+                setAuthNotice(null);
+              }}
               onPasswordSubmit={handlePasswordAuth}
               onGoogleSignIn={handleGoogleSignIn}
               authProviderConfig={authProviderConfig}

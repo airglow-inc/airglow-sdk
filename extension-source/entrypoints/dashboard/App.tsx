@@ -13,6 +13,7 @@ function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { siz
 }
 import LogsPage from './LogsPage';
 import {
+  AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE,
   AIRGLOW_AUTH_PROVIDER_KEY,
   AIRGLOW_REFRESH_TOKEN_KEY,
   AIRGLOW_SESSION_TOKEN_KEY,
@@ -194,6 +195,7 @@ export default function App() {
   const [authState, setAuthState] = useState<AirglowAuthState>({ authenticated: false });
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
+  const [authNotice, setAuthNotice] = useState<string | null>(null);
   const [accountEmail, setAccountEmail] = useState('');
   const [accountPassword, setAccountPassword] = useState('');
   const [accountMode, setAccountMode] = useState<'sign-in' | 'create'>('sign-in');
@@ -507,6 +509,7 @@ export default function App() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthNotice(null);
     setEmailError(null);
     try {
       const state = await signInAirglowWithGoogle();
@@ -530,6 +533,7 @@ export default function App() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthNotice(null);
     setEmailError(null);
     try {
       const state = accountMode === 'create'
@@ -545,7 +549,14 @@ export default function App() {
       chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }, () => { void chrome.runtime.lastError; });
       await loadAll();
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (accountMode === 'create' && message === AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE) {
+        setAccountMode('sign-in');
+        setAccountPassword('');
+        setAuthNotice(message);
+      } else {
+        setAuthError(message);
+      }
     } finally {
       setAuthBusy(false);
     }
@@ -555,6 +566,7 @@ export default function App() {
     if (authBusy) return;
     setAuthBusy(true);
     setAuthError(null);
+    setAuthNotice(null);
     try {
       const state = await signOutAirglowIdentity();
       setAuthState(state);
@@ -1302,7 +1314,11 @@ export default function App() {
                       >
                         <input
                           value={accountEmail}
-                          onChange={(event) => setAccountEmail(event.target.value)}
+                          onChange={(event) => {
+                            setAccountEmail(event.target.value);
+                            setAuthError(null);
+                            setAuthNotice(null);
+                          }}
                           placeholder="Email"
                           type="email"
                           autoComplete="email"
@@ -1312,7 +1328,11 @@ export default function App() {
                         />
                         <input
                           value={accountPassword}
-                          onChange={(event) => setAccountPassword(event.target.value)}
+                          onChange={(event) => {
+                            setAccountPassword(event.target.value);
+                            setAuthError(null);
+                            setAuthNotice(null);
+                          }}
                           placeholder="Password"
                           type="password"
                           autoComplete={accountMode === 'create' ? 'new-password' : 'current-password'}
@@ -1332,7 +1352,11 @@ export default function App() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => setAccountMode(accountMode === 'create' ? 'sign-in' : 'create')}
+                          onClick={() => {
+                            setAccountMode(accountMode === 'create' ? 'sign-in' : 'create');
+                            setAuthError(null);
+                            setAuthNotice(null);
+                          }}
                           disabled={authBusy}
                           className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
                           style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
@@ -1365,6 +1389,9 @@ export default function App() {
               </div>
               {authError && (
                 <div className="text-sm mt-1" style={{ color: 'var(--error)' }}>{authError}</div>
+              )}
+              {authNotice && (
+                <div className="text-sm mt-1" style={{ color: 'var(--olive)' }}>{authNotice}</div>
               )}
             </div>
             <div className="px-1 pt-3">

@@ -278,6 +278,48 @@ test('Airglow provider config disables unavailable sign-in methods', async () =>
   }
 });
 
+test('Airglow account creation reports email confirmation instead of storing an anonymous state', async () => {
+  const identity = await loadIdentityModule();
+  const { store } = installChromeStub();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init = {}) => {
+    if (String(url) === 'https://cloud.test/api/config') {
+      return new Response(JSON.stringify({
+        identity: {
+          emailPasswordEnabled: true,
+          supabaseUrl: 'https://example.supabase.co',
+          supabasePublishableKey: 'sb_publishable_test',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    if (String(url) === 'https://example.supabase.co/auth/v1/signup') {
+      const body = JSON.parse(String(init.body));
+      assert.equal(body.email, 'user@example.com');
+      assert.equal(body.password, 'new-password');
+      return new Response(JSON.stringify({
+        user: {
+          id: 'pending-user',
+          email: 'User@Example.com',
+        },
+        session: null,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    await assert.rejects(
+      () => identity.createAirglowAccountWithPassword('User@Example.com', 'new-password'),
+      /Check your email to confirm your Airglow account, then sign in\./,
+    );
+    assert.deepEqual(store, {});
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
+
 test('anonymous Supabase sessions do not make the UI look signed-in', async () => {
   const identity = await loadIdentityModule();
   const { store } = installChromeStub();

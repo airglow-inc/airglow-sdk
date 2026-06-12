@@ -342,6 +342,16 @@ button {
   line-height: 1.35;
 }
 
+.auth-notice {
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background: var(--warn-bg);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: var(--sp-font-sm);
+  line-height: 1.35;
+}
+
 .chat-panel {
   min-height: 0;
   width: 100%;
