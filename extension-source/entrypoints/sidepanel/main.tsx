@@ -12,12 +12,20 @@ import {
   type SidePanelGenerationRunStatus,
   type SidePanelTargetTab,
   appendDraftUserMessage,
+  appendDraftAssistantMessage,
   applyGenerationRunEventsToDraft,
   createAppDraft,
   draftHasExplicitWebTarget,
   draftRequestsCurrentPage,
   shouldStartNewAppDraftForPrompt,
 } from '../../lib/sidepanel-model';
+import {
+  BROWSER_TOOL_APPROVALS_KEY,
+  latestPendingBrowserToolApproval,
+  normalizeBrowserToolApprovals,
+  type BrowserToolApprovalRequest,
+  type BrowserToolApprovalStatus,
+} from '../../lib/browser-tool-approvals';
 import {
   AIRGLOW_ACCOUNT_CONFIRMATION_REQUIRED_MESSAGE,
   AIRGLOW_AUTH_PROVIDER_KEY,
@@ -656,6 +664,20 @@ function isTerminalGenerationRunStatus(status: SidePanelGenerationRunStatus): bo
   return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'waiting_for_user';
 }
 
+function draftHasPendingPlanApproval(
+  draft: AirglowAppDraft | null,
+  events: SidePanelGenerationRunEvent[],
+): boolean {
+  if (draft?.generationRun?.status !== 'waiting_for_user') return false;
+  if (events.some((event) => event.type === 'approval_requested' && event.payload?.approvalType === 'generation_plan')) {
+    return true;
+  }
+  return draft.messages.some((message) => (
+    message.role === 'assistant' &&
+    /^Plan approval\b/.test(message.content.trim())
+  ));
+}
+
 function applyGenerationRunSnapshotToDraft(
   draft: AirglowAppDraft,
   run: GenerationRunRecord,
@@ -688,6 +710,57 @@ function AssistantStatusMessage({
       <span>Airglow</span>
       <p><strong>{title}</strong></p>
       <p>{children}</p>
+    </div>
+  );
+}
+
+function PlanApprovalActions({
+  disabled,
+  onApprove,
+  onEdit,
+}: {
+  disabled: boolean;
+  onApprove: () => void;
+  onEdit: () => void;
+}) {
+  return (
+    <div className="chat-message assistant approval-gate-message">
+      <span>Airglow</span>
+      <p><strong>Ready to generate?</strong></p>
+      <div className="message-actions">
+        <button type="button" className="secondary-button approve" onClick={onApprove} disabled={disabled}>
+          {disabled ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+          Approve
+        </button>
+        <button type="button" className="secondary-button" onClick={onEdit} disabled={disabled}>
+          Edit request
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BrowserToolApprovalMessage({
+  approval,
+  onResolve,
+}: {
+  approval: BrowserToolApprovalRequest;
+  onResolve: (approval: BrowserToolApprovalRequest, status: Extract<BrowserToolApprovalStatus, 'approved' | 'declined'>) => void;
+}) {
+  return (
+    <div className="chat-message assistant approval-message">
+      <span>Airglow</span>
+      <p><strong>Approve browser action?</strong></p>
+      <p>{approval.message}</p>
+      <div className="message-actions">
+        <button type="button" className="secondary-button approve" onClick={() => onResolve(approval, 'approved')}>
+          <Check size={16} />
+          Approve
+        </button>
+        <button type="button" className="secondary-button decline" onClick={() => onResolve(approval, 'declined')}>
+          Decline
+        </button>
+      </div>
     </div>
   );
 }
@@ -815,6 +888,7 @@ function App() {
   const [applyState, setApplyState] = useState<ApplyState>('idle');
   const [applyError, setApplyError] = useState<string | null>(null);
   const [generationRunEvents, setGenerationRunEvents] = useState<SidePanelGenerationRunEvent[]>([]);
+  const [browserToolApprovals, setBrowserToolApprovals] = useState<BrowserToolApprovalRequest[]>([]);
   const [apps, setApps] = useState<SourcedManifest[]>([]);
   const [appsLoading, setAppsLoading] = useState(false);
   const [appsError, setAppsError] = useState<string | null>(null);
@@ -838,6 +912,25 @@ function App() {
   useEffect(() => {
     draftRef.current = draft;
   }, [draft]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadApprovals = () => {
+      chrome.storage.local.get(BROWSER_TOOL_APPROVALS_KEY).then((stored) => {
+        if (!cancelled) setBrowserToolApprovals(normalizeBrowserToolApprovals(stored[BROWSER_TOOL_APPROVALS_KEY]));
+      });
+    };
+    loadApprovals();
+    const onStorageChanged = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+      if (areaName !== 'local' || !changes[BROWSER_TOOL_APPROVALS_KEY]) return;
+      setBrowserToolApprovals(normalizeBrowserToolApprovals(changes[BROWSER_TOOL_APPROVALS_KEY].newValue));
+    };
+    chrome.storage.local.onChanged.addListener(onStorageChanged);
+    return () => {
+      cancelled = true;
+      chrome.storage.local.onChanged.removeListener(onStorageChanged);
+    };
+  }, []);
 
   async function readTargetContext(): Promise<SidePanelTargetTab | null> {
     setLoadingTarget(true);
@@ -1022,7 +1115,7 @@ function App() {
     const log = chatLogRef.current;
     if (!log) return;
     log.scrollTo({ top: log.scrollHeight, behavior: 'smooth' });
-  }, [draft?.messages.length, draft?.target?.id, generationPhase, saveState, generationRunEvents.length, applyState, saveError, applyError]);
+  }, [draft?.messages.length, draft?.target?.id, generationPhase, saveState, generationRunEvents.length, browserToolApprovals.length, applyState, saveError, applyError]);
 
   const generationBusy = generationPhase === 'reading_context' || generationPhase === 'generating' || saveState === 'saving';
   const canSend = authState.authenticated && chatInput.trim().length > 0 && !generationBusy;
@@ -1035,6 +1128,11 @@ function App() {
     }
     return `Using the selected tab title, URL, and visible text for generation. The saved app can refresh read-only page text on ${targetOrigin(target)} after it is installed.`;
   }, [loadingTarget, target, targetError]);
+  const pendingBrowserToolApproval = useMemo(
+    () => latestPendingBrowserToolApproval(browserToolApprovals),
+    [browserToolApprovals],
+  );
+  const pendingPlanApproval = draftHasPendingPlanApproval(draft, generationRunEvents);
 
   function rememberRunEvents(events: SidePanelGenerationRunEvent[]) {
     setGenerationRunEvents((current) => mergeGenerationRunEvents(current, events));
@@ -1156,6 +1254,124 @@ function App() {
       setSaveError(message);
       setSavedAppId(null);
     }
+  }
+
+  async function executeGenerationRunFromDraft(draftToRun: AirglowAppDraft) {
+    const runId = draftToRun.generationRun?.runId;
+    if (!runId) return;
+    setGenerationPhase('generating');
+    setSaveState('saving');
+    setSaveError(null);
+    let pollTimer: number | null = null;
+    let latestSequence = draftToRun.generationRun.lastSequence || 0;
+    try {
+      pollTimer = window.setInterval(() => {
+        sendRuntimeMessage<GenerationRunActionResponse>({
+          type: 'airglow:sidepanel:get-generation-run',
+          runId,
+          sinceSequence: latestSequence,
+          draft: draftRef.current,
+        })
+          .then((poll) => {
+            if (poll.events.length > 0) {
+              latestSequence = Math.max(latestSequence, latestGenerationRunSequence(poll.events));
+              rememberRunEvents(poll.events);
+              setDraft((current) => current ? applyGenerationRunSnapshotToDraft(current, poll.run, poll.events) : current);
+            }
+            if ('mode' in poll && poll.mode === 'cloud') {
+              if (pollTimer !== null) {
+                window.clearInterval(pollTimer);
+                pollTimer = null;
+              }
+              setDraft(poll.draft);
+              setSavedAppId(poll.cloud.appId);
+              setSaveState('saved');
+              setGenerationPhase('ready');
+              void loadApps();
+            } else if ('mode' in poll && poll.mode === 'failed') {
+              if (pollTimer !== null) {
+                window.clearInterval(pollTimer);
+                pollTimer = null;
+              }
+              setDraft(poll.draft);
+              setSavedAppId(null);
+              setSaveState('error');
+              setGenerationPhase('error');
+              setSaveError(poll.cloudError.message || 'Cloud generation failed.');
+            }
+          })
+          .catch(() => {
+            // Polling is best-effort; execute response or the next tick can catch up.
+          });
+      }, 900);
+
+      const executed = await sendRuntimeMessage<GenerationRunActionResponse>({
+        type: 'airglow:sidepanel:execute-generation-run',
+        runId,
+        draft: draftToRun,
+      });
+      if (pollTimer !== null && ('mode' in executed || isTerminalGenerationRunStatus(executed.run.status))) {
+        window.clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      setDraft(executed.draft);
+      rememberRunEvents(executed.events);
+      if ('mode' in executed && executed.mode === 'cloud') {
+        setSavedAppId(executed.cloud.appId);
+        setSaveState('saved');
+        setGenerationPhase('ready');
+        void loadApps();
+      } else if ('mode' in executed && executed.mode === 'failed') {
+        setSavedAppId(null);
+        setSaveState('error');
+        setGenerationPhase('error');
+        setSaveError(executed.cloudError.message || 'Cloud generation failed.');
+      } else {
+        setSavedAppId(null);
+        setSaveState(isTerminalGenerationRunStatus(executed.run.status) ? 'idle' : 'saving');
+        setGenerationPhase(isTerminalGenerationRunStatus(executed.run.status) ? 'ready' : 'generating');
+      }
+      setApplyState('idle');
+      setApplyError(null);
+    } catch (error) {
+      if (pollTimer !== null) window.clearInterval(pollTimer);
+      setSaveState('error');
+      setGenerationPhase('error');
+      setSaveError(error instanceof Error ? error.message : String(error));
+      setSavedAppId(null);
+    }
+  }
+
+  function handleApprovePlan() {
+    if (!draft || saveState === 'saving') return;
+    void executeGenerationRunFromDraft(draft);
+  }
+
+  function handleEditPlan() {
+    if (!draft || saveState === 'saving') return;
+    setDraft(appendDraftAssistantMessage({
+      ...draft,
+      generationRun: undefined,
+      updatedAt: new Date().toISOString(),
+    }, {
+      content: 'Plan paused. Send an updated request when ready.',
+    }));
+    setSaveState('idle');
+    setGenerationPhase('ready');
+  }
+
+  async function resolveBrowserToolApproval(
+    approval: BrowserToolApprovalRequest,
+    status: Extract<BrowserToolApprovalStatus, 'approved' | 'declined'>,
+  ) {
+    const stored = await chrome.storage.local.get(BROWSER_TOOL_APPROVALS_KEY);
+    const approvals = normalizeBrowserToolApprovals(stored[BROWSER_TOOL_APPROVALS_KEY]);
+    const resolvedAt = new Date().toISOString();
+    await chrome.storage.local.set({
+      [BROWSER_TOOL_APPROVALS_KEY]: approvals.map((item) => (
+        item.id === approval.id ? { ...item, status, resolvedAt } : item
+      )),
+    });
   }
 
   async function handleSubmitChat(event: FormEvent<HTMLFormElement>) {
@@ -1509,7 +1725,20 @@ function App() {
                   {authError}
                 </AssistantStatusMessage>
               )}
-              {draft && saveState !== 'saving' && (
+              {pendingPlanApproval && (
+                <PlanApprovalActions
+                  disabled={saveState === 'saving'}
+                  onApprove={handleApprovePlan}
+                  onEdit={handleEditPlan}
+                />
+              )}
+              {pendingBrowserToolApproval && (
+                <BrowserToolApprovalMessage
+                  approval={pendingBrowserToolApproval}
+                  onResolve={(approval, status) => void resolveBrowserToolApproval(approval, status)}
+                />
+              )}
+              {draft && saveState !== 'saving' && !pendingPlanApproval && !pendingBrowserToolApproval && (
                 <div className="chat-message assistant actions-message">
                   <span>Airglow</span>
                   <p><strong>{saveStateTitle(draft, saveState)}</strong></p>

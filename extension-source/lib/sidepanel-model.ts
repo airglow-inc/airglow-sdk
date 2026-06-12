@@ -87,6 +87,7 @@ export type SidePanelGenerationRunStatus =
 
 export type SidePanelGenerationRunEventType =
   | 'assistant_message'
+  | 'approval_requested'
   | 'clarification_requested'
   | 'phase_started'
   | 'phase_completed'
@@ -803,6 +804,7 @@ function shouldRenderGenerationRunEventAsMessage(event: SidePanelGenerationRunEv
     event.role === 'assistant' &&
     (
       event.type === 'assistant_message' ||
+      event.type === 'approval_requested' ||
       event.type === 'clarification_requested' ||
       event.type === 'completed' ||
       event.type === 'failed' ||

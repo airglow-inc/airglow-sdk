@@ -37,6 +37,12 @@ import {
   normalizeDraftForSave,
   normalizeStoredDraft,
 } from '../lib/sidepanel-model';
+import {
+  BROWSER_TOOL_APPROVALS_KEY,
+  BROWSER_TOOL_APPROVAL_TIMEOUT_MS,
+  normalizeBrowserToolApprovals,
+  type BrowserToolApprovalRequest,
+} from '../lib/browser-tool-approvals';
 
 export default defineBackground(() => {
   log('service worker started');
@@ -2096,18 +2102,93 @@ export default defineBackground(() => {
     }
   }
 
-  async function requestBrowserToolUserApproval(tab: chrome.tabs.Tab & { id: number }, message: string): Promise<void> {
-    const [result] = await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      world: 'ISOLATED',
-      args: [message],
-      func: (text: string) => window.confirm(text),
+  async function readBrowserToolApprovals(): Promise<BrowserToolApprovalRequest[]> {
+    const stored = await chrome.storage.local.get(BROWSER_TOOL_APPROVALS_KEY);
+    return normalizeBrowserToolApprovals(stored[BROWSER_TOOL_APPROVALS_KEY]);
+  }
+
+  async function writeBrowserToolApprovals(approvals: BrowserToolApprovalRequest[]): Promise<void> {
+    await chrome.storage.local.set({
+      [BROWSER_TOOL_APPROVALS_KEY]: approvals.slice(-20),
     });
-    if (result?.result !== true) {
-      const error = new Error('User denied browser testing action') as Error & { code?: string };
-      error.code = 'BROWSER_TOOL_USER_DENIED';
-      throw error;
-    }
+  }
+
+  async function upsertBrowserToolApproval(approval: BrowserToolApprovalRequest): Promise<void> {
+    const approvals = await readBrowserToolApprovals();
+    await writeBrowserToolApprovals([
+      ...approvals.filter((item) => item.id !== approval.id),
+      approval,
+    ]);
+  }
+
+  async function expireBrowserToolApproval(approvalId: string): Promise<void> {
+    const approvals = await readBrowserToolApprovals();
+    await writeBrowserToolApprovals(approvals.map((approval) => (
+      approval.id === approvalId && approval.status === 'pending'
+        ? { ...approval, status: 'expired', resolvedAt: new Date().toISOString() }
+        : approval
+    )));
+  }
+
+  function browserToolApprovalError(code: string, message: string): Error & { code?: string } {
+    const error = new Error(message) as Error & { code?: string };
+    error.code = code;
+    return error;
+  }
+
+  async function waitForBrowserToolApproval(approvalId: string): Promise<void> {
+    const startedAt = Date.now();
+    return await new Promise((resolve, reject) => {
+      let settled = false;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+      const finish = (error?: Error & { code?: string }) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        chrome.storage.local.onChanged.removeListener(onChanged);
+        if (error) reject(error);
+        else resolve();
+      };
+
+      const checkApprovals = (value: unknown) => {
+        const approval = normalizeBrowserToolApprovals(value).find((item) => item.id === approvalId);
+        if (!approval) return;
+        if (approval.status === 'approved') finish();
+        if (approval.status === 'declined') {
+          finish(browserToolApprovalError('BROWSER_TOOL_USER_DENIED', 'User declined browser testing action'));
+        }
+        if (approval.status === 'expired') {
+          finish(browserToolApprovalError('BROWSER_TOOL_APPROVAL_TIMEOUT', 'Browser testing action was not approved in time'));
+        }
+      };
+
+      const onChanged = (changes: Record<string, chrome.storage.StorageChange>, areaName: string) => {
+        if (areaName !== 'local' || !changes[BROWSER_TOOL_APPROVALS_KEY]) return;
+        checkApprovals(changes[BROWSER_TOOL_APPROVALS_KEY].newValue);
+      };
+
+      chrome.storage.local.onChanged.addListener(onChanged);
+      timeoutId = setTimeout(() => {
+        expireBrowserToolApproval(approvalId).catch(() => {});
+        finish(browserToolApprovalError('BROWSER_TOOL_APPROVAL_TIMEOUT', 'Browser testing action was not approved in time'));
+      }, Math.max(1000, BROWSER_TOOL_APPROVAL_TIMEOUT_MS - (Date.now() - startedAt)));
+
+      readBrowserToolApprovals()
+        .then((approvals) => checkApprovals(approvals))
+        .catch(() => {});
+    });
+  }
+
+  async function requestBrowserToolUserApproval(_tab: chrome.tabs.Tab & { id: number }, message: string): Promise<void> {
+    const approval: BrowserToolApprovalRequest = {
+      id: crypto.randomUUID(),
+      message,
+      status: 'pending',
+      requestedAt: new Date().toISOString(),
+    };
+    await upsertBrowserToolApproval(approval);
+    await waitForBrowserToolApproval(approval.id);
   }
 
   async function getBrowserToolApprovalTab(): Promise<chrome.tabs.Tab & { id: number }> {

@@ -239,10 +239,11 @@ test('generation run events become assistant chat messages without duplicates', 
     }, [
       {
         sequence: 1,
-        type: 'assistant_message',
+        type: 'approval_requested',
         role: 'assistant',
         phase: 'planning',
-        message: 'Generated app plan\n\nBuild a planner.',
+        message: 'Plan approval\n\nBuild a planner.',
+        payload: { approvalType: 'generation_plan' },
         createdAt: '2026-06-10T10:00:01.000Z',
       },
       {
@@ -262,10 +263,11 @@ test('generation run events become assistant chat messages without duplicates', 
     }, [
       {
         sequence: 1,
-        type: 'assistant_message',
+        type: 'approval_requested',
         role: 'assistant',
         phase: 'planning',
-        message: 'Generated app plan\n\nBuild a planner.',
+        message: 'Plan approval\n\nBuild a planner.',
+        payload: { approvalType: 'generation_plan' },
         createdAt: '2026-06-10T10:00:01.000Z',
       },
       {
@@ -286,7 +288,7 @@ test('generation run events become assistant chat messages without duplicates', 
       ['msg-run', 'msg-run-run-1-1', 'msg-run-run-1-3'],
     );
     assert.equal(duplicated.messages[1].role, 'assistant');
-    assert.match(duplicated.messages[1].content, /Generated app plan/);
+    assert.match(duplicated.messages[1].content, /Plan approval/);
     assert.match(duplicated.messages[2].content, /App saved/);
 
     const saved = model.markDraftSaved(duplicated, {

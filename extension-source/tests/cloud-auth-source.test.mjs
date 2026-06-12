@@ -32,6 +32,10 @@ test('sidepanel private generation uses cloud identity, private endpoints, and r
   assert.match(sidepanel, /type:\s*'airglow:sidepanel:create-generation-run'/);
   assert.match(sidepanel, /type:\s*'airglow:sidepanel:get-generation-run'/);
   assert.match(sidepanel, /type:\s*'airglow:sidepanel:execute-generation-run'/);
+  assert.match(sidepanel, /created\.run\.status === 'waiting_for_user'/);
+  assert.match(sidepanel, /function PlanApprovalActions/);
+  assert.match(sidepanel, /function handleApprovePlan\(\)/);
+  assert.match(sidepanel, /executeGenerationRunFromDraft\(draft\)/);
   assert.match(sidepanel, /Refresh page/);
   assert.match(sidepanel, /Reviewing app\.\.\./);
   assert.match(sidepanel, /Repairing if needed\.\.\./);
@@ -265,7 +269,8 @@ test('background polls cloud browser tool calls through extension identity', asy
   assert.match(background, /consoleWarnings/);
   assert.match(background, /unhandledrejection/);
   assert.match(background, /requestBrowserToolUserApproval/);
-  assert.match(background, /window\.confirm\(text\)/);
+  assert.match(background, /BROWSER_TOOL_APPROVALS_KEY/);
+  assert.match(background, /waitForBrowserToolApproval/);
   assert.match(background, /chrome\.tabs\.create/);
   assert.match(background, /chrome\.tabs\.update/);
   assert.match(background, /chrome\.tabs\.reload/);

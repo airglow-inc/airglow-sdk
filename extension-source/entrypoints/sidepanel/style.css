@@ -397,7 +397,9 @@ button {
 }
 
 .chat-message.target-message,
-.chat-message.actions-message {
+.chat-message.actions-message,
+.chat-message.approval-gate-message,
+.chat-message.approval-message {
   max-width: min(94%, 620px);
 }
 
@@ -770,6 +772,27 @@ button {
 .secondary-button:hover:not(:disabled) {
   border-color: var(--border-strong);
   background: var(--surface-muted);
+}
+
+.secondary-button.approve {
+  border-color: rgba(154, 91, 25, 0.32);
+  background: var(--accent-fill);
+  color: #1c1917;
+}
+
+.secondary-button.approve:hover:not(:disabled) {
+  border-color: rgba(154, 91, 25, 0.42);
+  background: var(--accent-hover);
+}
+
+.secondary-button.decline {
+  border-color: rgba(180, 58, 50, 0.28);
+  color: var(--danger);
+}
+
+.secondary-button.decline:hover:not(:disabled) {
+  border-color: rgba(180, 58, 50, 0.42);
+  background: var(--danger-bg);
 }
 
 .secondary-button.compact {
