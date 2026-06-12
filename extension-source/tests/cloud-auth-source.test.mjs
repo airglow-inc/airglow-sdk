@@ -63,6 +63,8 @@ test('extension requires real account sign-in for Airglow identity', async () =>
   assert.match(identity, /signInWithPassword/);
   assert.match(identity, /signUp/);
   assert.match(identity, /provider:\s*'email'/);
+  assert.match(identity, /getAirglowAuthProviderConfig/);
+  assert.match(identity, /emailPasswordEnabled/);
   assert.match(identity, /Sign in to Airglow to continue/);
   assert.doesNotMatch(identity, /provider:\s*'airglow'/);
   assert.match(identity, /\/api\/identity\/session/);
@@ -71,6 +73,9 @@ test('extension requires real account sign-in for Airglow identity', async () =>
   assert.match(sidepanel, /signInAirglowWithPassword/);
   assert.match(sidepanel, /createAirglowAccountWithPassword/);
   assert.match(sidepanel, /signInAirglowWithGoogle/);
+  assert.match(sidepanel, /getAirglowAuthProviderConfig/);
+  assert.match(sidepanel, /authProviderConfig\.googleOAuthEnabled/);
+  assert.match(sidepanel, /authProviderConfig\.emailPasswordEnabled/);
   assert.match(sidepanel, /signOutAirglowIdentity/);
   assert.match(sidepanel, /authState\.authenticated && chatInput\.trim\(\)\.length > 0/);
   assert.doesNotMatch(sidepanel, /Sign out of Airglow on this browser/);
@@ -80,8 +85,10 @@ test('extension requires real account sign-in for Airglow identity', async () =>
   assert.match(appShell, /Airglow apps, page injection, and cloud generation are unavailable until this browser is signed in/);
   assert.match(appShell, /Open dashboard/);
   assert.match(dashboard, /sign-in-airglow-button/);
-  assert.match(dashboard, /Sign in with Google/);
   assert.match(dashboard, /sign-in-google-button/);
+  assert.match(dashboard, /getAirglowAuthProviderConfig/);
+  assert.match(dashboard, /authProviderConfig\.googleOAuthEnabled/);
+  assert.match(dashboard, /authProviderConfig\.emailPasswordEnabled/);
   assert.match(dashboard, /signInAirglowWithPassword/);
   assert.match(dashboard, /createAirglowAccountWithPassword/);
   assert.match(dashboard, /signInAirglowWithGoogle/);

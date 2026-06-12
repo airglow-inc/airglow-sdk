@@ -24,8 +24,10 @@ import {
   AIRGLOW_SESSION_TOKEN_KEY,
   AIRGLOW_USER_ID_KEY,
   USER_EMAIL_KEY,
+  type AirglowAuthProviderConfig,
   type AirglowAuthState,
   createAirglowAccountWithPassword,
+  getAirglowAuthProviderConfig,
   getStoredAirglowAuthState,
   signInAirglowWithGoogle,
   signInAirglowWithPassword,
@@ -506,6 +508,7 @@ function AuthGate({
   onModeChange,
   onPasswordSubmit,
   onGoogleSignIn,
+  authProviderConfig,
 }: {
   authBusy: boolean;
   authError: string | null;
@@ -517,8 +520,11 @@ function AuthGate({
   onModeChange: (mode: 'sign-in' | 'create') => void;
   onPasswordSubmit: () => void;
   onGoogleSignIn: () => void;
+  authProviderConfig: AirglowAuthProviderConfig;
 }) {
   const createMode = mode === 'create';
+  const googleEnabled = authProviderConfig.googleOAuthEnabled;
+  const emailEnabled = authProviderConfig.emailPasswordEnabled;
   return (
     <section className="auth-gate" aria-label="Airglow sign in">
       <div className="auth-gate-panel">
@@ -527,52 +533,60 @@ function AuthGate({
         </div>
         <h1>Sign in to Airglow</h1>
         <p>Airglow apps, page injection, and cloud generation require an account.</p>
-        <button
-          type="button"
-          className="auth-google-button"
-          onClick={onGoogleSignIn}
-          disabled={authBusy}
-        >
-          {authBusy ? <Loader2 size={16} className="spin" /> : <LogIn size={16} />}
-          Sign in with Google
-        </button>
-        <div className="auth-divider"><span>or</span></div>
-        <form
-          className="auth-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onPasswordSubmit();
-          }}
-        >
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => onEmailChange(event.target.value)}
-            placeholder="Email"
-            autoComplete="email"
+        {googleEnabled && (
+          <button
+            type="button"
+            className="auth-google-button"
+            onClick={onGoogleSignIn}
             disabled={authBusy}
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => onPasswordChange(event.target.value)}
-            placeholder="Password"
-            autoComplete={createMode ? 'new-password' : 'current-password'}
-            disabled={authBusy}
-          />
-          <button type="submit" className="auth-submit-button" disabled={authBusy}>
+          >
             {authBusy ? <Loader2 size={16} className="spin" /> : <LogIn size={16} />}
-            {createMode ? 'Create account' : 'Sign in'}
+            Sign in with Google
           </button>
-        </form>
-        <button
-          type="button"
-          className="auth-mode-button"
-          onClick={() => onModeChange(createMode ? 'sign-in' : 'create')}
-          disabled={authBusy}
-        >
-          {createMode ? 'I already have an account' : 'Create an Airglow account'}
-        </button>
+        )}
+        {googleEnabled && emailEnabled && <div className="auth-divider"><span>or</span></div>}
+        {emailEnabled ? (
+          <>
+            <form
+              className="auth-form"
+              onSubmit={(event) => {
+                event.preventDefault();
+                onPasswordSubmit();
+              }}
+            >
+              <input
+                type="email"
+                value={email}
+                onChange={(event) => onEmailChange(event.target.value)}
+                placeholder="Email"
+                autoComplete="email"
+                disabled={authBusy}
+              />
+              <input
+                type="password"
+                value={password}
+                onChange={(event) => onPasswordChange(event.target.value)}
+                placeholder="Password"
+                autoComplete={createMode ? 'new-password' : 'current-password'}
+                disabled={authBusy}
+              />
+              <button type="submit" className="auth-submit-button" disabled={authBusy}>
+                {authBusy ? <Loader2 size={16} className="spin" /> : <LogIn size={16} />}
+                {createMode ? 'Create account' : 'Sign in'}
+              </button>
+            </form>
+            <button
+              type="button"
+              className="auth-mode-button"
+              onClick={() => onModeChange(createMode ? 'sign-in' : 'create')}
+              disabled={authBusy}
+            >
+              {createMode ? 'I already have an account' : 'Create an Airglow account'}
+            </button>
+          </>
+        ) : (
+          <div className="auth-error">Airglow account sign-in is not configured for this server.</div>
+        )}
         {authError && <div className="auth-error">{authError}</div>}
       </div>
     </section>
@@ -806,6 +820,11 @@ function App() {
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authMode, setAuthMode] = useState<'sign-in' | 'create'>('sign-in');
+  const [authProviderConfig, setAuthProviderConfig] = useState<AirglowAuthProviderConfig>({
+    googleOAuthEnabled: false,
+    emailPasswordEnabled: false,
+    supabaseConfigured: false,
+  });
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const draftRef = useRef<AirglowAppDraft | null>(null);
 
@@ -943,6 +962,19 @@ function App() {
 
   useEffect(() => {
     let cancelled = false;
+    getAirglowAuthProviderConfig()
+      .then((config) => {
+        if (!cancelled) setAuthProviderConfig(config);
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAuthProviderConfig({
+            googleOAuthEnabled: false,
+            emailPasswordEnabled: false,
+            supabaseConfigured: false,
+          });
+        }
+      });
     const refresh = () => {
       getStoredAirglowAuthState()
         .then((state) => {
@@ -1375,6 +1407,7 @@ function App() {
               onModeChange={setAuthMode}
               onPasswordSubmit={handlePasswordAuth}
               onGoogleSignIn={handleGoogleSignIn}
+              authProviderConfig={authProviderConfig}
             />
           ) : activeView === 'apps' ? (
             <AppsTab

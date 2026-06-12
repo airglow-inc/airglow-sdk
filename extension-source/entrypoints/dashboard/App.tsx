@@ -18,8 +18,10 @@ import {
   AIRGLOW_SESSION_TOKEN_KEY,
   AIRGLOW_USER_ID_KEY,
   USER_EMAIL_KEY,
+  type AirglowAuthProviderConfig,
   type AirglowAuthState,
   createAirglowAccountWithPassword,
+  getAirglowAuthProviderConfig,
   getStoredAirglowAuthState,
   normalizeUserEmail,
   signInAirglowWithGoogle,
@@ -194,6 +196,11 @@ export default function App() {
   const [accountEmail, setAccountEmail] = useState('');
   const [accountPassword, setAccountPassword] = useState('');
   const [accountMode, setAccountMode] = useState<'sign-in' | 'create'>('sign-in');
+  const [authProviderConfig, setAuthProviderConfig] = useState<AirglowAuthProviderConfig>({
+    googleOAuthEnabled: false,
+    emailPasswordEnabled: false,
+    supabaseConfigured: false,
+  });
   const [unseenErrorCount, setUnseenErrorCount] = useState(0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackKind, setFeedbackKind] = useState<FeedbackKind>('general');
@@ -392,6 +399,16 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    getAirglowAuthProviderConfig()
+      .then(setAuthProviderConfig)
+      .catch(() => {
+        setAuthProviderConfig({
+          googleOAuthEnabled: false,
+          emailPasswordEnabled: false,
+          supabaseConfigured: false,
+        });
+      });
+
     chrome.storage.local.get([DEV_PORT_KEY, '__disabled_apps', '__app_source_override', USER_EMAIL_KEY, APP_ORDER_KEY, '__native_host_connected', '__git_pull_due_remote'], (result) => {
       const port = (result[DEV_PORT_KEY] as number) || DEFAULT_DEV_PORT;
       const savedEmail = normalizeUserEmail(result[USER_EMAIL_KEY]) || '';
@@ -1268,65 +1285,76 @@ export default function App() {
                     </button>
                   </>
                 ) : (
-                  <form
-                    className="w-full flex flex-wrap items-center gap-2"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void signInWithAirglowAccount();
-                    }}
-                  >
-                    <input
-                      value={accountEmail}
-                      onChange={(event) => setAccountEmail(event.target.value)}
-                      placeholder="Email"
-                      type="email"
-                      autoComplete="email"
-                      disabled={authBusy}
-                      className="h-8 min-w-[180px] flex-1 px-2 rounded-md border text-base"
-                      style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                    />
-                    <input
-                      value={accountPassword}
-                      onChange={(event) => setAccountPassword(event.target.value)}
-                      placeholder="Password"
-                      type="password"
-                      autoComplete={accountMode === 'create' ? 'new-password' : 'current-password'}
-                      disabled={authBusy}
-                      className="h-8 min-w-[150px] flex-1 px-2 rounded-md border text-base"
-                      style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                    />
-                    <button
-                      type="submit"
-                      disabled={authBusy}
-                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
-                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                      data-testid="sign-in-airglow-button"
-                    >
-                      {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogIn size={14} />}
-                      {accountMode === 'create' ? 'Create' : 'Sign in'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setAccountMode(accountMode === 'create' ? 'sign-in' : 'create')}
-                      disabled={authBusy}
-                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                    >
-                      {accountMode === 'create' ? 'Use existing' : 'Create account'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void signInWithGoogle()}
-                      disabled={authBusy}
-                      aria-label="Sign in with Google"
-                      title="Sign in with Google"
-                      className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
-                      style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-                      data-testid="sign-in-google-button"
-                    >
-                      Google
-                    </button>
-                  </form>
+                  <div className="w-full flex flex-wrap items-center gap-2">
+                    {authProviderConfig.emailPasswordEnabled && (
+                      <form
+                        className="contents"
+                        onSubmit={(event) => {
+                          event.preventDefault();
+                          void signInWithAirglowAccount();
+                        }}
+                      >
+                        <input
+                          value={accountEmail}
+                          onChange={(event) => setAccountEmail(event.target.value)}
+                          placeholder="Email"
+                          type="email"
+                          autoComplete="email"
+                          disabled={authBusy}
+                          className="h-8 min-w-[180px] flex-1 px-2 rounded-md border text-base"
+                          style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                        />
+                        <input
+                          value={accountPassword}
+                          onChange={(event) => setAccountPassword(event.target.value)}
+                          placeholder="Password"
+                          type="password"
+                          autoComplete={accountMode === 'create' ? 'new-password' : 'current-password'}
+                          disabled={authBusy}
+                          className="h-8 min-w-[150px] flex-1 px-2 rounded-md border text-base"
+                          style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                        />
+                        <button
+                          type="submit"
+                          disabled={authBusy}
+                          className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
+                          style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                          data-testid="sign-in-airglow-button"
+                        >
+                          {authBusy ? <RefreshCw size={14} className="animate-spin" /> : <LogIn size={14} />}
+                          {accountMode === 'create' ? 'Create' : 'Sign in'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setAccountMode(accountMode === 'create' ? 'sign-in' : 'create')}
+                          disabled={authBusy}
+                          className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
+                          style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                        >
+                          {accountMode === 'create' ? 'Use existing' : 'Create account'}
+                        </button>
+                      </form>
+                    )}
+                    {authProviderConfig.googleOAuthEnabled && (
+                      <button
+                        type="button"
+                        onClick={() => void signInWithGoogle()}
+                        disabled={authBusy}
+                        aria-label="Sign in with Google"
+                        title="Sign in with Google"
+                        className="h-8 px-3 rounded-md text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-1.5"
+                        style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                        data-testid="sign-in-google-button"
+                      >
+                        Google
+                      </button>
+                    )}
+                    {!authProviderConfig.emailPasswordEnabled && !authProviderConfig.googleOAuthEnabled && (
+                      <div className="text-sm" style={{ color: 'var(--error)' }}>
+                        Airglow account sign-in is not configured for this server.
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
               {authError && (

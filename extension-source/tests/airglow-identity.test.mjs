@@ -235,6 +235,49 @@ test('Airglow email sign-in stores a real authenticated account state', async ()
   }
 });
 
+test('Airglow provider config disables unavailable sign-in methods', async () => {
+  const identity = await loadIdentityModule();
+  installChromeStub();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    if (String(url) === 'https://cloud.test/api/config') {
+      return new Response(JSON.stringify({
+        identity: {
+          googleOAuthEnabled: false,
+          emailPasswordEnabled: false,
+          supabaseUrl: 'https://example.supabase.co',
+          supabasePublishableKey: 'sb_publishable_test',
+        },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
+  };
+
+  try {
+    assert.deepEqual(await identity.getAirglowAuthProviderConfig(), {
+      googleOAuthEnabled: false,
+      emailPasswordEnabled: false,
+      supabaseConfigured: true,
+    });
+    await assert.rejects(
+      () => identity.signInAirglowWithGoogle(),
+      /Google sign-in is not configured/,
+    );
+    await assert.rejects(
+      () => identity.signInAirglowWithPassword('user@example.com', 'password'),
+      /Airglow account sign-in is not configured/,
+    );
+    await assert.rejects(
+      () => identity.createAirglowAccountWithPassword('user@example.com', 'password'),
+      /Airglow account sign-up is not configured/,
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+    delete globalThis.chrome;
+    await identity.cleanup();
+  }
+});
+
 test('anonymous Supabase sessions do not make the UI look signed-in', async () => {
   const identity = await loadIdentityModule();
   const { store } = installChromeStub();

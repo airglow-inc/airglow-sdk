@@ -63,9 +63,16 @@ export type AirglowAuthState = {
 type PublicRuntimeConfig = {
   identity?: {
     googleOAuthEnabled?: boolean;
+    emailPasswordEnabled?: boolean;
     supabaseUrl?: string;
     supabasePublishableKey?: string;
   };
+};
+
+export type AirglowAuthProviderConfig = {
+  googleOAuthEnabled: boolean;
+  emailPasswordEnabled: boolean;
+  supabaseConfigured: boolean;
 };
 
 export function buildIdentityHeaders(identity: { email?: string; userId: string; token?: string }): AirglowIdentityHeaders {
@@ -208,7 +215,7 @@ function createSupabaseAuthClient(supabaseUrl: string, publishableKey: string) {
   });
 }
 
-async function fetchSupabaseAuthConfig(): Promise<{ supabaseUrl: string; publishableKey: string; googleOAuthEnabled: boolean }> {
+async function fetchSupabaseAuthConfig(): Promise<{ supabaseUrl: string; publishableKey: string; googleOAuthEnabled: boolean; emailPasswordEnabled: boolean }> {
   const config = await fetchPublicRuntimeConfig();
   const identity = config.identity || {};
   const supabaseUrl = String(identity.supabaseUrl || '').replace(/\/+$/, '');
@@ -217,6 +224,17 @@ async function fetchSupabaseAuthConfig(): Promise<{ supabaseUrl: string; publish
     supabaseUrl,
     publishableKey,
     googleOAuthEnabled: Boolean(identity.googleOAuthEnabled),
+    emailPasswordEnabled: identity.emailPasswordEnabled !== false,
+  };
+}
+
+export async function getAirglowAuthProviderConfig(): Promise<AirglowAuthProviderConfig> {
+  const { supabaseUrl, publishableKey, googleOAuthEnabled, emailPasswordEnabled } = await fetchSupabaseAuthConfig();
+  const supabaseConfigured = Boolean(supabaseUrl && publishableKey);
+  return {
+    supabaseConfigured,
+    googleOAuthEnabled: supabaseConfigured && googleOAuthEnabled,
+    emailPasswordEnabled: supabaseConfigured && emailPasswordEnabled,
   };
 }
 
@@ -305,8 +323,8 @@ export async function signInAirglowWithPassword(emailInput: string, password: st
   const email = normalizeUserEmail(emailInput);
   if (!email) throw new Error('Enter a valid email address.');
   if (!password) throw new Error('Enter your password.');
-  const { supabaseUrl, publishableKey } = await fetchSupabaseAuthConfig();
-  if (!supabaseUrl || !publishableKey) {
+  const { supabaseUrl, publishableKey, emailPasswordEnabled } = await fetchSupabaseAuthConfig();
+  if (!emailPasswordEnabled || !supabaseUrl || !publishableKey) {
     throw new Error('Airglow account sign-in is not configured for this Airglow Cloud server.');
   }
   const supabase = createSupabaseAuthClient(supabaseUrl, publishableKey);
@@ -326,8 +344,8 @@ export async function createAirglowAccountWithPassword(emailInput: string, passw
   const email = normalizeUserEmail(emailInput);
   if (!email) throw new Error('Enter a valid email address.');
   if (password.length < 8) throw new Error('Password must be at least 8 characters.');
-  const { supabaseUrl, publishableKey } = await fetchSupabaseAuthConfig();
-  if (!supabaseUrl || !publishableKey) {
+  const { supabaseUrl, publishableKey, emailPasswordEnabled } = await fetchSupabaseAuthConfig();
+  if (!emailPasswordEnabled || !supabaseUrl || !publishableKey) {
     throw new Error('Airglow account sign-up is not configured for this Airglow Cloud server.');
   }
   const supabase = createSupabaseAuthClient(supabaseUrl, publishableKey);
