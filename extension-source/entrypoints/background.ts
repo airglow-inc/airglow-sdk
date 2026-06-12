@@ -1222,7 +1222,8 @@ export default defineBackground(() => {
       | 'browser.open_tab'
       | 'browser.activate_tab'
       | 'browser.navigate_tab'
-      | 'browser.reload_tab';
+      | 'browser.reload_tab'
+      | 'browser.smoke_generated_app';
     input?: Record<string, unknown>;
   };
 
@@ -1250,6 +1251,7 @@ export default defineBackground(() => {
     'browser.activate_tab',
     'browser.navigate_tab',
     'browser.reload_tab',
+    'browser.smoke_generated_app',
   ]);
   let browserToolBridgeTimer: ReturnType<typeof setInterval> | undefined;
   let browserToolBridgeRunning = false;
@@ -2390,6 +2392,169 @@ export default defineBackground(() => {
     return { tab: tabForBrowserToolResult(tab), ...(result?.result || {}) };
   }
 
+  async function executeBrowserSmokeGeneratedAppTool(input: Record<string, unknown> | undefined) {
+    const tab = await getActiveBrowserToolTab();
+    ensureHttpBrowserToolTab(tab);
+    const appId = browserToolString(input, 'appId', 160) || 'private-smoke';
+    const appName = browserToolString(input, 'appName', 160) || 'Generated app';
+    const userscriptJs = browserToolString(input, 'userscriptJs', 30_000);
+    if (!userscriptJs) throw new Error('browser.smoke_generated_app requires input.userscriptJs');
+    const expectedText = Array.isArray(input?.expectedText)
+      ? input.expectedText.filter((value): value is string => typeof value === 'string').slice(0, 6)
+      : [];
+    const primaryActionText = browserToolString(input, 'primaryActionText', 200);
+    const clickPrimaryAction = browserToolBoolean(input, 'clickPrimaryAction', true);
+    const cleanup = browserToolBoolean(input, 'cleanup', true);
+
+    await requestBrowserToolUserApproval(
+      tab,
+      `Airglow cloud testing wants to temporarily run and verify generated app "${appName}" on this page. Allow?`,
+    );
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: 'ISOLATED',
+      args: [appId, appName, userscriptJs, expectedText, primaryActionText, clickPrimaryAction, cleanup],
+      func: async (
+        appIdArg: string,
+        appNameArg: string,
+        sourceArg: string,
+        expectedTextArg: string[],
+        primaryActionTextArg: string,
+        clickPrimaryActionArg: boolean,
+        cleanupArg: boolean,
+      ) => {
+        const normalize = (value: unknown) => String(value || '').replace(/\s+/g, ' ').trim();
+        const root = document.body || document.documentElement;
+        const beforeNodes = new Set(Array.from(root.querySelectorAll('*')));
+        const storageWrites: { key: string; value: unknown }[] = [];
+        const llmCalls: unknown[] = [];
+        const editorInsertions: { text: string; opts?: unknown }[] = [];
+        const globalScope = globalThis as typeof globalThis & { airglow?: unknown };
+        const previousAirglow = globalScope.airglow;
+        let executionError = '';
+        let clickError = '';
+        let clickedPrimaryAction = false;
+
+        globalScope.airglow = {
+          storage: {
+            async set(key: string, value: unknown) {
+              storageWrites.push({ key, value });
+            },
+            async get(key: string) {
+              for (let index = storageWrites.length - 1; index >= 0; index -= 1) {
+                if (storageWrites[index].key === key) return storageWrites[index].value;
+              }
+              return null;
+            },
+            async delete() {},
+            async list() {
+              return storageWrites.map((entry) => entry.key);
+            },
+          },
+          llm: {
+            anthropic: {
+              async messages(payload: unknown) {
+                llmCalls.push(payload);
+                return { content: [{ type: 'text', text: 'Airglow browser smoke response' }] };
+              },
+            },
+          },
+          page: {
+            async replaceEditorText(text: string, opts?: unknown) {
+              editorInsertions.push({ text, opts });
+              const target = document.querySelector('textarea, input, [contenteditable="true"]') as HTMLInputElement | HTMLTextAreaElement | HTMLElement | null;
+              if (!target) return { ok: false, error: 'No editor found' };
+              if ('value' in target) target.value = text;
+              else target.textContent = text;
+              target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+              target.dispatchEvent(new Event('change', { bubbles: true }));
+              return { ok: true, method: 'smoke-dom' };
+            },
+          },
+        };
+
+        try {
+          Function(sourceArg).call(globalThis);
+        } catch (error) {
+          executionError = error instanceof Error ? error.message : String(error);
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 250));
+
+        const createdNodes = Array.from(root.querySelectorAll('*')).filter((node) => !beforeNodes.has(node));
+        const visibleNodes = createdNodes.filter((node) => {
+          const element = node as HTMLElement;
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+        });
+        const visibleText = normalize(visibleNodes.map((node) => (node as HTMLElement).innerText || node.textContent).join(' ')).slice(0, 4000);
+        const expectedMissing = expectedTextArg
+          .map((text) => normalize(text))
+          .filter((text) => text && !visibleText.toLowerCase().includes(text.toLowerCase()));
+
+        if (clickPrimaryActionArg) {
+          const primaryNeedle = normalize(primaryActionTextArg).toLowerCase();
+          const target = createdNodes.find((node) => {
+            const element = node as HTMLInputElement;
+            const tagName = element.tagName.toLowerCase();
+            if (tagName !== 'button' && tagName !== 'a' && element.getAttribute('role') !== 'button') return false;
+            const label = normalize(element.innerText || element.textContent || element.value || element.getAttribute('aria-label'));
+            return !primaryNeedle || label.toLowerCase().includes(primaryNeedle);
+          }) as HTMLElement | undefined;
+          try {
+            if (!target) throw new Error('No generated primary action button found');
+            target.click();
+            clickedPrimaryAction = true;
+            await new Promise((resolve) => setTimeout(resolve, 350));
+          } catch (error) {
+            clickError = error instanceof Error ? error.message : String(error);
+          }
+        }
+
+        if (cleanupArg) {
+          for (const node of createdNodes.reverse()) {
+            if (node.parentNode && !beforeNodes.has(node)) node.parentNode.removeChild(node);
+          }
+        }
+
+        if (previousAirglow === undefined) delete globalScope.airglow;
+        else globalScope.airglow = previousAirglow;
+
+        const ok = !executionError
+          && visibleNodes.length > 0
+          && expectedMissing.length === 0
+          && (!clickPrimaryActionArg || clickedPrimaryAction);
+        return {
+          ok,
+          reason: ok
+            ? ''
+            : executionError
+              || clickError
+              || (visibleNodes.length === 0
+                ? 'Generated app did not create a visible panel'
+                : `Generated app missing expected visible text: ${expectedMissing.join(', ')}`),
+          appId: appIdArg,
+          appName: appNameArg,
+          visibleElementCount: visibleNodes.length,
+          visibleText,
+          expectedMissing,
+          clickedPrimaryAction,
+          llmCallCount: llmCalls.length,
+          storageWriteCount: storageWrites.length,
+          editorInsertionCount: editorInsertions.length,
+          page: {
+            title: normalize(document.title),
+            url: location.href,
+            origin: location.origin,
+            capturedAt: new Date().toISOString(),
+          },
+        };
+      },
+    });
+    return { tab: tabForBrowserToolResult(tab), ...(result?.result || {}) };
+  }
+
   async function executeBrowserToolCall(call: BrowserToolCallRecord): Promise<unknown> {
     if (call.toolName === 'browser.current_tab') return await executeBrowserCurrentTabTool();
     if (call.toolName === 'browser.read_page') return await executeBrowserReadPageTool(call.input);
@@ -2402,6 +2567,7 @@ export default defineBackground(() => {
     if (call.toolName === 'browser.activate_tab') return await executeBrowserActivateTabTool(call.input);
     if (call.toolName === 'browser.navigate_tab') return await executeBrowserNavigateTabTool(call.input);
     if (call.toolName === 'browser.reload_tab') return await executeBrowserReloadTabTool(call.input);
+    if (call.toolName === 'browser.smoke_generated_app') return await executeBrowserSmokeGeneratedAppTool(call.input);
     throw new Error(`Unsupported browser tool: ${call.toolName}`);
   }
 
