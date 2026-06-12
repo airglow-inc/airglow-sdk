@@ -42,9 +42,12 @@ type SidePanelView = 'build' | 'apps';
 
 const GENERATION_STEPS = [
   'Reading page context...',
+  'Planning app...',
   'Generating UI...',
   'Generating logic...',
-  'Validating app...',
+  'Reviewing app...',
+  'Repairing if needed...',
+  'Browser smoke...',
   'Packaging app...',
   'Saving private app...',
 ];
@@ -523,12 +526,17 @@ function latestGenerationRunSequence(events: SidePanelGenerationRunEvent[]): num
 
 function progressStepIndexFromEvents(events: SidePanelGenerationRunEvent[], fallback: number): number {
   const phaseIndex: Record<string, number> = {
-    generating_ui: 1,
-    generating_logic: 2,
-    validating: 3,
-    packaging: 4,
-    publishing: 5,
-    completed: 5,
+    reading_browser: 0,
+    planning: 1,
+    generating_ui: 2,
+    generating_logic: 3,
+    validating: 4,
+    static_review: 4,
+    repairing: 5,
+    browser_smoke: 6,
+    packaging: 7,
+    publishing: 8,
+    completed: 8,
   };
   return events.reduce((max, event) => {
     if (!event.phase) return max;

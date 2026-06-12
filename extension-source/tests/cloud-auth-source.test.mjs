@@ -33,7 +33,16 @@ test('sidepanel private generation uses cloud identity, private endpoints, and r
   assert.match(sidepanel, /type:\s*'airglow:sidepanel:get-generation-run'/);
   assert.match(sidepanel, /type:\s*'airglow:sidepanel:execute-generation-run'/);
   assert.match(sidepanel, /Refresh page/);
+  assert.match(sidepanel, /Reviewing app\.\.\./);
+  assert.match(sidepanel, /Repairing if needed\.\.\./);
+  assert.match(sidepanel, /Browser smoke\.\.\./);
+  assert.match(sidepanel, /static_review:\s*4/);
+  assert.match(sidepanel, /repairing:\s*5/);
+  assert.match(sidepanel, /browser_smoke:\s*6/);
   assert.match(sidepanelModel, /applyGenerationRunEventsToDraft/);
+  assert.match(sidepanelModel, /\|\s*'static_review'/);
+  assert.match(sidepanelModel, /\|\s*'repairing'/);
+  assert.match(sidepanelModel, /\|\s*'browser_smoke'/);
   assert.match(sidepanelModel, /This Airglow Cloud server does not support private app save yet/);
 });
 
