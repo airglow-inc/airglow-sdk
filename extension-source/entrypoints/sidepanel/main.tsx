@@ -664,6 +664,10 @@ function isTerminalGenerationRunStatus(status: SidePanelGenerationRunStatus): bo
   return status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'waiting_for_user';
 }
 
+function isFinalGenerationRunStatus(status: SidePanelGenerationRunStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 function draftHasPendingPlanApproval(
   draft: AirglowAppDraft | null,
   events: SidePanelGenerationRunEvent[],
@@ -1132,7 +1136,7 @@ function App() {
     () => latestPendingBrowserToolApproval(browserToolApprovals),
     [browserToolApprovals],
   );
-  const pendingPlanApproval = draftHasPendingPlanApproval(draft, generationRunEvents);
+  const pendingPlanApproval = saveState !== 'saving' && draftHasPendingPlanApproval(draft, generationRunEvents);
 
   function rememberRunEvents(events: SidePanelGenerationRunEvent[]) {
     setGenerationRunEvents((current) => mergeGenerationRunEvents(current, events));
@@ -1310,7 +1314,11 @@ function App() {
         runId,
         draft: draftToRun,
       });
-      if (pollTimer !== null && ('mode' in executed || isTerminalGenerationRunStatus(executed.run.status))) {
+      const executedTerminal = (
+        ('mode' in executed && (executed.mode === 'cloud' || executed.mode === 'failed')) ||
+        isFinalGenerationRunStatus(executed.run.status)
+      );
+      if (pollTimer !== null && executedTerminal) {
         window.clearInterval(pollTimer);
         pollTimer = null;
       }
@@ -1328,8 +1336,8 @@ function App() {
         setSaveError(executed.cloudError.message || 'Cloud generation failed.');
       } else {
         setSavedAppId(null);
-        setSaveState(isTerminalGenerationRunStatus(executed.run.status) ? 'idle' : 'saving');
-        setGenerationPhase(isTerminalGenerationRunStatus(executed.run.status) ? 'ready' : 'generating');
+        setSaveState(executedTerminal ? 'idle' : 'saving');
+        setGenerationPhase(executedTerminal ? 'ready' : 'generating');
       }
       setApplyState('idle');
       setApplyError(null);

@@ -36,6 +36,9 @@ test('sidepanel private generation uses cloud identity, private endpoints, and r
   assert.match(sidepanel, /function PlanApprovalActions/);
   assert.match(sidepanel, /function handleApprovePlan\(\)/);
   assert.match(sidepanel, /executeGenerationRunFromDraft\(draft\)/);
+  assert.match(sidepanel, /saveState !== 'saving' && draftHasPendingPlanApproval/);
+  assert.match(sidepanel, /executed\.mode === 'cloud' \|\| executed\.mode === 'failed'/);
+  assert.match(sidepanel, /isFinalGenerationRunStatus\(executed\.run\.status\)/);
   assert.match(sidepanel, /Refresh page/);
   assert.match(sidepanel, /Reviewing app\.\.\./);
   assert.match(sidepanel, /Repairing if needed\.\.\./);
