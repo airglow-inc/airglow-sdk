@@ -21,7 +21,7 @@ export default defineConfig({
     // 'tabs' exposes url/title for chrome:// and other-extension pages in
     // tabs.query (no new install warning — <all_urls> already covers it).
     // 'debugger' is used only to drive our OWN chrome-extension:// pages
-    // (app-shell, dashboard) — host_permissions can't match that scheme, so
+    // (the dashboard and side panel) — host_permissions can't match that scheme, so
     // chrome.scripting/userScripts are flatly refused there. Normal http(s)
     // pages keep the scripting path (no debugger infobar).
     permissions: ['storage', 'tabs', 'userScripts', 'declarativeNetRequest', 'scripting', 'webNavigation', 'nativeMessaging', 'identity', 'identity.email', 'offscreen', 'sidePanel', 'debugger', 'alarms'],

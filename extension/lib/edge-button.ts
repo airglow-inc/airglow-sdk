@@ -230,7 +230,7 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   function show() {
     popup.style.display = 'block';
     requestAnimationFrame(() => { popup.style.opacity = '1'; });
-    // Fetch apps for current page (by appId for app-shell, by URL otherwise)
+    // Fetch apps for current page (by appId for an embedded app view, by URL otherwise)
     const msg: any = { type: 'airglow:get-page-apps', url: location.href };
     if (opts?.appId) msg.appId = opts.appId;
     chrome.runtime.sendMessage(msg, (res) => {
@@ -543,7 +543,7 @@ export function createEdgeButton(opts?: { initialPos?: number }): { destroy: () 
 }
 
 /**
- * Persistent always-visible button for extension pages (app-shell).
+ * Persistent always-visible button for extension pages (the dashboard).
  * Fullscreen iframes block parent mousemove, so edge-peek doesn't work.
  */
 export function createPersistentButton() {
@@ -555,7 +555,7 @@ export function createPersistentButton() {
 
   const W = 40, H = 56, ICON_SIZE = 22;
 
-  // Extract appId from app-shell URL params
+  // Extract appId from the dashboard URL params
   const appId = new URLSearchParams(location.search).get('app') || undefined;
 
   const btn = document.createElement('div');

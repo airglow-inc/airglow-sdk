@@ -775,8 +775,8 @@ export default defineBackground(() => {
   // ───── DOM read/write via chrome.scripting (no CDP needed) ─────
   // getHtml/setHtml run in the ISOLATED world — the DOM is shared across worlds,
   // so they never touch page CSP. All three accept an optional `frame` (URL
-  // substring) to target a child frame instead of the top document — e.g. the
-  // app-shell iframe (its URL contains the dev-server origin).
+  // substring) to target a child frame instead of the top document — e.g. an
+  // app's UI iframe embedded in the dashboard.
   async function resolveFrameId(tabId: number, frameMatch?: string | null): Promise<number> {
     if (!frameMatch) return 0; // top frame
     const frames = (await chrome.webNavigation.getAllFrames({ tabId })) || [];
@@ -815,7 +815,7 @@ export default defineBackground(() => {
   }
 
   async function domEval(tabId: number, code: string, frame?: string | null, main?: boolean) {
-    // Our own chrome-extension:// pages (app-shell, dashboard) can't be reached
+    // Our own chrome-extension:// pages (the dashboard, side panel) can't be reached
     // by chrome.scripting/userScripts — host_permissions don't match that scheme.
     // chrome.debugger is the only bypass; it also ignores page CSP, so the top
     // frame runs in the page's real context (page globals like window.__test are
@@ -864,7 +864,7 @@ export default defineBackground(() => {
 
   // ───── Driving our own chrome-extension:// pages via chrome.debugger (CDP) ─────
   // host_permissions can't match the chrome-extension scheme, so scripting/
-  // userScripts are refused on the app-shell, dashboard, etc. The debugger API
+  // userScripts are refused on the dashboard, side panel, etc. The debugger API
   // is the supported bypass (it also ignores page CSP). Attachment is per-tab
   // and reused across commands — Chrome shows its "Airglow started debugging
   // this browser" infobar while attached, but only on these agent debug tabs.
@@ -1342,7 +1342,7 @@ export default defineBackground(() => {
     }
 
     if (msg?.type === 'airglow:get-page-apps') {
-      // Return apps matching a given URL (or a specific appId for app-shell), with disabled status
+      // Return apps matching a given URL (or a specific appId for an embedded app view), with disabled status
       const url = msg.url as string;
       const appId = msg.appId as string | undefined;
       const senderTabId = _sender?.tab?.id;
@@ -1367,7 +1367,7 @@ export default defineBackground(() => {
           });
         };
 
-        // If appId is specified (app-shell), return just that app
+        // If appId is specified (embedded app view), return just that app
         if (appId) {
           const m = allManifests.find(m => m.id === appId);
           if (m) addMatchingApp(m);
