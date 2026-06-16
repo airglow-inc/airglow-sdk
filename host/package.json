@@ -9,10 +9,14 @@
     "browser": "bun run src/main.ts browser",
     "pack-seed": "bun scripts/pack-seed.ts",
     "build": "bun run pack-seed && bun build --compile --outfile dist/airglow src/main.ts",
-    "build:release": "bash scripts/build-release.sh"
+    "build:release": "bash scripts/build-release.sh",
+    "upload-blob": "bun run scripts/upload-blob.ts",
+    "release": "bash scripts/build-release.sh && bun run scripts/upload-blob.ts",
+    "bump": "bash scripts/bump.sh"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",
+    "@vercel/blob": "^2.4.0",
     "typescript": "^5.6.3"
   }
 }

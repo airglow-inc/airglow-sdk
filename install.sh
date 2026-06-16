@@ -3,12 +3,10 @@
 #
 #   curl -fsSL https://airglow.dev/install.sh | bash
 #
-# Downloads the airglow host binary for this platform from the latest GitHub
-# release, installs it to ~/.airglow/bin/airglow, and runs `airglow install`
+# Downloads the airglow host binary for this platform from the Airglow CDN,
+# installs it to ~/.airglow/bin/airglow, and runs `airglow install`
 # (registers the Chrome native-messaging host + seeds the workspace).
 set -eu
-
-REPO="airglow-inc/airglow-sdk"
 
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64)              asset="airglow-darwin-arm64" ;;
@@ -21,22 +19,21 @@ case "$(uname -s)-$(uname -m)" in
 esac
 
 command -v curl >/dev/null 2>&1 || { echo "airglow: curl is required" >&2; exit 1; }
+command -v gunzip >/dev/null 2>&1 || { echo "airglow: gunzip is required" >&2; exit 1; }
 
 bin_dir="${AIRGLOW_HOME:-$HOME/.airglow}/bin"
 mkdir -p "$bin_dir"
 
-# Host binaries live on host-vX.Y.Z releases; extension zips on vX.Y.Z ones.
-# Pick the newest release that actually carries this platform's asset.
-url=$(curl -fsSL "https://api.github.com/repos/$REPO/releases?per_page=30" \
-  | grep -o "https://github.com/$REPO/releases/download/[^\"]*/$asset" | head -1)
-if [ -z "$url" ]; then
-  echo "airglow: no release with asset $asset found in $REPO" >&2
-  exit 1
-fi
-echo "downloading $url"
+# Binaries are served gzip-compressed (~21 MB) from the Airglow CDN; the
+# endpoint 302-redirects to the backing Blob store. Override the base for
+# testing (e.g. a preview deploy, or a direct blob URL).
+host_base="${AIRGLOW_HOST_BASE:-https://api.airglow.dev/host}"
+echo "downloading airglow host ($asset)…"
 tmp="$bin_dir/.airglow.download.$$"
-trap 'rm -f "$tmp"' EXIT
-curl -fL --progress-bar "$url" -o "$tmp"
+trap 'rm -f "$tmp" "$tmp.gz"' EXIT
+curl -fSL --progress-bar "$host_base/$asset.gz" -o "$tmp.gz"
+gunzip -c "$tmp.gz" > "$tmp"
+rm -f "$tmp.gz"
 chmod +x "$tmp"
 mv -f "$tmp" "$bin_dir/airglow"
 trap - EXIT

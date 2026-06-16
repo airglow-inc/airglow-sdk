@@ -1,0 +1,36 @@
+name: host-release
+
+# Push a host-vX.Y.Z tag (via `bun run bump` in host/) to ship. Bun cross-
+# compiles all three platforms from this single Linux runner, gzips them, and
+# uploads to the public Vercel Blob store (airglow-host) that install.sh reads.
+on:
+  push:
+    tags:
+      - 'host-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.11
+
+      - name: Install host deps
+        working-directory: host
+        run: bun install --frozen-lockfile
+
+      - name: Build release binaries (+ gzip)
+        working-directory: host
+        run: bash scripts/build-release.sh
+
+      - name: Upload to Vercel Blob
+        working-directory: host
+        env:
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+        run: bun run scripts/upload-blob.ts "${GITHUB_REF_NAME#host-v}"
