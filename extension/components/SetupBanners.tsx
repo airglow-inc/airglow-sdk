@@ -1,15 +1,41 @@
-// Chrome-setup nags shown at the top of the sidepanel, next to the
-// host-missing onboarding banner: "Enable User Scripts" (the extension can't
-// inject anything without it) and "Add Airglow shortcut" (pin the toolbar
-// icon). Each detects its own state and renders nothing once satisfied.
-// Append ?debug-banners=1 to force both visible.
+// The ordered setup gate shown at the top of the sidepanel (and dashboard).
+// There is a strict preference order — only the single highest-priority unmet
+// step renders, never all at once:
+//
+//   1. Windows unsupported  — handled by the surface (full-screen takeover),
+//                             not here; the native host is macOS/Linux only.
+//   2. Sign in with Google  — no session → the agent/gateway can't run.
+//   3. Install native host  — host disconnected → nothing runs locally.
+//   4. Enable User Scripts   — Chrome permission; the extension can't inject.
+//   5. Pin to toolbar        — convenience; dismissible (persisted).
+//
+// State is polled (chrome.action / chrome.userScripts expose no change events),
+// so a banner clears on its own once satisfied — no sidepanel reload needed.
+// Append ?debug-banners=1 (or pass `force`) to render every banner for design.
 
-import { useEffect, useState } from 'react';
-import { FileCode2, Pin, TriangleAlert, X } from 'lucide-react';
+import { useEffect, useState, type ReactElement } from 'react';
+import { Check, Copy, FileCode2, LogIn, Pin, TriangleAlert, X } from 'lucide-react';
+import { AUTH_SESSION_KEY, getStoredSession, isAuthConfigured, signInWithGoogle, type AuthSession } from '../lib/airglow-auth';
+
+const INSTALL_CMD = 'curl -fsSL https://airglow.dev/install.sh | bash';
 
 // Pin is a convenience, not a blocker — once dismissed it stays dismissed
 // across sessions (it still auto-hides the moment the icon is pinned).
 const PIN_DISMISSED_KEY = '__pin_banner_dismissed';
+
+export type SetupStep = 'signin' | 'host' | 'userscripts' | 'pin';
+const ALL_STEPS: SetupStep[] = ['signin', 'host', 'userscripts', 'pin'];
+
+function GoogleLogo({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
+  );
+}
 
 function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { size?: number; color?: string; className?: string }) {
   return (
@@ -35,99 +61,250 @@ const cardStyle = {
   borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
 } as const;
 
-export function SetupBanners({ force = false }: { force?: boolean } = {}) {
-  const [userScriptsEnabled, setUserScriptsEnabled] = useState<boolean | null>(null);
-  const [isPinned, setIsPinned] = useState<boolean | null>(null);
-  const [pinDismissed, setPinDismissed] = useState(false);
-  const forceBanners = force || new URLSearchParams(window.location.search).get('debug-banners') === '1';
+// Dismiss control — a cross in a bordered white box, matching the announcement
+// banner's dismiss button (components/AnnouncementBanner.tsx) so both top-of-
+// panel cards share one affordance.
+function DismissButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      aria-label="Dismiss"
+      data-testid="banner-dismiss"
+      className="absolute top-2 right-2 inline-flex items-center justify-center h-7 w-7 rounded cursor-pointer border"
+      style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))' }}
+      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; e.currentTarget.style.color = 'var(--fg-secondary)'; }}
+    >
+      <X size={14} strokeWidth={2.5} />
+    </button>
+  );
+}
+
+// Live setup state, polled every 2s (chrome.action / chrome.userScripts emit no
+// change events, so an enabled permission or freshly pinned icon would otherwise
+// stay invisible until the panel is reopened). Host + auth also react instantly
+// to storage changes.
+function useSetupState() {
+  const [s, setS] = useState<{
+    loaded: boolean;
+    authSession: AuthSession | null;
+    hostConnected: boolean | null;
+    userScriptsEnabled: boolean | null;
+    isPinned: boolean | null;
+  }>({ loaded: false, authSession: null, hostConnected: null, userScriptsEnabled: null, isPinned: null });
 
   useEffect(() => {
-    if (chrome.userScripts) {
-      chrome.userScripts.getScripts().then(() => setUserScriptsEnabled(true)).catch(() => setUserScriptsEnabled(false));
-    } else {
-      setUserScriptsEnabled(false);
+    let alive = true;
+    async function probe() {
+      let userScriptsEnabled = false;
+      if (chrome.userScripts) {
+        try { await chrome.userScripts.getScripts(); userScriptsEnabled = true; } catch { userScriptsEnabled = false; }
+      }
+      let isPinned: boolean | null = null;
+      try { const us = await chrome.action?.getUserSettings?.(); if (us) isPinned = !!us.isOnToolbar; } catch { /* not available */ }
+      const stored = await chrome.storage.local.get('__native_host_connected');
+      const nh = stored['__native_host_connected'];
+      const hostConnected = nh === undefined ? null : !!nh;
+      const authSession = await getStoredSession();
+      if (alive) setS({ loaded: true, authSession, hostConnected, userScriptsEnabled, isPinned });
     }
-    chrome.action?.getUserSettings?.().then((s) => setIsPinned(s.isOnToolbar));
+    void probe();
+    const id = setInterval(() => { void probe(); }, 2000);
+    const onChange = (c: Record<string, chrome.storage.StorageChange>) => {
+      if ('__native_host_connected' in c || AUTH_SESSION_KEY in c) void probe();
+    };
+    chrome.storage?.local?.onChanged.addListener(onChange);
+    return () => { alive = false; clearInterval(id); chrome.storage?.local?.onChanged.removeListener(onChange); };
+  }, []);
+
+  return s;
+}
+
+export function SetupBanners({
+  variant = 'sidepanel',
+  steps = ALL_STEPS,
+  force = false,
+}: { variant?: 'sidepanel' | 'dashboard'; steps?: SetupStep[]; force?: boolean } = {}) {
+  const state = useSetupState();
+  const [signingIn, setSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState<string | null>(null);
+  // User Scripts is a hard requirement, so its dismiss is session-only (not
+  // persisted) — it returns on reload until the permission is actually enabled.
+  const [userScriptsDismissed, setUserScriptsDismissed] = useState(false);
+  const [pinDismissed, setPinDismissed] = useState(false);
+  const [installCopied, setInstallCopied] = useState(false);
+
+  useEffect(() => {
     chrome.storage?.local?.get(PIN_DISMISSED_KEY).then((r) => { if (r?.[PIN_DISMISSED_KEY]) setPinDismissed(true); });
   }, []);
+
+  async function doSignIn() {
+    if (signingIn) return;
+    setSigningIn(true);
+    setSignInError(null);
+    try {
+      await signInWithGoogle({ interactive: true });
+      // Session lands in storage → the poll/onChanged clears this banner.
+    } catch (e) {
+      setSignInError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSigningIn(false);
+    }
+  }
 
   function dismissPin() {
     setPinDismissed(true);
     chrome.storage?.local?.set({ [PIN_DISMISSED_KEY]: true });
   }
 
-  return (
-    <>
-      {(forceBanners || userScriptsEnabled === false) && (
-        <div className="m-3 p-3.5 rounded-xl border" style={cardStyle} data-testid="banner-userscripts">
-          <div className="text-[15px] font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
-            <FileCode2 size={18} style={{ color: 'var(--error)' }} />
-            Enable User Scripts
-          </div>
-          <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
-            <div className="flex items-center gap-2">
-              <Step n={1} />
-              <span>
-                Open{' '}
-                <a
-                  href="#"
-                  onClick={(e) => { e.preventDefault(); chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` }); }}
-                  style={{ color: 'var(--clay)' }}
-                >Extension Settings</a>
-              </span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Step n={2} />
-              <span>Scroll down and enable <strong>User scripts</strong></span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Step n={3} />
-              <span>Reload this page</span>
-            </div>
-          </div>
-          <div
-            className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border"
-            style={{ borderColor: 'var(--error)', background: 'color-mix(in srgb, var(--error) 18%, var(--bg-white))', color: 'var(--fg-secondary)', fontSize: '13px' }}
-          >
-            <TriangleAlert size={15} className="shrink-0" style={{ color: 'var(--error)' }} />
-            <span>Airglow won't run until User Scripts are enabled.</span>
-          </div>
-        </div>
-      )}
+  function copyInstall() {
+    navigator.clipboard.writeText(INSTALL_CMD).then(() => {
+      setInstallCopied(true);
+      setTimeout(() => setInstallCopied(false), 1500);
+    });
+  }
 
-      {(forceBanners || (isPinned === false && !pinDismissed)) && (
-        <div className="relative m-3 p-3.5 rounded-xl border" style={cardStyle} data-testid="banner-pin">
+  const wrap = variant === 'dashboard'
+    ? 'relative p-3.5 rounded-xl border mb-4 w-full max-w-xl'
+    : 'relative m-3 p-3.5 rounded-xl border';
+
+  const renderers: Record<SetupStep, () => ReactElement> = {
+    signin: () => (
+      <div className={wrap} style={cardStyle} data-testid="banner-signin">
+        <div className="text-[15px] font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
+          <LogIn size={18} style={{ color: 'var(--error)' }} />
+          Sign in to Airglow
+        </div>
+        <div className="mt-2 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
+          One click with your Google account — it identifies you across the extension and airglow.dev. No spam, ever.
+        </div>
+        <button
+          onClick={doSignIn}
+          disabled={signingIn}
+          data-testid="google-signin-button"
+          className="mt-3 h-10 px-4 rounded-md text-[14px] font-medium cursor-pointer border inline-flex items-center gap-2.5"
+          style={{ color: 'var(--fg-primary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-white)', opacity: signingIn ? 0.6 : 1 }}
+          onMouseEnter={(e) => { if (!signingIn) e.currentTarget.style.background = 'var(--bg-primary)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; }}
+        >
+          <GoogleLogo size={16} />
+          {signingIn ? 'Signing in…' : 'Sign in with Google'}
+        </button>
+        {signInError && (
+          <div className="mt-2 text-[13px]" style={{ color: 'var(--error)' }} data-testid="google-signin-error">{signInError}</div>
+        )}
+      </div>
+    ),
+
+    host: () => (
+      <div className={wrap} style={cardStyle} data-testid="banner-host">
+        <div className="text-[15px] font-semibold mb-1" style={{ color: 'var(--fg-primary)' }}>Airglow host is not connected</div>
+        <div className="text-[14px]" style={{ color: 'var(--fg-primary)' }}>
+          Host is a binary that allows you to run Airglow apps locally. Install it using the command below.
+        </div>
+        <div className="mt-3 mb-1.5 text-[14px] font-semibold" style={{ color: 'var(--fg-primary)' }}>Paste in terminal</div>
+        <div className="flex items-stretch gap-2">
           <button
-            onClick={dismissPin}
-            aria-label="Dismiss"
-            data-testid="banner-pin-dismiss"
-            className="absolute top-2.5 right-2.5 inline-flex items-center justify-center h-6 w-6 rounded cursor-pointer"
-            style={{ background: 'transparent', color: 'var(--fg-tertiary)' }}
-            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--gray-200)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = 'var(--fg-tertiary)'; }}
+            type="button"
+            onClick={copyInstall}
+            title={installCopied ? 'Copied' : 'Copy'}
+            className="shrink-0 flex items-center justify-center w-8 rounded-sm cursor-pointer"
+            style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', color: 'var(--fg-secondary)' }}
           >
-            <X size={14} strokeWidth={2.5} />
+            {installCopied ? <Check size={13} /> : <Copy size={13} />}
           </button>
-          <div className="text-[15px] font-semibold flex items-center gap-2 pr-7" style={{ color: 'var(--fg-primary)' }}>
-            <Pin size={18} style={{ color: 'var(--error)' }} />
-            Add Airglow shortcut
+          <pre className="flex-1 min-w-0 p-2 rounded-sm text-[12px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+            {INSTALL_CMD}
+          </pre>
+        </div>
+        <div className="mt-2.5 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
+          <div className="mb-1 font-semibold" style={{ color: 'var(--fg-primary)' }}>What the script does:</div>
+          <ul className="space-y-1 list-disc pl-4">
+            <li>Downloads the host binary to <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}>~/.airglow</code> (no admin rights, no system changes)</li>
+            <li>Sets up your <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}>~/.airglow</code> workspace — folder to develop Airglow apps</li>
+          </ul>
+        </div>
+      </div>
+    ),
+
+    userscripts: () => (
+      <div className={wrap} style={cardStyle} data-testid="banner-userscripts">
+        <DismissButton onClick={() => setUserScriptsDismissed(true)} />
+        <div className="text-[15px] font-semibold flex items-center gap-2 pr-7" style={{ color: 'var(--fg-primary)' }}>
+          <FileCode2 size={18} style={{ color: 'var(--error)' }} />
+          Enable User Scripts
+        </div>
+        <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
+          <div className="flex items-center gap-2">
+            <Step n={1} />
+            <span>
+              Open{' '}
+              <a
+                href="#"
+                onClick={(e) => { e.preventDefault(); chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` }); }}
+                style={{ color: 'var(--clay)' }}
+              >Extension Settings</a>
+            </span>
           </div>
-          <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
-            <div className="flex items-start gap-2">
-              <Step n={1} />
-              <span className="inline-flex items-center gap-1 flex-wrap">
-                Click <PuzzleIcon size={18} className="inline-block shrink-0" color="var(--fg-primary)" /> icon <strong>(Extensions)</strong> in Chrome's toolbar
-              </span>
-            </div>
-            <div className="flex items-start gap-2">
-              <Step n={2} />
-              <span className="inline-flex items-center gap-1 flex-wrap">
-                Click <Pin size={18} className="inline-block shrink-0" style={{ color: 'var(--fg-primary)' }} /> icon next to <strong>Airglow</strong>
-              </span>
-            </div>
+          <div className="flex items-center gap-2">
+            <Step n={2} />
+            <span>Scroll down and enable <strong>User scripts</strong></span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Step n={3} />
+            <span>Reload this page</span>
           </div>
         </div>
-      )}
-    </>
-  );
+        <div
+          className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border"
+          style={{ borderColor: 'var(--error)', background: 'color-mix(in srgb, var(--error) 18%, var(--bg-white))', color: 'var(--fg-secondary)', fontSize: '13px' }}
+        >
+          <TriangleAlert size={15} className="shrink-0" style={{ color: 'var(--error)' }} />
+          <span>Airglow won't run until User Scripts are enabled.</span>
+        </div>
+      </div>
+    ),
+
+    pin: () => (
+      <div className={wrap} style={cardStyle} data-testid="banner-pin">
+        <DismissButton onClick={dismissPin} />
+        <div className="text-[15px] font-semibold flex items-center gap-2 pr-7" style={{ color: 'var(--fg-primary)' }}>
+          <Pin size={18} style={{ color: 'var(--error)' }} />
+          Add Airglow shortcut
+        </div>
+        <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
+          <div className="flex items-start gap-2">
+            <Step n={1} />
+            <span className="inline-flex items-center gap-1 flex-wrap">
+              Click <PuzzleIcon size={18} className="inline-block shrink-0" color="var(--fg-primary)" /> icon <strong>(Extensions)</strong> in Chrome's toolbar
+            </span>
+          </div>
+          <div className="flex items-start gap-2">
+            <Step n={2} />
+            <span className="inline-flex items-center gap-1 flex-wrap">
+              Click <Pin size={18} className="inline-block shrink-0" style={{ color: 'var(--fg-primary)' }} /> icon next to <strong>Airglow</strong>
+            </span>
+          </div>
+        </div>
+      </div>
+    ),
+  };
+
+  // Design preview (?debug-banners=1 / planmock): render every owned banner.
+  if (force) {
+    return <>{steps.map((step) => <div key={step}>{renderers[step]()}</div>)}</>;
+  }
+
+  if (!state.loaded) return null;
+
+  // Strict preference order: the first unmet step wins, the rest stay hidden.
+  let active: SetupStep | null = null;
+  for (const step of steps) {
+    if (step === 'signin' && !state.authSession && isAuthConfigured()) { active = step; break; }
+    if (step === 'host' && state.hostConnected === false) { active = step; break; }
+    if (step === 'userscripts' && state.userScriptsEnabled === false && !userScriptsDismissed) { active = step; break; }
+    if (step === 'pin' && state.isPinned === false && !pinDismissed) { active = step; break; }
+  }
+  if (!active) return null;
+  return renderers[active]();
 }

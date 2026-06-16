@@ -7,6 +7,7 @@ import logoUrl from '../../lib/branding/icon.svg';
 // (Apache 2.0, https://fonts.google.com/icons?icon.query=extension)
 import LogsPage from './LogsPage';
 import { FeedbackModal } from '../../components/FeedbackModal';
+import { SetupBanners } from '../../components/SetupBanners';
 import { AUTH_SESSION_KEY, getStoredSession, signInWithGoogle, signOut, type AuthSession } from '../../lib/airglow-auth';
 import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, getDefaultCloudApiUrl } from '../../lib/cloud-api';
 
@@ -1413,6 +1414,10 @@ export default function App() {
           </div>
         ) : (
         <div className="max-w-3xl">
+          {/* Chrome-setup nags (enable user scripts, then pin) — same ordered
+              gate as the sidepanel. Sign-in and host install are handled by the
+              full-page gates above, so the dashboard only owns these two. */}
+          <SetupBanners variant="dashboard" steps={['userscripts', 'pin']} />
           {activeTab === 'installed' ? (
             <>
               {apps === null && (

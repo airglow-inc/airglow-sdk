@@ -10,7 +10,7 @@
 
 import { type ComponentType, type ReactNode, useEffect, useRef, useState } from 'react';
 import {
-  ArrowUp, Bot, Camera, Check, ChevronDown, ChevronRight, CircleAlert, Copy, ExternalLink, FileText,
+  ArrowUp, Bot, Camera, ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText,
   FilePen, FilePlus2, Globe, HelpCircle, History, Image as ImageIcon, KeyRound, LayoutGrid,
   MessageSquare, Plus, ScrollText, Search, Square, SquareTerminal, Wand2, Workflow, X,
 } from 'lucide-react';
@@ -485,7 +485,6 @@ export default function App() {
   const [hostConnected, setHostConnected] = useState<boolean | null>(null);
   // Windows has no native host (macOS/Linux only) — gates the unsupported view.
   const [isWindows, setIsWindows] = useState(false);
-  const [installCopied, setInstallCopied] = useState(false);
   const [daemonOrigin, setDaemonOrigin] = useState(DEFAULT_DAEMON_ORIGIN);
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [sessions, setSessions] = useState<SessionMeta[]>([]);
@@ -1197,46 +1196,11 @@ export default function App() {
         </div>
       )}
 
-      {/* Host-missing onboarding */}
-      {hostConnected === false && (
-        <div className="m-3 p-3.5 rounded-xl border" style={{ background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))', borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))' }}>
-          <div className="text-[15px] font-semibold mb-1" style={{ color: 'var(--fg-primary)' }}>Airglow host is not connected</div>
-          <div className="text-[14px]" style={{ color: 'var(--fg-primary)' }}>
-            Host is a binary that allows you to run Airglow apps locally. Install it using the command below.
-          </div>
-          <div className="mt-3 mb-1.5 text-[14px] font-semibold" style={{ color: 'var(--fg-primary)' }}>Paste in terminal</div>
-          <div className="flex items-stretch gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                navigator.clipboard.writeText('curl -fsSL https://airglow.dev/install.sh | bash').then(() => {
-                  setInstallCopied(true);
-                  setTimeout(() => setInstallCopied(false), 1500);
-                });
-              }}
-              title={installCopied ? 'Copied' : 'Copy'}
-              className="shrink-0 flex items-center justify-center w-8 rounded-sm cursor-pointer"
-              style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', color: 'var(--fg-secondary)' }}
-            >
-              {installCopied ? <Check size={13} /> : <Copy size={13} />}
-            </button>
-            <pre className="flex-1 min-w-0 p-2 rounded-sm text-[12px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
-              curl -fsSL https://airglow.dev/install.sh | bash
-            </pre>
-          </div>
-          <div className="mt-2.5 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
-            <div className="mb-1 font-semibold" style={{ color: 'var(--fg-primary)' }}>What the script does:</div>
-            <ul className="space-y-1 list-disc pl-4">
-              <li>Downloads the host binary to <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}>~/.airglow</code> (no admin rights, no system changes)</li>
-              <li>Sets up your <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}>~/.airglow</code> workspace — folder to develop Airglow apps</li>
-            </ul>
-          </div>
-        </div>
-      )}
-
-      {/* Chrome-setup nags (enable user scripts, pin the toolbar icon) —
-          shown at the top of the panel alongside the host-missing banner. */}
-      <SetupBanners />
+      {/* Ordered setup gate: sign in → install host → enable user scripts →
+          pin to toolbar. Only the highest-priority unmet step shows; it polls
+          so each banner clears itself once satisfied. (Windows is handled by
+          the full-screen takeover above.) */}
+      <SetupBanners variant="sidepanel" />
 
       {/* Missing env keys for apps active on this tab */}
       {hostConnected !== false && (
