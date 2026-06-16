@@ -1,0 +1,5 @@
+/* Same theme stack as the dashboard so the preview renders the banner with the
+   real tokens (--olive, --clay, --bg-white, --radius-md, …) + Tailwind. */
+@import "tailwindcss" source("../..");
+@import "../../../host/seed/shared/theme/tailwind-theme.css";
+@import "../../lib/airglow-base.css";

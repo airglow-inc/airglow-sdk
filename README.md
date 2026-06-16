@@ -16,36 +16,66 @@ See more examples at [airglow.dev](https://airglow.dev)
 
 ## Quickstart
 
-1. Install Airglow extension (see [`extension/README.md`](extension/README.md))
+1. Install the **Airglow extension** from the Chrome Web Store:
+   [chromewebstore.google.com/detail/airglow](https://chromewebstore.google.com/detail/airglow/angbnggmaccjdinfebjoibdklmckinfb)
 
-2. Start a dev server
+2. Install the **Airglow host** (daemon + `airglow` CLI)
 ```bash
-cd airglow-apps
-pnpm install
-pnpm airglow dev
+curl -fsSL https://airglow.dev/install.sh | bash
 ```
 
-3. Verify installation by opening a dashboard  
-(`chrome-extension://comikpjjijckpjkobpkkpnnhlcpmagic/dashboard.html`)
+3. Click the Airglow icon in the Chrome toolbar to open the dashboard. The daemon
+   starts automatically whenever Chrome with the extension is running — nothing to
+   launch by hand.
 
 4. Ask a coding agent to build a feature
 ```bash
-cd airglow-apps
+cd ~/.airglow        # the host installer seeds this workspace
 claude
 >> "Create an app to hide news feed on x.com"
 ```
+
+Prefer a ready-made app? Open the dashboard's **Catalog** tab and install one —
+the daemon fetches it into `~/.airglow/apps/<id>`. Browse the catalog at
+[airglow-catalog](https://github.com/airglow-inc/airglow-catalog).
 
 ## Structure
 
 ```
 airglow-sdk/
-├── airglow-apps/      # Your agent should develop apps here, see airglow-apps/README.md
-├── extension/         # Chrome extension
-├── extension-source/  # Chrome extension source code
-└── cli/               # CLI to run Airglow apps locally
+├── extension/         # Chrome extension source (WXT + React + Tailwind)
+├── host/              # Native host: daemon + `airglow` CLI (one Bun binary)
+│   └── seed/          # Canonical workspace seed (shared/, docs/, AGENTS.md, airglow.d.ts) → ~/.airglow
+└── sdk/               # Canonical airglow.* SDK source (injected into apps)
 ```
 
-Developer guide [`airglow-apps/README.md`](airglow-apps/README.md)
+Apps are developed in the `~/.airglow` workspace that the host seeds on install
+(`apps/<id>/`). Developer guide: [`host/seed/AGENTS.md`](host/seed/AGENTS.md) and
+[`host/seed/docs/`](host/seed/docs/).
+
+## Build from source
+
+The repo is source-only (no committed build artifacts). To run your own build
+instead of the published extension + installer:
+
+**Extension** — WXT + React + Tailwind. Requires [pnpm](https://pnpm.io).
+```bash
+cd extension
+pnpm install
+pnpm build        # → .output/chrome-mv3
+```
+Then load `extension/.output/chrome-mv3` at `chrome://extensions` → enable
+Developer mode → **Load unpacked**. More in [`extension/README.md`](extension/README.md).
+
+**Host** — one Bun binary (daemon + `airglow` CLI). Requires [Bun](https://bun.sh).
+```bash
+cd host
+bun install
+bun run src/main.ts install   # register the native-messaging host + seed ~/.airglow
+```
+Fully restart Chrome afterward so it picks up the native-messaging manifest; the
+connector then auto-spawns the daemon. `bun run build` compiles a standalone
+`dist/airglow` binary. More in [`host/README.md`](host/README.md).
 
 ----
 

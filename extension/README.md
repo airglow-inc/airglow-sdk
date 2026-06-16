@@ -1,23 +1,26 @@
 # Airglow Chrome extension
 
-Extension to run Airglow apps in your browser.
+WXT + React + Tailwind source for the Chrome extension. This directory holds the
+source only — the build output (`.output/`) is gitignored and never committed.
 
-## Install
+## Develop
 
-1. Open `chrome://extensions` in browser.
-2. Turn on **Developer mode** (top right of the page).
-3. Click **Load unpacked** (top left of the page).
-4. Select this directory (`airglow-sdk/extension`).
-5. Open Airglow extension settings (`chrome://extensions/?id=comikpjjijckpjkobpkkpnnhlcpmagic`), turn on **Allow User Scripts** and **Pin to toolbar**.
+```bash
+pnpm install
+pnpm dev      # WXT dev server → .output/chrome-mv3-dev (load unpacked)
+pnpm chrome   # launch Chrome with the dev build loaded
+```
 
-## Update
+## Build & package for the Chrome Web Store
 
-1. Pull the latest repo version with `git pull`.
-2. Open Airglow Dashboard and press **Reload**.
+```bash
+pnpm build    # → .output/chrome-mv3
+pnpm zip      # → .output/airglow-ext-prod.zip (manifest `key` stripped, ready to upload)
+```
 
-## Source
+Cut a release with `pnpm bump <version>` — it bumps `package.json`, builds, zips,
+commits, and tags `vX.Y.Z`. See the repo's `CLAUDE.local.md` for the full flow.
 
-Built output — generated from [`../extension-source/`](../extension-source/) by `extension-source/scripts/export-extension.sh`. Don't edit files in this directory by hand; changes will be overwritten on the next export.
+## Env
 
-
-To run apps: see [`../airglow-apps/README.md`](../airglow-apps/README.md).
+Build-time env vars are WXT-prefixed (`WXT_*`). See [`.env.example`](.env.example).

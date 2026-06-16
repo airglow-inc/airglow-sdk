@@ -1,0 +1,138 @@
+/* All @import rules first — see dashboard/style.css for the source() note. */
+@import "tailwindcss" source("../..");
+@import "../../../host/seed/shared/theme/tailwind-theme.css";
+@import "../../lib/airglow-base.css";
+
+/* Sidepanel chrome accents — not part of the app-facing theme. */
+:root {
+  --plan-green: #6b9442;
+  --plan-green-strong: #527a2c;
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-primary);
+  color: var(--fg-primary);
+  font-size: 14px;
+}
+
+.thin-scroll::-webkit-scrollbar { width: 5px; }
+.thin-scroll::-webkit-scrollbar-thumb { background: var(--gray-300); border-radius: 3px; }
+.thin-scroll::-webkit-scrollbar-track { background: transparent; }
+
+@keyframes airglow-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+.working-dot {
+  animation: airglow-pulse 1.2s ease-in-out infinite;
+}
+
+/* "Thinking" indicator — gray text with a light sweep, Codex-style */
+@keyframes airglow-shimmer {
+  to { background-position: -200% 0; }
+}
+.thinking-shimmer {
+  background: linear-gradient(90deg, var(--fg-tertiary) 30%, var(--fg-primary) 50%, var(--fg-tertiary) 70%);
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: airglow-shimmer 2s linear infinite;
+  width: fit-content;
+}
+
+/* ── PLAN strip: green progress + in-progress motion ── */
+.plan-pulse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--plan-green-strong);
+  animation: airglow-pulse 1.2s ease-in-out infinite;
+}
+/* one-shot pop when the plan completes */
+@keyframes airglow-plan-pop {
+  0% { transform: scale(0.55); }
+  60% { transform: scale(1.2); }
+  100% { transform: scale(1); }
+}
+.plan-complete-pop { animation: airglow-plan-pop 0.45s var(--ease-out, cubic-bezier(0.16, 1, 0.3, 1)); }
+/* green variant of the thinking shimmer for the active step */
+.thinking-shimmer-green {
+  background: linear-gradient(90deg,
+    var(--plan-green-strong) 30%,
+    color-mix(in srgb, var(--plan-green) 35%, #ffffff) 50%,
+    var(--plan-green-strong) 70%);
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  animation: airglow-shimmer 2s linear infinite;
+  max-width: 100%;
+}
+
+/* Markdown content inside assistant messages */
+.md p { margin: 0 0 0.6em; }
+.md p:last-child { margin-bottom: 0; }
+.md h1, .md h2, .md h3 { font-weight: 600; margin: 0.8em 0 0.4em; color: var(--fg-primary); }
+/* Hairline above each section heading, Claude-style. */
+.md h1:not(:first-child), .md h2:not(:first-child), .md h3:not(:first-child) {
+  border-top: 1px solid var(--border-tertiary);
+  padding-top: 1em;
+  margin-top: 1.2em;
+}
+.md h1 { font-size: 1.15em; }
+.md h2 { font-size: 1.08em; }
+.md h3 { font-size: 1em; }
+.md ul, .md ol { margin: 0.2em 0 0.6em; padding-left: 1.3em; }
+.md ul { list-style: disc; }
+.md ol { list-style: decimal; }
+.md li { margin: 0.15em 0; }
+.md li > ul, .md li > ol { margin: 0.15em 0; }
+.md code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.92em;
+  padding: 0.1em 0.35em;
+  border-radius: var(--radius-xs);
+  background: color-mix(in srgb, var(--fg-primary) 8%, transparent);
+}
+.md pre {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.85em;
+  background: var(--gray-150);
+  border: 1px solid var(--border-tertiary);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0.4em 0 0.7em;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md pre code { background: transparent; padding: 0; }
+.md a { color: var(--clay-interactive); text-decoration: underline; text-underline-offset: 2px; }
+.md table {
+  border-collapse: collapse;
+  margin: 0.4em 0 0.7em;
+  font-size: 0.95em;
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+.md th, .md td {
+  border: 1px solid var(--border-secondary);
+  padding: 4px 8px;
+  text-align: left;
+}
+.md th { font-weight: 600; background: var(--gray-150); }
+.md blockquote {
+  margin: 0.4em 0 0.7em;
+  padding: 0.1em 0 0.1em 0.9em;
+  border-left: 3px solid var(--border-secondary);
+  color: var(--fg-secondary);
+}
+.md hr { border: 0; border-top: 1px solid var(--border-tertiary); margin: 0.8em 0; }
+.md input[type="checkbox"] { margin-right: 0.4em; vertical-align: middle; }

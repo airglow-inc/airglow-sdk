@@ -1,8 +1,0 @@
-{
-  "name": "page-navigator",
-  "private": true,
-  "dependencies": {
-    "marked": "^18.0.2",
-    "lucide-react": "^1.11.0"
-  }
-}
