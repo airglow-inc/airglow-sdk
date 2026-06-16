@@ -16,28 +16,8 @@ See more examples at [airglow.dev](https://airglow.dev)
 
 ## Quickstart
 
-1. Install the **Airglow extension** from the Chrome Web Store:
-   [chromewebstore.google.com/detail/airglow](https://chromewebstore.google.com/detail/airglow/angbnggmaccjdinfebjoibdklmckinfb)
-
-2. Install the **Airglow host** (daemon + `airglow` CLI)
-```bash
-curl -fsSL https://airglow.dev/install.sh | bash
-```
-
-3. Click the Airglow icon in the Chrome toolbar to open the dashboard. The daemon
-   starts automatically whenever Chrome with the extension is running — nothing to
-   launch by hand.
-
-4. Ask a coding agent to build a feature
-```bash
-cd ~/.airglow        # the host installer seeds this workspace
-claude
->> "Create an app to hide news feed on x.com"
-```
-
-Prefer a ready-made app? Open the dashboard's **Catalog** tab and install one —
-the daemon fetches it into `~/.airglow/apps/<id>`. Browse the catalog at
-[airglow-catalog](https://github.com/airglow-inc/airglow-catalog).
+Install the **Airglow extension** from the Chrome Web Store:
+[chromewebstore.google.com/detail/airglow](https://chromewebstore.google.com/detail/airglow/angbnggmaccjdinfebjoibdklmckinfb)
 
 ## Structure
 
