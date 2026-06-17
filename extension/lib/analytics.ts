@@ -13,6 +13,8 @@ import { USER_EMAIL_KEY, normalizeUserEmail } from './airglow-identity';
 
 const INSTALLED_FLAG_KEY = '__airglow_installed_tracked';
 const APPS_REGISTERED_KEY = '__airglow_apps_registered';
+const HOST_INSTALLED_FLAG_KEY = '__airglow_host_installed_tracked';
+const LOGIN_TRACKED_UID_KEY = '__airglow_login_tracked_uid';
 
 export type AnalyticsPropertyValue =
   | string
@@ -120,4 +122,68 @@ export async function trackDashboardOpened(
   page: DashboardPage,
 ): Promise<void> {
   await posthog.capture('dashboard_opened', { page });
+}
+
+export async function trackSidepanelOpened(): Promise<void> {
+  await posthog.capture('sidepanel_opened');
+}
+
+/**
+ * Fire when a sign-in establishes (or switches to) a server-issued session.
+ * Deduped on the resolved userId so silent token refreshes — which rewrite the
+ * session with the same userId on every service-worker wake — don't re-fire;
+ * a genuinely new sign-in (or a different account) does. Also $identifies so
+ * the person's `os`/email land before the funnel reads them.
+ */
+export async function trackLoggedIn(userId: string): Promise<void> {
+  if (!userId) return;
+  const stored = await chrome.storage.local.get(LOGIN_TRACKED_UID_KEY);
+  if (stored[LOGIN_TRACKED_UID_KEY] === userId) return;
+  await posthog.identify();
+  await posthog.capture('user_logged_in');
+  await chrome.storage.local.set({ [LOGIN_TRACKED_UID_KEY]: userId });
+}
+
+/**
+ * Fire once, the first time the native host connects on this profile. Carries
+ * `os` as an event property (not just the person trait) so the install-per-OS
+ * split is queryable directly off the event. Deduped via storage so a daemon
+ * restart / reconnect doesn't re-fire.
+ */
+export async function trackHostInstalled(): Promise<void> {
+  const stored = await chrome.storage.local.get(HOST_INSTALLED_FLAG_KEY);
+  if (stored[HOST_INSTALLED_FLAG_KEY]) return;
+  await posthog.capture('host_installed', { os: await posthog.getOS() });
+  await chrome.storage.local.set({ [HOST_INSTALLED_FLAG_KEY]: Date.now() });
+}
+
+/** A user-initiated message sent to the agent (one per turn the user starts). */
+export async function trackAgentMessageSent(): Promise<void> {
+  await posthog.capture('agent_message_sent');
+}
+
+/**
+ * An agent turn finished. `stopReason` is the daemon's turn_done reason;
+ * `is_error` flags the failure reasons ('error', 'max_iterations') so the
+ * non-error-response metric is `agent_response_received` filtered to
+ * is_error = false.
+ *
+ * `errorStatus`/`errorCode` (present only on stopReason==='error') carry the
+ * gateway HTTP status and a coarse failure code. This is the ONLY signal for
+ * failures the cloud never sees — when the daemon can't reach the gateway at
+ * all (status 0, code 'network'); cloud-returned 4xx/5xx are also captured
+ * server-side (api_request event).
+ */
+export async function trackAgentResponseReceived(
+  stopReason: string,
+  errorStatus?: number,
+  errorCode?: string,
+): Promise<void> {
+  const isError = stopReason === 'error' || stopReason === 'max_iterations';
+  await posthog.capture('agent_response_received', {
+    stop_reason: stopReason,
+    is_error: isError,
+    ...(typeof errorStatus === 'number' ? { error_status: errorStatus } : {}),
+    ...(errorCode ? { error_code: errorCode } : {}),
+  });
 }

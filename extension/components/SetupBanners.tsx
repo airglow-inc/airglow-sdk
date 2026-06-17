@@ -15,7 +15,7 @@
 
 import { useEffect, useState, type ReactElement } from 'react';
 import { Check, Copy, FileCode2, LogIn, Pin, TriangleAlert, X } from 'lucide-react';
-import { AUTH_SESSION_KEY, getStoredSession, isAuthConfigured, signInWithGoogle, type AuthSession } from '../lib/airglow-auth';
+import { AUTH_SESSION_KEY, AuthCancelledError, getStoredSession, isAuthConfigured, signInWithGoogle, type AuthSession } from '../lib/airglow-auth';
 
 const INSTALL_CMD = 'curl -fsSL https://airglow.dev/install.sh | bash';
 
@@ -26,7 +26,7 @@ const PIN_DISMISSED_KEY = '__pin_banner_dismissed';
 export type SetupStep = 'signin' | 'host' | 'userscripts' | 'pin';
 const ALL_STEPS: SetupStep[] = ['signin', 'host', 'userscripts', 'pin'];
 
-function GoogleLogo({ size = 16 }: { size?: number }) {
+export function GoogleLogo({ size = 16 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
       <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
@@ -146,6 +146,7 @@ export function SetupBanners({
       await signInWithGoogle({ interactive: true });
       // Session lands in storage → the poll/onChanged clears this banner.
     } catch (e) {
+      if (e instanceof AuthCancelledError) return; // user closed the picker — not an error
       setSignInError(e instanceof Error ? e.message : String(e));
     } finally {
       setSigningIn(false);
@@ -174,9 +175,6 @@ export function SetupBanners({
         <div className="text-[15px] font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
           <LogIn size={18} style={{ color: 'var(--error)' }} />
           Sign in to Airglow
-        </div>
-        <div className="mt-2 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
-          One click with your Google account — it identifies you across the extension and airglow.dev. No spam, ever.
         </div>
         <button
           onClick={doSignIn}

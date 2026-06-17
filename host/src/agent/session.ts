@@ -155,7 +155,12 @@ export class Session {
         this.emit({ type: 'turn_done', stopReason: 'stopped' });
       } else {
         this.emit({ type: 'error', message: String(e?.message ?? e), ...(e?.code ? { code: e.code } : {}), ...(e?.resetHours ? { resetHours: e.resetHours } : {}) });
-        this.emit({ type: 'turn_done', stopReason: 'error' });
+        this.emit({
+          type: 'turn_done',
+          stopReason: 'error',
+          ...(typeof e?.status === 'number' ? { errorStatus: e.status } : {}),
+          ...(e?.code ? { errorCode: String(e.code) } : {}),
+        });
       }
     } finally {
       this.running = false;
@@ -194,6 +199,10 @@ export class Session {
           system: [{ type: 'text', text: system, cache_control: { type: 'ephemeral' } }],
           tools: [...TOOL_DEFINITIONS, ...SERVER_TOOL_DEFINITIONS],
           messages: withCacheBreakpoint(sanitizeForApi(this.messages)),
+          // Stable conversation key for the gateway's session capture; stripped
+          // before hitting Anthropic directly (dev). Cloud falls back to a hash
+          // of the first user message when this is absent.
+          session_id: this.id,
         },
         this.identity,
         {

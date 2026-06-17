@@ -19,6 +19,7 @@ import { AppContextLine, PinnedPlan, type PlanItem } from './strips';
 import { FeedbackModal } from '../../components/FeedbackModal';
 import { AnnouncementBanner } from '../../components/AnnouncementBanner';
 import { SetupBanners } from '../../components/SetupBanners';
+import { SignInOverlay } from '../../components/SignInOverlay';
 import { WindowsUnsupportedBanner } from '../../components/WindowsUnsupportedBanner';
 
 const GITHUB_REPO_URL = 'https://github.com/airglow-inc/airglow-sdk';
@@ -521,6 +522,15 @@ export default function App() {
   // Detect Windows once on mount — the native host can't run there.
   useEffect(() => {
     chrome.runtime.getPlatformInfo((info) => setIsWindows(info.os === 'win'));
+  }, []);
+
+  // Analytics: panel opened. Routed through the background (where the PostHog
+  // identify gate is released) like dashboard_opened. Fires once per mount.
+  useEffect(() => {
+    chrome.runtime.sendMessage(
+      { type: 'airglow:track-sidepanel-opened' },
+      () => { void chrome.runtime.lastError; },
+    );
   }, []);
 
   function post(msg: Record<string, unknown>): void {
@@ -1196,11 +1206,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Ordered setup gate: sign in → install host → enable user scripts →
-          pin to toolbar. Only the highest-priority unmet step shows; it polls
-          so each banner clears itself once satisfied. (Windows is handled by
-          the full-screen takeover above.) */}
-      <SetupBanners variant="sidepanel" />
+      {/* Ordered setup gate: install host → enable user scripts → pin to
+          toolbar. Only the highest-priority unmet step shows; it polls so each
+          banner clears itself once satisfied. (Windows is handled by the
+          full-screen takeover above; sign-in by the blocking SignInOverlay
+          below, which supersedes the old inline 'signin' banner here.) */}
+      <SetupBanners variant="sidepanel" steps={['host', 'userscripts', 'pin']} />
 
       {/* Missing env keys for apps active on this tab */}
       {hostConnected !== false && (
@@ -1455,6 +1466,11 @@ export default function App() {
         onClose={() => setFeedbackOpen(false)}
         source={{ appId: 'sidepanel', appName: 'Airglow Sidepanel', sourceType: 'extension-sidepanel' }}
       />
+
+      {/* Blocking auth gate — covers the whole panel until there's a session,
+          so the agent can't be messaged signed-out. Tries a silent sign-in on
+          mount; otherwise shows the one-click Google CTA over everything. */}
+      <SignInOverlay />
     </div>
   );
 }

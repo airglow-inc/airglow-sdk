@@ -71,6 +71,23 @@ async function getIdentity(): Promise<{ distinctId: string; email?: string } | n
   return { distinctId: userId, email };
 }
 
+// Operating system, resolved once and cached. Attached to every $identify as
+// the `os` person property so installs and host-install bounce can be split
+// per OS in PostHog. chrome.runtime.getPlatformInfo's os is one of
+// 'mac' | 'win' | 'linux' | 'cros' | 'android' | 'openbsd'.
+let osCache: string | undefined;
+export async function getOS(): Promise<string> {
+  if (osCache !== undefined) return osCache;
+  osCache = await new Promise<string>((resolve) => {
+    try {
+      chrome.runtime.getPlatformInfo((info) => resolve(info?.os || 'unknown'));
+    } catch {
+      resolve('unknown');
+    }
+  });
+  return osCache;
+}
+
 const MAX_PROP_LEN = 500;
 const EMAIL_RE = /[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi;
 const JWT_RE = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
@@ -184,6 +201,7 @@ export async function identify(extra: Record<string, PropertyValue> = {}): Promi
   try {
     const traits: Record<string, PropertyValue> = { ...sanitizeProperties(extra) };
     if (identity.email) traits.email = identity.email;
+    traits.os = await getOS();
     await postEvent({
       event: '$identify',
       distinct_id: identity.distinctId,

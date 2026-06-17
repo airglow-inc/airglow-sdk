@@ -3,7 +3,7 @@ const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
 import { APP_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, type AppManifest, type SourcedManifest } from '../lib/app-loader';
 import { runtimeConfig } from '../lib/runtime-config';
-import { trackDashboardOpened, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
+import { trackDashboardOpened, trackSidepanelOpened, trackLoggedIn, trackHostInstalled, trackAgentMessageSent, trackAgentResponseReceived, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
 import * as posthog from '../lib/posthog';
 import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from '../lib/airglow-identity';
 import { AUTH_SESSION_KEY, ensureSession, getStoredSession } from '../lib/airglow-auth';
@@ -199,12 +199,20 @@ export default defineBackground(() => {
       // Silent sign-in first: refreshes/establishes the server-issued session
       // without UI when Google has already been granted, and mirrors the
       // verified userId into the legacy identity keys ensureIdentity reads.
-      await ensureSession().catch(() => null);
+      const session = await ensureSession().catch(() => null);
       const identity = await ensureIdentity();
       log(`identity resolved: user_id=${identity.userId}${identity.email ? ` email=${identity.email}` : ''}`);
       if (identity.email) {
         await posthog.identify().catch((e) =>
           logger.warn('airglow', `boot $identify failed: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
+      // Count this signed-in user once (deduped on userId). Not awaited: the
+      // capture blocks on the identify gate, which only releases in `finally`
+      // below — awaiting here would stall on its own timeout.
+      if (session?.userId) {
+        trackLoggedIn(session.userId).catch((e) =>
+          logger.warn('airglow', `trackLoggedIn (boot) failed: ${e instanceof Error ? e.message : String(e)}`),
         );
       }
     } catch (e) {
@@ -388,6 +396,13 @@ export default defineBackground(() => {
   const DAEMON_ORIGIN_KEY = '__daemon_origin';
   function setNativeHostConnected(connected: boolean) {
     chrome.storage.local.set({ [NATIVE_HOST_CONNECTED_KEY]: connected });
+    // First successful connection on this profile = the host got installed.
+    // trackHostInstalled dedups via storage, so reconnects don't re-fire.
+    if (connected) {
+      trackHostInstalled().catch((e) =>
+        logger.warn('airglow', `trackHostInstalled failed: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }
   }
 
   function connectNativeHost() {
@@ -441,6 +456,18 @@ export default defineBackground(() => {
     if (area === 'local' && (CLOUD_API_URL_OVERRIDE_KEY in changes || AUTH_SESSION_KEY in changes) && nmWasConnected) {
       sendIdentityToHost();
     }
+    // Sign-in just landed (interactive in the banner/dashboard, or a silent
+    // refresh that switched accounts). trackLoggedIn dedups on userId, so a
+    // same-account refresh is a no-op.
+    if (area === 'local' && AUTH_SESSION_KEY in changes) {
+      const next = changes[AUTH_SESSION_KEY].newValue as { userId?: unknown } | undefined;
+      const uid = typeof next?.userId === 'string' ? next.userId : '';
+      if (uid) {
+        trackLoggedIn(uid).catch((e) =>
+          logger.warn('airglow', `trackLoggedIn failed: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
+    }
   });
 
   function onNativeMessage(msg: any) {
@@ -474,6 +501,18 @@ export default defineBackground(() => {
       sendIdentityToHost();
     } else if (typeof msg.type === 'string' && msg.type.startsWith('agent:')) {
       // Agent chat traffic from the daemon → connected chat clients.
+      // A turn_done marks a completed response; its stopReason tells us whether
+      // the turn errored (see trackAgentResponseReceived).
+      if (msg.type === 'agent:event' && msg.event?.type === 'turn_done') {
+        const ev = msg.event;
+        trackAgentResponseReceived(
+          String(ev.stopReason ?? 'unknown'),
+          typeof ev.errorStatus === 'number' ? ev.errorStatus : undefined,
+          typeof ev.errorCode === 'string' ? ev.errorCode : undefined,
+        ).catch((e) =>
+          logger.warn('airglow', `trackAgentResponseReceived failed: ${e instanceof Error ? e.message : String(e)}`),
+        );
+      }
       for (const port of agentPorts) {
         try { port.postMessage(msg); } catch {}
       }
@@ -1073,7 +1112,15 @@ export default defineBackground(() => {
     agentPorts.add(port);
     port.onDisconnect.addListener(() => agentPorts.delete(port));
     port.onMessage.addListener((msg: any) => {
-      if (typeof msg?.type === 'string' && msg.type.startsWith('agent:')) sendToHost(msg);
+      if (typeof msg?.type === 'string' && msg.type.startsWith('agent:')) {
+        // agent:start is a user-initiated turn → count it as a sent message.
+        if (msg.type === 'agent:start') {
+          trackAgentMessageSent().catch((e) =>
+            logger.warn('airglow', `trackAgentMessageSent failed: ${e instanceof Error ? e.message : String(e)}`),
+          );
+        }
+        sendToHost(msg);
+      }
     });
   });
 
@@ -1289,6 +1336,17 @@ export default defineBackground(() => {
       })().catch((e) => {
         logger.warn('airglow', `trackDashboardOpened failed: ${e instanceof Error ? e.message : String(e)}`);
         sendResponse({ ok: false, error: 'track dashboard opened failed' });
+      });
+      return true;
+    }
+
+    if (msg?.type === 'airglow:track-sidepanel-opened') {
+      (async () => {
+        await trackSidepanelOpened();
+        sendResponse({ ok: true });
+      })().catch((e) => {
+        logger.warn('airglow', `trackSidepanelOpened failed: ${e instanceof Error ? e.message : String(e)}`);
+        sendResponse({ ok: false, error: 'track sidepanel opened failed' });
       });
       return true;
     }

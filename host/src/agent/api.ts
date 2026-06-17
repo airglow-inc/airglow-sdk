@@ -71,7 +71,16 @@ export async function streamMessage(
   if (identity.authToken) headers['authorization'] = `Bearer ${identity.authToken}`;
   headers['x-airglow-app-id'] = 'airglow-agent';
 
+  // `session_id` is an Airglow gateway extension for conversation capture;
+  // Anthropic rejects unknown top-level fields, so drop it in direct dev mode.
+  const outgoing: Record<string, unknown> = { ...payload, stream: true };
+  if (process.env.ANTHROPIC_API_KEY) delete outgoing.session_id;
+  const body = JSON.stringify(outgoing);
+
   let lastError = '';
+  // Last HTTP status seen across retries (0 = never reached the gateway). Fed
+  // to the thrown error so the session can report the failure kind to clients.
+  let lastStatus = 0;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (attempt > 0) await Bun.sleep(1000 * 2 ** attempt);
     signal?.throwIfAborted();
@@ -80,11 +89,12 @@ export async function streamMessage(
       res = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...headers },
-        body: JSON.stringify({ ...payload, stream: true }),
+        body,
         signal,
       });
     } catch (e: any) {
       if (signal?.aborted) throw e;
+      lastStatus = 0;
       lastError = `network: ${e?.message ?? e}`;
       continue;
     }
@@ -101,24 +111,35 @@ export async function streamMessage(
           : undefined;
         const wait = resetHours ? `in about ${resetHours} hour${resetHours === 1 ? '' : 's'}` : 'tomorrow';
         const err: any = new Error(`You've reached this week's Airglow usage limit. Capacity starts freeing up ${wait} — your work is saved, come back then.`);
+        err.status = 429;
         err.code = 'AGENT_BUDGET_EXCEEDED';
         if (resetHours) err.resetHours = resetHours;
         throw err;
       }
+      lastStatus = 429;
       lastError = 'upstream 429';
       continue;
     }
     if (res.status >= 500) {
+      lastStatus = res.status;
       lastError = `upstream ${res.status}`;
       continue;
     }
     if (!res.ok || !res.body) {
       const body = await res.text().catch(() => '');
-      throw new Error(`model API error ${res.status}: ${body.slice(0, 500)}`);
+      let code = '';
+      try { code = JSON.parse(body)?.error?.code ?? ''; } catch {}
+      const err: any = new Error(`model API error ${res.status}: ${body.slice(0, 500)}`);
+      err.status = res.status;
+      if (code) err.code = code;
+      throw err;
     }
     return await consumeStream(res.body, handlers, signal);
   }
-  throw new Error(`model API unreachable after ${MAX_RETRIES} attempts (${lastError})`);
+  const err: any = new Error(`model API unreachable after ${MAX_RETRIES} attempts (${lastError})`);
+  err.status = lastStatus;
+  err.code = lastStatus === 0 ? 'network' : `upstream_${lastStatus}`;
+  throw err;
 }
 
 async function consumeStream(

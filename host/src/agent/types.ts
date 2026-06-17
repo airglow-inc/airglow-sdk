@@ -13,7 +13,10 @@ export type AgentEvent =
   | { type: 'app_context'; appId: string; name: string }
   | { type: 'approval_request'; approvalId: string; action: string; detail: string }
   | { type: 'approval_resolved'; approvalId: string; approved: boolean }
-  | { type: 'turn_done'; stopReason: string }
+  // errorStatus/errorCode are set only when stopReason==='error': the HTTP
+  // status (0 = daemon could not reach the gateway at all) and a coarse failure
+  // code, so chat clients can report which kind of failure a turn hit.
+  | { type: 'turn_done'; stopReason: string; errorStatus?: number; errorCode?: string }
   | { type: 'error'; message: string; code?: string; resetHours?: number };
 
 export interface SessionMeta {

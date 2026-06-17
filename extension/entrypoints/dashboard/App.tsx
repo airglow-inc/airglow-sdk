@@ -8,7 +8,7 @@ import logoUrl from '../../lib/branding/icon.svg';
 import LogsPage from './LogsPage';
 import { FeedbackModal } from '../../components/FeedbackModal';
 import { SetupBanners } from '../../components/SetupBanners';
-import { AUTH_SESSION_KEY, getStoredSession, signInWithGoogle, signOut, type AuthSession } from '../../lib/airglow-auth';
+import { AUTH_SESSION_KEY, AuthCancelledError, getStoredSession, signInWithGoogle, signOut, type AuthSession } from '../../lib/airglow-auth';
 import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, getDefaultCloudApiUrl } from '../../lib/cloud-api';
 
 const APP_ORDER_KEY = '__app_order';
@@ -685,6 +685,7 @@ export default function App() {
       const session = await signInWithGoogle({ interactive: true });
       setAuthSession(session);
     } catch (e) {
+      if (e instanceof AuthCancelledError) return; // user closed the picker — not an error
       setSignInError(e instanceof Error ? e.message : String(e));
     } finally {
       setSigningIn(false);
@@ -1273,12 +1274,9 @@ export default function App() {
               }}
               data-testid="banner-signin-onboarding"
             >
-              <div className="text-lg font-semibold" style={{ color: 'var(--fg-primary)' }}>
+              <div className="text-lg font-semibold mb-4" style={{ color: 'var(--fg-primary)' }}>
                 Sign in to Airglow
               </div>
-              <p className="text-base mt-2 mb-4" style={{ color: 'var(--fg-secondary)' }}>
-                One click with your Google account — it identifies you across the extension and airglow.dev. No spam, ever.
-              </p>
               <div className="flex flex-col gap-3">
                 <button
                   onClick={startGoogleSignIn}

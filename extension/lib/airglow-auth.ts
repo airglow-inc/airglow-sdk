@@ -1,15 +1,21 @@
 // Google sign-in → Airglow session.
 //
-// Credential acquisition, in preference order:
-//   1. chrome.identity.getAuthToken — Chrome only, uses the browser profile's
-//      Google account. Silent after the first consent click.
-//   2. chrome.identity.launchWebAuthFlow — Brave/Edge/signed-out Chrome.
-//      Standard Google popup returning an ID token to the fixed
-//      https://<extension-id>.chromiumapp.org/ redirect.
-// Either credential is exchanged at POST /api/auth/google for a session JWT;
-// the server resolves both to the same Google account, so the resulting
-// userId (`gaia_<sub>`) is identical across browsers — and will match the
-// website login later.
+// One credential path: chrome.identity.launchWebAuthFlow — a standard Google
+// OAuth popup returning an id_token to the fixed
+// https://<extension-id>.chromiumapp.org/ redirect. Works identically on every
+// Chromium browser (Chrome/Brave/Edge) and on both the Web Store and local
+// extension ids (the WEB client registers a redirect URI for each).
+//
+// (We deliberately do NOT use chrome.identity.getAuthToken / a Chrome-Extension
+// OAuth client. Since we mint our own 30-day session JWT from the exchange and
+// never reuse Google's token, getAuthToken's only edge — native token caching —
+// is moot; it bought us nothing but a second OAuth client, a Chrome-only code
+// path, and the local-vs-store id divergence. One web client is simpler and
+// behaves the same everywhere.)
+//
+// The id_token is exchanged at POST /api/auth/google for a session JWT; the
+// resulting userId (`gaia_<sub>`) is the Google account itself, so it matches
+// the website login later.
 //
 // The session is stored in chrome.storage.local; airglow-identity reads it
 // (by key, no import — avoids a module cycle) so userId/email flow to
@@ -20,12 +26,10 @@ import { getCloudApiUrl } from './cloud-api';
 
 export const AUTH_SESSION_KEY = '__airglow_auth_session';
 
-// OAuth client ids — public identifiers, not secrets (env vars only exist to
-// point a fork at its own Google project). EXT is bound to the Web Store
-// extension id, so on local builds (different id) getAuthToken fails and the
-// web flow below takes over — its redirect URI is registered for both ids.
-const EXT_CLIENT_ID = (import.meta.env.WXT_GOOGLE_EXT_CLIENT_ID as string | undefined)
-  || '290831017812-6833j8lm6kuc3u75v6jvcnba7hmobsls.apps.googleusercontent.com';
+// OAuth web client id — a public identifier, not a secret (the env var only
+// exists so a fork can point at its own Google project). Its authorized
+// redirect URIs include `https://<id>.chromiumapp.org/` for both the Web Store
+// and local extension ids.
 const WEB_CLIENT_ID = (import.meta.env.WXT_GOOGLE_WEB_CLIENT_ID as string | undefined)
   || '290831017812-fblsiun7fl9nohb79v8567d3ljcmn645.apps.googleusercontent.com';
 const OAUTH_SCOPES = ['openid', 'email', 'profile'];
@@ -41,8 +45,18 @@ export type AuthSession = {
   expiresAt: number;
 };
 
+// Thrown when the user actively dismisses the interactive account picker /
+// consent window. Callers treat it as a no-op (no error UI) rather than a
+// failure.
+export class AuthCancelledError extends Error {
+  constructor(message = 'Sign-in cancelled') {
+    super(message);
+    this.name = 'AuthCancelledError';
+  }
+}
+
 export function isAuthConfigured(): boolean {
-  return Boolean(EXT_CLIENT_ID || WEB_CLIENT_ID);
+  return Boolean(WEB_CLIENT_ID);
 }
 
 function parseSession(value: unknown): AuthSession | null {
@@ -63,7 +77,7 @@ export async function getStoredSession(): Promise<AuthSession | null> {
   return parseSession(stored[AUTH_SESSION_KEY]);
 }
 
-async function exchangeAtBackend(credential: { accessToken?: string; idToken?: string }): Promise<AuthSession> {
+async function exchangeAtBackend(credential: { idToken: string }): Promise<AuthSession> {
   const res = await fetch(`${await getCloudApiUrl()}/api/auth/google`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -97,29 +111,7 @@ async function persistSession(session: AuthSession): Promise<void> {
   await chrome.storage.local.set(patch);
 }
 
-// --- Chrome profile path (getAuthToken) --------------------------------------
-
-async function chromeAccessToken(interactive: boolean): Promise<string | null> {
-  if (!EXT_CLIENT_ID || !chrome.identity?.getAuthToken) return null;
-  try {
-    const result = await chrome.identity.getAuthToken({ interactive });
-    const token = typeof result === 'string' ? result : result?.token;
-    return token || null;
-  } catch (e) {
-    logger.info('airglow', `getAuthToken unavailable: ${e instanceof Error ? e.message : String(e)}`);
-    return null;
-  }
-}
-
-async function dropCachedAccessToken(token: string): Promise<void> {
-  try {
-    await chrome.identity.removeCachedAuthToken({ token });
-  } catch {
-    /* cache miss is fine */
-  }
-}
-
-// --- Web auth flow path (launchWebAuthFlow) ----------------------------------
+// --- Web auth flow (launchWebAuthFlow) ----------------------------------------
 
 function randomNonce(): string {
   const bytes = new Uint8Array(16);
@@ -127,6 +119,9 @@ function randomNonce(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// Returns the id_token, or null when sign-in is unavailable (silent prompt:none
+// couldn't resolve a session, or launchWebAuthFlow is missing). Throws
+// AuthCancelledError when the user dismisses the interactive window.
 async function webFlowIdToken(interactive: boolean): Promise<string | null> {
   if (!WEB_CLIENT_ID || !chrome.identity?.launchWebAuthFlow) return null;
   const redirectUri = chrome.identity.getRedirectURL();
@@ -147,7 +142,14 @@ async function webFlowIdToken(interactive: boolean): Promise<string | null> {
     const fragment = new URL(responseUrl).hash.replace(/^#/, '');
     return new URLSearchParams(fragment).get('id_token');
   } catch (e) {
-    logger.info('airglow', `launchWebAuthFlow failed: ${e instanceof Error ? e.message : String(e)}`);
+    const msg = e instanceof Error ? e.message : String(e);
+    // Closing the picker rejects the promise — surface that as a cancel (no
+    // error UI) rather than a failure. Silent (prompt:none) rejections are
+    // expected "no resolvable session" → null.
+    if (interactive && /did not approve|cancell?ed|user (denied|rejected|closed)|window.*closed|closed.*window/i.test(msg)) {
+      throw new AuthCancelledError(msg);
+    }
+    logger.info('airglow', `launchWebAuthFlow failed: ${msg}`);
     return null;
   }
 }
@@ -156,29 +158,7 @@ async function webFlowIdToken(interactive: boolean): Promise<string | null> {
 
 export async function signInWithGoogle(opts: { interactive: boolean }): Promise<AuthSession> {
   if (!isAuthConfigured()) {
-    throw new Error('Sign-in is not configured in this build (missing WXT_GOOGLE_*_CLIENT_ID)');
-  }
-
-  const accessToken = await chromeAccessToken(opts.interactive);
-  if (accessToken) {
-    try {
-      const session = await exchangeAtBackend({ accessToken });
-      await persistSession(session);
-      return session;
-    } catch (e) {
-      // A cached-but-revoked Chrome token 401s at the backend; drop it and
-      // retry once with a fresh one before falling through to the web flow.
-      if ((e as { status?: number }).status === 401) {
-        await dropCachedAccessToken(accessToken);
-        const fresh = await chromeAccessToken(opts.interactive);
-        if (fresh && fresh !== accessToken) {
-          const session = await exchangeAtBackend({ accessToken: fresh });
-          await persistSession(session);
-          return session;
-        }
-      }
-      if ((e as { status?: number }).status === undefined) throw e; // network/server unreachable
-    }
+    throw new Error('Sign-in is not configured in this build (missing WXT_GOOGLE_WEB_CLIENT_ID)');
   }
 
   const idToken = await webFlowIdToken(opts.interactive);
@@ -189,7 +169,7 @@ export async function signInWithGoogle(opts: { interactive: boolean }): Promise<
   }
 
   throw new Error(opts.interactive
-    ? 'Google sign-in was cancelled or unavailable'
+    ? 'Google sign-in was unavailable'
     : 'silent sign-in unavailable');
 }
 
@@ -207,9 +187,4 @@ export async function ensureSession(): Promise<AuthSession | null> {
 
 export async function signOut(): Promise<void> {
   await chrome.storage.local.remove(AUTH_SESSION_KEY);
-  try {
-    await chrome.identity.clearAllCachedAuthTokens?.();
-  } catch {
-    /* non-Chrome */
-  }
 }
