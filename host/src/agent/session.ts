@@ -285,11 +285,20 @@ function truncateSummary(text: string): string {
   return text.slice(0, SUMMARY_CHARS) + `\n…(truncated, ${text.length - SUMMARY_CHARS} more chars)`;
 }
 
-// Drop empty text blocks before sending — the API rejects them ("text content
-// blocks must be non-empty"). Adaptive thinking can emit a text block that
-// never receives deltas, and such a block, once persisted, poisons every
-// later request. Messages left with no content are dropped entirely. Stored
-// messages are never mutated.
+// Drop blocks that would make the API reject the whole request, then drop any
+// messages that end up content-less.
+//
+// Cases handled:
+//   - Empty text blocks ("text content blocks must be non-empty"). Adaptive
+//     thinking can emit a text block that never receives deltas.
+//   - Thinking blocks with an empty signature. The signature is supplied via
+//     a streaming `signature_delta`; if the stream is interrupted between
+//     `content_block_start` and the first delta, the block persists as
+//     `{ thinking: '', signature: '' }` and Anthropic rejects every subsequent
+//     replay ("thinking blocks must have a valid signature"). Same poisoning
+//     pattern as empty text blocks — handle it the same way.
+//
+// Stored messages are never mutated.
 function sanitizeForApi(messages: ApiMessage[]): ApiMessage[] {
   const out: ApiMessage[] = [];
   for (const m of messages) {
@@ -298,7 +307,10 @@ function sanitizeForApi(messages: ApiMessage[]): ApiMessage[] {
       out.push(m);
       continue;
     }
-    const content = m.content.filter((b: any) => !(b?.type === 'text' && !String(b.text ?? '').trim()));
+    const content = m.content.filter((b: any) =>
+      !(b?.type === 'text' && !String(b.text ?? '').trim()) &&
+      !(b?.type === 'thinking' && !String(b.signature ?? '').trim())
+    );
     if (content.length === 0) continue;
     out.push({ ...m, content });
   }
