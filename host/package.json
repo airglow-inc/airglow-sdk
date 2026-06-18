@@ -1,6 +1,6 @@
 {
   "name": "@airglow/host",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Airglow native host — connector (Chrome native messaging) + daemon (app server, agent sessions, browser bridge) in one Bun binary.",
   "type": "module",
