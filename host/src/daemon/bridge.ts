@@ -14,8 +14,8 @@
 
 import type { ServerWebSocket } from 'bun';
 import { join } from 'node:path';
-import { writeFileSync } from 'node:fs';
-import { SHOTS_DIR } from '../paths';
+import { writeFileSync, readFileSync } from 'node:fs';
+import { SHOTS_DIR, DAEMON_LOG_PATH } from '../paths';
 
 export interface ConnectorInfo {
   id: number;
@@ -78,6 +78,11 @@ export class BrowserBridge {
   // alongside the user's daily browser, both sharing this daemon).
   private sessionConnectors = new Map<string, number>();
 
+  // connectorId → chrome.runtime.id the extension announced (in `identity`).
+  // Per browser, because the dashboard URL differs between a dev build and the
+  // Web Store build; resolved per session so each agent gets ITS browser's id.
+  private connectorExtensionIds = new Map<number, string>();
+
   setSessionWindow(sessionId: string, windowId: number): void {
     this.sessionWindows.set(sessionId, windowId);
   }
@@ -85,6 +90,19 @@ export class BrowserBridge {
   setSessionConnector(sessionId: string, ws: ServerWebSocket<unknown>): void {
     const id = (ws.data as any)?.connectorId;
     if (typeof id === 'number') this.sessionConnectors.set(sessionId, id);
+  }
+
+  setConnectorExtensionId(ws: ServerWebSocket<unknown>, extensionId: string): void {
+    const id = (ws.data as any)?.connectorId;
+    if (typeof id === 'number' && extensionId) this.connectorExtensionIds.set(id, extensionId);
+  }
+
+  // The chrome.runtime.id of the browser driving this session, or null. Used to
+  // name that browser's dashboard chrome-extension:// URL in the agent prompt.
+  extensionIdForSession(sessionId: string): string | null {
+    const connectorId = this.sessionConnectors.get(sessionId);
+    if (connectorId == null) return null;
+    return this.connectorExtensionIds.get(connectorId) ?? null;
   }
 
   // Returns the sessionId the approval belonged to (for the resolved event),
@@ -130,7 +148,10 @@ export class BrowserBridge {
 
   unregister(ws: ServerWebSocket<unknown>): void {
     const id = (ws.data as any)?.connectorId;
-    if (typeof id === 'number') this.connectors.delete(id);
+    if (typeof id === 'number') {
+      this.connectors.delete(id);
+      this.connectorExtensionIds.delete(id);
+    }
   }
 
   onExtensionMessage(msg: any): void {
@@ -241,7 +262,7 @@ export class BrowserBridge {
         if (!args.tabId || !args.code) return { error: 'tabId and code required' };
         return this.sendToExtension(
           c,
-          { type: 'eval', tabId: args.tabId, code: args.code, frame: args.frame ?? null, main: !!args.main },
+          { type: 'eval', tabId: args.tabId, code: args.code, frame: args.frame ?? null, main: !!args.main, app: args.app ?? null },
           15000,
         );
       }
@@ -268,9 +289,14 @@ export class BrowserBridge {
       }
 
       case 'logs': {
+        // One view over both streams the agent must watch: the browser-side
+        // buffer (userscripts, app UIs, uncaught errors) and the daemon log
+        // (bundle failures, RPC/server-function crashes). Merged chronologically
+        // so a browser error and the server stack that caused it sit together.
         const reply = await this.sendToExtension(c, { type: 'logs' }, 5000);
-        if (reply?.error) return reply;
-        let entries: any[] = reply?.entries || [];
+        const browser: any[] = Array.isArray(reply?.entries) ? reply.entries : [];
+        const daemon = args.source && args.source !== 'daemon' ? [] : readDaemonLog();
+        let entries = [...browser, ...daemon].sort((a, b) => (a.ts || 0) - (b.ts || 0));
         if (args.level) entries = entries.filter((e) => e.level === args.level);
         if (args.source) entries = entries.filter((e) => e.source === args.source);
         entries = entries.slice(-(Number(args.n) || 50));
@@ -338,4 +364,35 @@ function isNoise(entry: NetCaptureEntry): boolean {
   const url = entry.url || '';
   if (/\.(js|css|svg|png|jpg|gif|woff2?|ico|map)(\?|$)/.test(url.split('?')[0])) return true;
   return NOISE_PATTERNS.some((p) => url.includes(p));
+}
+
+// The daemon tees console output to daemon.log, each line prefixed with an ISO
+// timestamp (see setupLogTee). Parse the tail into log entries shaped like the
+// browser buffer's so `logs` can interleave them. The log has no per-line level,
+// so flag error-looking lines as 'error' (lets `--level error` surface daemon
+// crashes alongside browser errors); everything else is 'info'.
+const DAEMON_LOG_TAIL = 400;
+const ERROR_RE = /\b(error|err|exception|fail(ed|ure)?|reject(ion|ed)?|fatal|throw|unhandled)\b/i;
+
+function readDaemonLog(): { ts: number; level: 'info' | 'error'; source: string; message: string }[] {
+  let text: string;
+  try {
+    text = readFileSync(DAEMON_LOG_PATH, 'utf8');
+  } catch {
+    return [];
+  }
+  const lines = text.split('\n').filter(Boolean).slice(-DAEMON_LOG_TAIL);
+  const out: { ts: number; level: 'info' | 'error'; source: string; message: string }[] = [];
+  for (const line of lines) {
+    const m = line.match(/^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s([\s\S]*)$/);
+    const ts = m ? Date.parse(m[1]) : NaN;
+    const message = m ? m[2] : line;
+    out.push({
+      ts: Number.isNaN(ts) ? 0 : ts,
+      level: ERROR_RE.test(message) ? 'error' : 'info',
+      source: 'daemon',
+      message,
+    });
+  }
+  return out;
 }

@@ -34,6 +34,7 @@ export function promptRuntimeContext(opts: {
   workspace: string;
   daemonOrigin: string;
   daemonLogPath: string;
+  extensionId?: string | null;
   apps: { id: string; dir: string }[];
 }): string {
   const appsList = opts.apps.length
@@ -42,11 +43,18 @@ export function promptRuntimeContext(opts: {
   const newAppHint = opts.apps.length
     ? `Create new apps as siblings of the existing ones (same parent directory pattern).`
     : `Create new apps under apps/<id>/.`;
+  // The dashboard (and its embedded, fully-wired app UIs) lives at a
+  // chrome-extension:// URL the connected Chrome's id determines. `browser open`
+  // accepts it — opening it reaches the *real* in-extension app (full SDK,
+  // chrome.storage), unlike the bare ${opts.daemonOrigin}/api/apps/<id>/ui bundle.
+  const dashboardLine = opts.extensionId
+    ? `\n- Dashboard (real in-extension app UIs): chrome-extension://${opts.extensionId}/dashboard.html`
+    : '';
   return `
 # Environment
 
 - Workspace root (your cwd): ${opts.workspace}
-- Local app server (the Airglow daemon): ${opts.daemonOrigin}
+- Local app server (the Airglow daemon): ${opts.daemonOrigin}${dashboardLine}
 - Daemon log (bundle errors, RPC failures): ${opts.daemonLogPath}
 - Current date: ${new Date().toISOString().slice(0, 10)}
 - Existing apps (id → directory):

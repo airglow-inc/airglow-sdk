@@ -10,6 +10,7 @@ export type AgentEvent =
   | { type: 'tool_start'; toolId: string; name: string; input: Record<string, unknown> }
   | { type: 'tool_end'; toolId: string; name: string; ok: boolean; summary: string }
   | { type: 'plan'; items: { text: string; done: boolean }[] }
+  | { type: 'task'; title: string }
   | { type: 'app_context'; appId: string; name: string }
   | { type: 'approval_request'; approvalId: string; action: string; detail: string }
   | { type: 'approval_resolved'; approvalId: string; approved: boolean }

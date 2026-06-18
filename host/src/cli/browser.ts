@@ -15,16 +15,20 @@ Usage:
                                                          \`role: "agent"\` = your own debug window.
   airglow browser open <url> [--background]              open a tab in the agent debug window
   airglow browser nav --tab N <url>                      navigate a tab
-  airglow browser eval --tab N '<js>' [--main] [--frame S]
-                                                         run JS. Default: CSP-exempt USER_SCRIPT world
-                                                         (own window). --main: page world, sees page
-                                                         globals, page CSP applies.
+  airglow browser eval --tab N '<js>' [--main] [--frame S] [--app ID]
+                                                         run JS (\`await\` supported). Default: CSP-exempt
+                                                         USER_SCRIPT world (own window). --main: page
+                                                         world, sees page globals, page CSP applies.
+                                                         --app ID: run in app ID's world with its
+                                                         \`airglow\` SDK defined, e.g.
+                                                         --app ID 'await airglow.storage.get("k")'.
   airglow browser html --tab N [--selector CSS] [--frame S]
                                                          outerHTML (whole document by default)
   airglow browser shot --tab N                           screenshot → prints saved file path
   airglow browser close --tab N                          close a tab
-  airglow browser logs [--level error] [--source <app>] [-n 50]
-                                                         extension + app log buffer
+  airglow browser logs [--level error] [--source <app>|daemon] [-n 50]
+                                                         browser buffer + daemon log, merged by time.
+                                                         --source daemon: just the daemon log.
   airglow browser targets                                connected browsers (multi-Chrome setups)
 
 Network capture (reverse-engineering a site's API):
@@ -99,11 +103,12 @@ export async function runBrowserCli(argv: string[]): Promise<void> {
       args.url = positional[0];
       break;
     case 'eval':
-      if (tab === undefined || !positional[0]) fail("usage: airglow browser eval --tab N '<js>' [--main]");
+      if (tab === undefined || !positional[0]) fail("usage: airglow browser eval --tab N '<js>' [--main] [--app ID]");
       args.tabId = tab;
       args.code = positional[0];
       if (flags.main) args.main = true;
       if (flags.frame) args.frame = flags.frame;
+      if (flags.app) args.app = flags.app;
       break;
     case 'html':
       if (tab === undefined) fail('usage: airglow browser html --tab N [--selector CSS]');

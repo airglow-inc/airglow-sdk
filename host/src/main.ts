@@ -30,7 +30,11 @@ When spawned by Chrome (native messaging) this binary runs in connector mode
 automatically and bridges the extension to the daemon.
 `;
 
-if (argv.some((a) => a.startsWith('chrome-extension://'))) {
+// Known CLI verbs take precedence: a browser command can legitimately carry a
+// chrome-extension:// argument (e.g. `browser open chrome-extension://…/dashboard.html`),
+// so only fall back to connector mode when argv[0] isn't one of our verbs.
+const KNOWN_VERBS = ['daemon', 'browser', 'toolkit', 'fetch', 'install', 'update', 'internal-build', 'internal-rpc', '--version', '-v'];
+if (!KNOWN_VERBS.includes(argv[0]) && argv.some((a) => a.startsWith('chrome-extension://'))) {
   // Chrome native-messaging invocation: args are the manifest path + origin.
   runConnector();
 } else if (argv[0] === 'daemon') {

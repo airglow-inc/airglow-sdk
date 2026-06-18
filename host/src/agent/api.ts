@@ -64,6 +64,11 @@ export async function streamMessage(
   identity: AgentIdentity,
   handlers: StreamHandlers,
   signal?: AbortSignal,
+  // Called once if the gateway rejects the session token (401
+  // AUTH_SESSION_INVALID). Resolves to a freshly-minted token (the chat client
+  // re-authed) or null. A non-null result swaps the Bearer and retries the
+  // request, so a stale token self-heals without surfacing an error.
+  refreshAuth?: () => Promise<string | null>,
 ): Promise<CompletedMessage> {
   const { url, headers } = endpoint();
   // Gateway auth is the Bearer session token only — legacy user-id/-email
@@ -81,6 +86,9 @@ export async function streamMessage(
   // Last HTTP status seen across retries (0 = never reached the gateway). Fed
   // to the thrown error so the session can report the failure kind to clients.
   let lastStatus = 0;
+  // One silent re-auth per call: guards against looping when the fresh token is
+  // also rejected (wrong account, server still can't verify).
+  let authRefreshed = false;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     if (attempt > 0) await Bun.sleep(1000 * 2 ** attempt);
     signal?.throwIfAborted();
@@ -129,6 +137,19 @@ export async function streamMessage(
       const body = await res.text().catch(() => '');
       let code = '';
       try { code = JSON.parse(body)?.error?.code ?? ''; } catch {}
+      // Stale/invalidated session token (expiry, secret rotation, or the dev
+      // switching the gateway between prod and local). Ask the chat client to
+      // silently re-mint and retry once with the fresh token — no user-visible
+      // error when Google is still signed in.
+      if (res.status === 401 && code === 'AUTH_SESSION_INVALID' && refreshAuth && !authRefreshed) {
+        authRefreshed = true;
+        const newToken = await refreshAuth().catch(() => null);
+        if (newToken) {
+          headers['authorization'] = `Bearer ${newToken}`;
+          attempt--; // the refresh round-trip must not consume a retry
+          continue;
+        }
+      }
       const err: any = new Error(`model API error ${res.status}: ${body.slice(0, 500)}`);
       err.status = res.status;
       if (code) err.code = code;

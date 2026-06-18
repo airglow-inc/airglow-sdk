@@ -21,6 +21,7 @@ import { HOST_VERSION } from '../version';
 import { ensureAirglowOnPath } from '../install';
 import { EXTENSION_ORIGINS } from '../extension-ids';
 import { SessionManager, stripImagesForTransport, type EventSink, type UserImage } from '../agent/session';
+import type { AgentEvent } from '../agent/types';
 import type { AgentIdentity } from '../agent/api';
 import { AppServer } from './apps';
 import { CatalogService } from './catalog';
@@ -195,6 +196,24 @@ export async function runDaemon(argv: string[]): Promise<void> {
     }
   } catch {}
 
+  // Pin the daemon's PATH to a deterministic minimal set so that everything the
+  // daemon spawns directly (bundler, RPC, the Tailwind build, tar/cp) behaves
+  // identically no matter how the daemon was launched. Without this, a
+  // terminal-launched daemon inherits the dev shell's rich PATH (Homebrew, node,
+  // …) while the production daemon — auto-spawned by the Chrome native-messaging
+  // connector — gets launchd's bare PATH, so any accidental reliance on a
+  // user-installed tool works in dev and silently fails for users (this is the
+  // bug that broke per-app Tailwind: `.bin/tailwindcss`'s node shebang couldn't
+  // find `node`). Minimal — not a curated PATH that includes Homebrew — is the
+  // point: the daemon must be self-sufficient (it resolves its own tools via
+  // process.execPath / node_modules), and pinning minimal makes any leak break
+  // loudly in local testing too. The agent's bash tool is unaffected: it spawns
+  // a login shell (`/bin/bash -lc`), so macOS path_helper rebuilds the full
+  // user PATH for agent commands regardless of what the daemon's PATH is.
+  if (process.platform !== 'win32') {
+    process.env.PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+  }
+
   if (process.env.ANTHROPIC_API_KEY) {
     console.log('agent upstream: direct Anthropic API (ANTHROPIC_API_KEY in state/agent.env)');
   } else {
@@ -214,6 +233,24 @@ export async function runDaemon(argv: string[]): Promise<void> {
   // ── Agent sessions ──
   // Events stream to the connector whose chat client started the session.
   const sessionConnectors = new Map<string, Bun.ServerWebSocket<unknown>>();
+
+  // Per-session live event buffer for lossless sidepanel reconnect. Each
+  // emitted event gets a monotonic per-session seq; a reopened (or
+  // service-worker-recycled) panel replays everything from the current turn,
+  // recovering events emitted while it was detached — neither the background
+  // relay nor the connector buffers anything. Cleared at each turn start so it
+  // only ever holds the current turn; the seq counter keeps climbing so any
+  // other open panel's dedup stays correct across turns.
+  const EVENT_BUF_CAP = 800;
+  const eventLog = new Map<string, { seq: number; events: { seq: number; event: AgentEvent }[] }>();
+  function recordEvent(sessionId: string, event: AgentEvent): number {
+    let log = eventLog.get(sessionId);
+    if (!log) eventLog.set(sessionId, (log = { seq: 0, events: [] }));
+    const seq = ++log.seq;
+    log.events.push({ seq, event });
+    if (log.events.length > EVENT_BUF_CAP) log.events.splice(0, log.events.length - EVENT_BUF_CAP);
+    return seq;
+  }
   const connectorIdentities = new WeakMap<object, AgentIdentity>();
   // Last identity any connector announced — fallback for requests that loop
   // back into the daemon without identity headers (server-function airglow.llm
@@ -229,8 +266,9 @@ export async function runDaemon(argv: string[]): Promise<void> {
   }
 
   const sink: EventSink = (sessionId, event) => {
+    const seq = recordEvent(sessionId, event);
     const ws = sessionConnectors.get(sessionId);
-    if (ws) sendExt(ws, { type: 'agent:event', sessionId, event });
+    if (ws) sendExt(ws, { type: 'agent:event', sessionId, event, seq });
   };
 
   const agents = new SessionManager(
@@ -238,6 +276,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
       workspace,
       daemonOrigin: () => `http://127.0.0.1:${server.port}`,
       daemonLogPath: DAEMON_LOG_PATH,
+      extensionId: (sessionId: string) => bridge.extensionIdForSession(sessionId),
       airglowBinDir: ensureAirglowOnPath(),
       listApps: async () => {
         const manifests = await apps.scanManifests();
@@ -247,6 +286,51 @@ export async function runDaemon(argv: string[]): Promise<void> {
           if (dir) result.push({ id: m.id, dir: relative(workspace, dir) });
         }
         return result;
+      },
+      // The tab the user is looking at in the session's Chrome window: the
+      // `current` tab of the `chatWindow` from the bridge's `tabs` reply.
+      // Capped so a slow/unresponsive browser never stalls the turn.
+      currentTab: async (sessionId) => {
+        try {
+          const res = await Promise.race([
+            bridge.command('tabs', { sessionId }),
+            new Promise<null>((r) => setTimeout(() => r(null), 2500)),
+          ]);
+          const windows = (res as any)?.windows;
+          if (!Array.isArray(windows)) return null;
+          const chat = windows.find((w: any) => w?.chatWindow) ?? windows[0];
+          const tab = chat?.tabs?.find((t: any) => t?.current);
+          if (!tab || typeof tab.id !== 'number') return null;
+          return {
+            id: tab.id,
+            title: typeof tab.title === 'string' ? tab.title : '',
+            url: typeof tab.url === 'string' ? tab.url : undefined,
+          };
+        } catch {
+          return null;
+        }
+      },
+      // Gateway rejected this session's token (AUTH_SESSION_INVALID). Ask its
+      // connector to silently re-mint (no UI while Google is signed in), then
+      // wait for the refreshed `identity` message and hand back the new token
+      // so the turn retries. Null when there's no connector or the refresh
+      // didn't land in time (e.g. signed out of Google → falls through to the
+      // surfaced error).
+      refreshAuth: async (sessionId) => {
+        const ws = sessionConnectors.get(sessionId);
+        if (!ws) return null;
+        const before = connectorIdentities.get(ws)?.authToken ?? null;
+        sendExt(ws, { type: 'agent:auth_refresh', sessionId });
+        const deadline = Date.now() + 10_000;
+        while (Date.now() < deadline) {
+          await Bun.sleep(200);
+          const now = connectorIdentities.get(ws)?.authToken ?? null;
+          // Any change ends the wait: a new token → retry with it; the token
+          // cleared to null → the extension gave up (no silent session), so
+          // surface the error promptly instead of stalling the full 10s.
+          if (now !== before) return now;
+        }
+        return null;
       },
     },
     sink,
@@ -287,6 +371,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
           authToken: typeof m.authToken === 'string' && m.authToken ? m.authToken : null,
         });
         lastConnectorIdentity = connectorIdentities.get(ws as object) ?? null;
+        if (typeof m.extensionId === 'string' && m.extensionId) bridge.setConnectorExtensionId(ws, m.extensionId);
         if ('gatewayUrl' in m) applyGatewayOverride(m.gatewayUrl);
         syncInstallTelemetry(); // now we know who to attribute installs to
         return true;
@@ -304,6 +389,10 @@ export async function runDaemon(argv: string[]): Promise<void> {
         // connected most recently — keeps the agent inside its own browser).
         if (typeof m.windowId === 'number') bridge.setSessionWindow(session.id, m.windowId);
         bridge.setSessionConnector(session.id, ws);
+        // New turn → drop the previous turn's buffered events (keep the seq
+        // counter climbing so other open panels' dedup survives the reset).
+        const prevLog = eventLog.get(session.id);
+        if (prevLog) prevLog.events = [];
         const images: UserImage[] = Array.isArray(m.images)
           ? m.images
               .filter((im: any) => typeof im?.media_type === 'string' && typeof im?.data === 'string')
@@ -331,13 +420,28 @@ export async function runDaemon(argv: string[]): Promise<void> {
         return true;
       case 'agent:history': {
         const session = typeof m.sessionId === 'string' ? agents.get(m.sessionId) : null;
+        const log = typeof m.sessionId === 'string' ? eventLog.get(m.sessionId) : undefined;
+        const running = session?.running ?? false;
+        const allMessages = session?.getMessages() ?? [];
+        const allTimes = session?.getMessageTimes() ?? [];
+        // For a live turn, hand back completed turns from persisted history plus
+        // the in-flight user message and the live event buffer — the panel
+        // replays the buffer to render the running turn exactly as it streamed.
+        // For a finished session, the full transcript is the whole story.
+        const tsi = running && session ? session.getTurnStartIndex() : allMessages.length;
+        const turnUser = running ? allMessages[tsi] ?? null : null;
         sendExt(ws, {
           type: 'agent:history:result',
           reqId: m.reqId,
           sessionId: m.sessionId,
           meta: session?.meta ?? null,
-          messages: stripImagesForTransport(session?.getMessages() ?? []),
-          running: session?.running ?? false,
+          messages: stripImagesForTransport(running ? allMessages.slice(0, tsi) : allMessages),
+          times: running ? allTimes.slice(0, tsi) : allTimes,
+          running,
+          turnUserMessage: turnUser ? stripImagesForTransport([turnUser])[0] ?? null : null,
+          events: running ? log?.events ?? [] : [],
+          turnStartedAt: running ? session?.getTurnStartedAt() ?? null : null,
+          lastSeq: log?.seq ?? 0,
         });
         if (session) sessionConnectors.set(session.id, ws);
         return true;

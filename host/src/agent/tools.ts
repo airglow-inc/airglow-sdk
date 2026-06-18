@@ -13,7 +13,7 @@ function truncateOutput(text: string): string {
   if (text.length <= MAX_OUTPUT_CHARS) return text;
   return text.slice(0, MAX_OUTPUT_CHARS) + `\n…(truncated, ${text.length - MAX_OUTPUT_CHARS} more chars)`;
 }
-const DEFAULT_BASH_TIMEOUT_MS = 120_000;
+const DEFAULT_BASH_TIMEOUT_MS = 10_000;
 const MAX_ATTACHED_IMAGES = 3;
 const MAX_IMAGE_BYTES = 4_000_000;
 
@@ -96,15 +96,27 @@ export const TOOL_DEFINITIONS = [
     input_schema: {
       type: 'object',
       properties: {
+        description: { type: 'string', description: 'Short, user-facing phrase (≤6 words, present tense) naming the action this command performs, e.g. "Opening the post composer", "Reading the first feed post". Shown live in the UI so the user can follow along — make it specific to intent, not the command.' },
         command: { type: 'string' },
-        timeout_ms: { type: 'number', description: 'Default 120000, max 600000' },
+        timeout_ms: { type: 'number', description: 'Timeout in ms. Default 10000 (10s) — raise it for known-slow commands (installs, builds, large downloads). Max 120000 (2min).' },
       },
-      required: ['command'],
+      required: ['description', 'command'],
+    },
+  },
+  {
+    name: 'task',
+    description: 'State, in one short plain-language line, the task you are doing for the user (e.g. "Blocking all of Instagram behind a focus banner"). Call this ONCE near the start of a turn, right after you understand the request and before other tools. It pins at the top of the chat so the user always sees the goal — set it even for simple one-step work, where you would not publish a plan. Update it only if the goal materially changes mid-turn.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short objective in plain language, ideally under ~8 words, present tense (e.g. "Adding dark mode to the reader").' },
+      },
+      required: ['title'],
     },
   },
   {
     name: 'plan',
-    description: 'Publish or update your task plan as a checklist shown to the user. Send the full list each time.',
+    description: 'Publish or update your task plan as a checklist shown to the user. Send the full list each time. Use only for genuinely multi-step work; for simple tasks the `task` tool alone is enough.',
     input_schema: {
       type: 'object',
       properties: {
@@ -156,6 +168,7 @@ export class Tools {
         case 'glob': return this.glob(input);
         case 'grep': return this.grep(input);
         case 'bash': return await this.bash(input);
+        case 'task': return { content: 'Task noted.', isError: false };
         case 'plan': return { content: 'Plan updated.', isError: false };
         default: return { content: `unknown tool: ${name}`, isError: true };
       }
@@ -241,7 +254,7 @@ export class Tools {
   }
 
   private async bash(input: { command: string; timeout_ms?: number }): Promise<ToolOutcome> {
-    const timeout = Math.min(input.timeout_ms ?? DEFAULT_BASH_TIMEOUT_MS, 600_000);
+    const timeout = Math.min(input.timeout_ms ?? DEFAULT_BASH_TIMEOUT_MS, 120_000);
     const proc = Bun.spawn(['/bin/bash', '-lc', input.command], {
       cwd: this.workspace,
       stdin: 'ignore',

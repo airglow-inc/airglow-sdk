@@ -3,7 +3,7 @@
 // manifests/settings, and executes server functions in-process.
 
 import { readdir, readFile, stat } from 'node:fs/promises';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync, realpathSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { buildSdkCode } from '../../../sdk/airglow-sdk';
@@ -258,8 +258,18 @@ ${appIdInject}<script>${escapeInlineScript(sdkCode)}<\/script>
         inputPath = tempPath;
       }
     } catch {}
-    const proc = Bun.spawnSync([bin, '-i', inputPath, '--minify'], {
+    // The `.bin/tailwindcss` shim is a `#!/usr/bin/env node` script, but the
+    // daemon runs under Bun in an environment without `node` on PATH (it's
+    // launched by the native connector), so invoking the shim directly fails
+    // with "env: node: No such file or directory" and we silently lose every
+    // utility class. Run the resolved CLI entry with the Bun executable itself
+    // instead — BUN_BE_BUN makes a compiled `airglow` binary act as plain bun
+    // (no-op for source runs).
+    let cli = bin;
+    try { cli = realpathSync(bin); } catch {}
+    const proc = Bun.spawnSync([process.execPath, cli, '-i', inputPath, '--minify'], {
       cwd: this.workspace,
+      env: { ...process.env, BUN_BE_BUN: '1' },
       stdin: 'ignore',
       timeout: 15000,
     });

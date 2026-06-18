@@ -7,6 +7,7 @@
   "scripts": {
     "daemon": "bun run src/main.ts daemon",
     "browser": "bun run src/main.ts browser",
+    "test": "bun test",
     "pack-seed": "bun scripts/pack-seed.ts",
     "build": "bun run pack-seed && bun build --compile --outfile dist/airglow src/main.ts",
     "build:release": "bash scripts/build-release.sh",

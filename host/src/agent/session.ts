@@ -3,7 +3,8 @@
 //
 // Persistence: one JSONL file per session under state/sessions/. Lines are
 // {type:'meta'} (latest wins) and {type:'message'} (Anthropic-format message,
-// replayed in order on resume).
+// replayed in order on resume). Message lines also carry a wall-clock `ts` so
+// chat UIs can reconstruct each turn's "Worked for X" duration after reload.
 
 import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -22,23 +23,53 @@ export type UserImage = { media_type: string; data: string };
 
 export type EventSink = (sessionId: string, event: AgentEvent) => void;
 
+// The foreground tab in the Chrome window driving this session.
+export type CurrentTab = { id: number; title: string; url?: string };
+
 export interface AgentEnv {
   workspace: string;
   daemonOrigin: () => string;
   daemonLogPath: string;
+  // chrome.runtime.id of the browser driving this session, or null before its
+  // connector announces identity. Per session, so each agent gets ITS browser's
+  // dashboard chrome-extension:// URL (dev and Web Store builds differ).
+  extensionId?: (sessionId: string) => string | null;
   // Directory containing an `airglow` executable (PATH injection for bash).
   airglowBinDir: string;
   // Existing apps: id + workspace-relative directory (for the prompt).
   listApps: () => Promise<{ id: string; dir: string }[]>;
+  // Active tab the user is looking at in the chat's Chrome window, resolved at
+  // send time. null when no browser/tab is available.
+  currentTab: (sessionId: string) => Promise<CurrentTab | null>;
+  // Ask the session's chat client (extension) to silently re-mint the user's
+  // session token after the gateway rejects it (AUTH_SESSION_INVALID).
+  // Resolves to the fresh token, or null when no client/Google session can
+  // refresh it. Optional: direct-Anthropic dev mode has no gateway auth.
+  refreshAuth?: (sessionId: string) => Promise<string | null>;
 }
 
 export class Session {
   readonly id: string;
   meta: SessionMeta;
   private messages: ApiMessage[] = [];
+  // Wall-clock ms per entry in `messages` (parallel array). Drives the
+  // persisted "Worked for X" duration on history reload; message-append lines
+  // don't add an entry. 0 for pre-timestamp (legacy) message lines.
+  private times: number[] = [];
   running = false;
+  // Wall-clock ms when the current turn began (null when idle). Lets a
+  // reopened sidepanel show the true elapsed time instead of restarting the
+  // "Working for X" clock from zero.
+  turnStartedAt: number | null = null;
+  // Index in `messages` of the user message that opened the current turn. A
+  // reopened panel rebuilds completed turns from history up to here, then
+  // replays the live event buffer for the in-flight turn (no double-render).
+  private turnStartIndex = 0;
   identity: AgentIdentity = { userId: null, email: null };
   private abort: AbortController | null = null;
+  // Last tab snapshot injected into a user message; re-sent only when the tab
+  // (id/title/url) changes, so unchanged turns don't repeat it.
+  private lastTabContext: string | null = null;
 
   constructor(id: string, private env: AgentEnv, private sink: EventSink) {
     this.id = id;
@@ -66,6 +97,28 @@ export class Session {
     return this.messages;
   }
 
+  // Per-message wall-clock timestamps, index-aligned with getMessages().
+  getMessageTimes(): number[] {
+    return this.times;
+  }
+
+  getTurnStartedAt(): number | null {
+    return this.turnStartedAt;
+  }
+
+  getTurnStartIndex(): number {
+    return this.turnStartIndex;
+  }
+
+  // Append a new message to history and persist it with a wall-clock
+  // timestamp, keeping `times` aligned with `messages`.
+  private pushMessage(message: ApiMessage): void {
+    const ts = Date.now();
+    this.messages.push(message);
+    this.times.push(ts);
+    this.persist({ type: 'message', message, ts });
+  }
+
   static load(id: string, env: AgentEnv, sink: EventSink): Session | null {
     const s = new Session(id, env, sink);
     if (!existsSync(s.filePath)) return null;
@@ -74,8 +127,10 @@ export class Session {
         if (!line.trim()) continue;
         const rec = JSON.parse(line);
         if (rec.type === 'meta') s.meta = rec.meta;
-        else if (rec.type === 'message') s.messages.push(rec.message);
-        else if (rec.type === 'message-append') {
+        else if (rec.type === 'message') {
+          s.messages.push(rec.message);
+          s.times.push(typeof rec.ts === 'number' ? rec.ts : 0);
+        } else if (rec.type === 'message-append') {
           const last = s.messages[s.messages.length - 1];
           // rec.text is the pre-images format of this line.
           const blocks: ContentBlock[] = rec.blocks ?? [{ type: 'text', text: rec.text }];
@@ -125,6 +180,12 @@ export class Session {
     }
     this.running = true;
     this.abort = new AbortController();
+    this.turnStartedAt = Date.now();
+    // The in-flight turn's user message lands at the current end of history
+    // (push case) or merges into the trailing user message (resume case); a
+    // reopened panel trims completed turns at this index. Set before the first
+    // await so a resync mid-setup sees a stable boundary.
+    this.turnStartIndex = this.messages.length;
     try {
       if (!this.meta.title) {
         this.meta.title = text.slice(0, 60);
@@ -140,14 +201,27 @@ export class Session {
       // The API rejects empty text blocks — image-only messages are fine.
       if (text.trim()) blocks.push({ type: 'text', text });
       if (blocks.length === 0) blocks.push({ type: 'text', text: '(empty message)' });
+      // Prepend a snapshot of the page the user is looking at, so the agent can
+      // act on "this page" without first running `airglow browser tabs`. Lives
+      // in the user message (not the system prompt) to avoid thrashing the
+      // system prompt cache each turn; chat UIs filter the <airglow-context>
+      // block out of the rendered bubble. Sent only when the tab changed since
+      // the last injection (id/title/url) — including the first message.
+      const tab = await this.env.currentTab(this.id).catch(() => null);
+      if (tab) {
+        const ctx = formatTabContext(tab);
+        if (ctx !== this.lastTabContext) {
+          this.lastTabContext = ctx;
+          blocks.unshift({ type: 'text', text: ctx });
+        }
+      }
       const last = this.messages[this.messages.length - 1];
       if (last && last.role === 'user' && Array.isArray(last.content)) {
         last.content.push(...blocks);
         this.persist({ type: 'message-append', blocks });
       } else {
         const userMessage: ApiMessage = { role: 'user', content: blocks };
-        this.messages.push(userMessage);
-        this.persist({ type: 'message', message: userMessage });
+        this.pushMessage(userMessage);
       }
       await this.runLoop();
     } catch (e: any) {
@@ -180,9 +254,12 @@ export class Session {
         workspace: this.env.workspace,
         daemonOrigin: this.env.daemonOrigin(),
         daemonLogPath: this.env.daemonLogPath,
+        extensionId: this.env.extensionId?.(this.id) ?? null,
         apps: await this.env.listApps().catch(() => []),
       });
 
+    // Consecutive truncated/empty completions — see the guard below.
+    let emptyCompletions = 0;
     for (let i = 0; i < MAX_LOOP_ITERATIONS; i++) {
       signal.throwIfAborted();
       const completed = await streamMessage(
@@ -221,13 +298,44 @@ export class Session {
           }),
         },
         signal,
+        // Self-heal a rejected session token: have the extension re-mint it,
+        // adopt the fresh token for this session, and retry the request.
+        this.env.refreshAuth
+          ? async () => {
+              const token = await this.env.refreshAuth!(this.id);
+              if (token) this.identity.authToken = token;
+              return token;
+            }
+          : undefined,
       );
 
       if (i === 0) console.log(`[agent ${this.id}] model: ${completed.model ?? '(unknown)'}`);
 
+      // Guard against a truncated/empty completion: the stream ended without the
+      // model producing any answer (no non-empty text) or action (no tool_use).
+      // Seen when the upstream cuts the connection right after opening a thinking
+      // block — leaving a blank {thinking:'', signature:''}. The loop used to
+      // persist that and emit turn_done(end_turn), ending the chat with no reply
+      // ("the agent just stopped talking"). Don't persist it; re-request a few
+      // times, then surface an error instead of a silent dead-end. pause_turn is
+      // a legitimate mid-message pause (server tools) and is handled below.
+      const meaningful = completed.content.some(
+        (b) => (b.type === 'text' && b.text.trim() !== '') || b.type === 'tool_use' || b.type === 'server_tool_use',
+      );
+      if (!meaningful && completed.stopReason !== 'pause_turn') {
+        if (++emptyCompletions <= 2) {
+          console.warn(`[agent ${this.id}] empty completion (stop ${completed.stopReason}) — retry ${emptyCompletions}/2`);
+          await Bun.sleep(400 * emptyCompletions);
+          continue;
+        }
+        this.emit({ type: 'error', message: 'The model returned an empty response — this can happen on a long turn. Send your message again to continue.' });
+        this.emit({ type: 'turn_done', stopReason: 'error' });
+        return;
+      }
+      emptyCompletions = 0;
+
       const assistantMessage: ApiMessage = { role: 'assistant', content: completed.content };
-      this.messages.push(assistantMessage);
-      this.persist({ type: 'message', message: assistantMessage });
+      this.pushMessage(assistantMessage);
 
       // Long server-tool turns (web search) pause mid-message; resending the
       // history as-is (ending with the assistant message) resumes the turn.
@@ -250,6 +358,9 @@ export class Session {
         this.emit({ type: 'tool_start', toolId: tu.id, name: tu.name, input: tu.input });
         if (tu.name === 'plan' && Array.isArray((tu.input as any).items)) {
           this.emit({ type: 'plan', items: (tu.input as any).items });
+        }
+        if (tu.name === 'task' && typeof (tu.input as any).title === 'string') {
+          this.emit({ type: 'task', title: (tu.input as any).title });
         }
         const outcome = await tools.execute(tu.name, tu.input);
         if (outcome.wrotePath) this.noteWrite(outcome.wrotePath);
@@ -277,13 +388,23 @@ export class Session {
         results.push(resultContent);
       }
       const resultMessage: ApiMessage = { role: 'user', content: results };
-      this.messages.push(resultMessage);
-      this.persist({ type: 'message', message: resultMessage });
+      this.pushMessage(resultMessage);
       signal.throwIfAborted();
     }
     this.emit({ type: 'error', message: `stopped after ${MAX_LOOP_ITERATIONS} tool iterations` });
     this.emit({ type: 'turn_done', stopReason: 'max_iterations' });
   }
+}
+
+// One-line snapshot of the tab the user is viewing, prepended to each user
+// message. The <airglow-context> wrapper is the marker chat UIs key off to
+// keep this out of the rendered user bubble (sidepanel reconstructItems).
+function formatTabContext(tab: CurrentTab): string {
+  const title = tab.title.trim() || '(untitled)';
+  const url = tab.url ? `, url ${tab.url.length > 50 ? tab.url.slice(0, 50) + '…' : tab.url}` : '';
+  // Trailing newline so this block stays visually separate from the user's
+  // text block that follows it in the same message.
+  return `<airglow-context>Active browser tab the user is viewing now: id ${tab.id}, title "${title}"${url}.</airglow-context>\n`;
 }
 
 // Tool output as shown in chat UIs (tool_end events). The model sees the full
@@ -322,6 +443,42 @@ function sanitizeForApi(messages: ApiMessage[]): ApiMessage[] {
     );
     if (content.length === 0) continue;
     out.push({ ...m, content });
+  }
+  return repairDanglingToolUse(out);
+}
+
+// Repair a history where an assistant `tool_use` block has no matching
+// `tool_result` in the next message. Anthropic 400s the whole request with
+// "tool_use ids were found without tool_result blocks immediately after",
+// which then poisons EVERY later turn in the session (the dangling call stays
+// in history and the cloud relays the 400 as a 502). It happens when a turn
+// dies between persisting the assistant tool_use (runLoop) and its results — a
+// tool throwing a non-abort error, or a daemon crash/kill mid-execution — and
+// the user then sends another message, appending a plain user turn after the
+// orphaned call. We splice a synthetic error tool_result in so the history
+// validates. Stored messages are never mutated.
+function repairDanglingToolUse(messages: ApiMessage[]): ApiMessage[] {
+  const out = messages.map((m) => ({ ...m, content: Array.isArray(m.content) ? [...m.content] : m.content }));
+  for (let i = 0; i < out.length; i++) {
+    const m = out[i];
+    if (m.role !== 'assistant' || !Array.isArray(m.content)) continue;
+    const ids = m.content.filter((b: any) => b?.type === 'tool_use').map((b: any) => String(b.id));
+    if (ids.length === 0) continue;
+    const next = out[i + 1];
+    const satisfied = new Set<string>();
+    if (next && next.role === 'user' && Array.isArray(next.content)) {
+      for (const b of next.content as any[]) if (b?.type === 'tool_result') satisfied.add(b.tool_use_id);
+    }
+    const missing = ids.filter((id) => !satisfied.has(id));
+    if (missing.length === 0) continue;
+    const synthetic: ContentBlock[] = missing.map((id) => ({
+      type: 'tool_result', tool_use_id: id, content: '(no result recorded — the turn was interrupted)', is_error: true,
+    }));
+    if (next && next.role === 'user' && Array.isArray(next.content)) {
+      next.content = [...synthetic, ...next.content];
+    } else {
+      out.splice(i + 1, 0, { role: 'user', content: synthetic });
+    }
   }
   return out;
 }
