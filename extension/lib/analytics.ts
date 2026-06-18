@@ -187,3 +187,34 @@ export async function trackAgentResponseReceived(
     ...(errorCode ? { error_code: errorCode } : {}),
   });
 }
+
+/**
+ * An error surfaced to the user in the sidepanel (the red error bubble). This
+ * is the user-visible failure as experienced, captured for the admin's
+ * "Sidepanel errors" panel — the counterpart to the server-side api_request
+ * monitor, and the ONLY source for failures the cloud never sees (the daemon
+ * can't reach the gateway at all → status 0 / class 'network').
+ *
+ * `status` is the gateway HTTP status (0 when the request never landed); the
+ * status class drives the admin chart. Fire-and-forget — error reporting must
+ * never block or throw into the chat path.
+ */
+export async function trackSidepanelError(opts: {
+  message: string;
+  status?: number;
+  code?: string;
+  sessionId?: string;
+  hostVersion?: string;
+}): Promise<void> {
+  const status = typeof opts.status === 'number' ? opts.status : 0;
+  const statusClass = status >= 500 ? '5xx' : status >= 400 ? '4xx' : status >= 300 ? '3xx' : 'network';
+  await posthog.capture('sidepanel_error', {
+    status,
+    status_class: statusClass,
+    error_message: opts.message.slice(0, 300),
+    ext_version: chrome.runtime.getManifest().version,
+    ...(opts.code ? { code: opts.code } : {}),
+    ...(opts.sessionId ? { session_id: opts.sessionId } : {}),
+    ...(opts.hostVersion ? { host_version: opts.hostVersion } : {}),
+  });
+}

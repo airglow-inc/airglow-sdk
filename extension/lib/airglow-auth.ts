@@ -2,16 +2,10 @@
 //
 // One credential path: chrome.identity.launchWebAuthFlow — a standard Google
 // OAuth popup returning an id_token to the fixed
-// https://<extension-id>.chromiumapp.org/ redirect. Works identically on every
-// Chromium browser (Chrome/Brave/Edge) and on both the Web Store and local
-// extension ids (the WEB client registers a redirect URI for each).
-//
-// (We deliberately do NOT use chrome.identity.getAuthToken / a Chrome-Extension
-// OAuth client. Since we mint our own 30-day session JWT from the exchange and
-// never reuse Google's token, getAuthToken's only edge — native token caching —
-// is moot; it bought us nothing but a second OAuth client, a Chrome-only code
-// path, and the local-vs-store id divergence. One web client is simpler and
-// behaves the same everywhere.)
+// https://<extension-id>.chromiumapp.org/ redirect. A single "Web
+// application"-type OAuth client drives this on every Chromium browser
+// (Chrome/Brave/Edge) and on both the Web Store and local extension ids (it
+// registers a redirect URI for each).
 //
 // The id_token is exchanged at POST /api/auth/google for a session JWT; the
 // resulting userId (`gaia_<sub>`) is the Google account itself, so it matches
@@ -34,9 +28,10 @@ const WEB_CLIENT_ID = (import.meta.env.WXT_GOOGLE_WEB_CLIENT_ID as string | unde
   || '290831017812-fblsiun7fl9nohb79v8567d3ljcmn645.apps.googleusercontent.com';
 const OAUTH_SCOPES = ['openid', 'email', 'profile'];
 
-// Refresh when under 7 of the 30 days remain — any gateway call before then
-// keeps working without a popup.
-const REFRESH_MARGIN_MS = 7 * 24 * 60 * 60 * 1000;
+// Refresh when under 15 of the 30 days remain — any service-worker boot in the
+// token's second half silently rolls it over, so a user who opens the browser
+// at least once a fortnight never sees a re-sign-in.
+const REFRESH_MARGIN_MS = 15 * 24 * 60 * 60 * 1000;
 
 export type AuthSession = {
   token: string;
@@ -119,6 +114,19 @@ function randomNonce(): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+// The account the user last signed in with — mirrored into __airglow_user_email
+// and NOT cleared when the session token is dropped, so a re-sign-in can
+// pre-select it (the user needn't remember which Google account they used).
+async function lastKnownEmail(): Promise<string | undefined> {
+  try {
+    const r = await chrome.storage.local.get(['__airglow_user_email']);
+    const e = r['__airglow_user_email'];
+    return typeof e === 'string' && e.includes('@') ? e : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // Returns the id_token, or null when sign-in is unavailable (silent prompt:none
 // couldn't resolve a session, or launchWebAuthFlow is missing). Throws
 // AuthCancelledError when the user dismisses the interactive window.
@@ -131,8 +139,20 @@ async function webFlowIdToken(interactive: boolean): Promise<string | null> {
     redirect_uri: redirectUri,
     scope: OAUTH_SCOPES.join(' '),
     nonce: randomNonce(),
-    ...(interactive ? { prompt: 'select_account' } : { prompt: 'none' }),
   });
+  // Pre-select the previously-used account so a re-sign-in doesn't make the
+  // user guess which email they used. With a hint we skip the forced
+  // account-chooser (Google still lets them switch via "use another account");
+  // with no hint (first-ever sign-in) we show the chooser.
+  const hint = await lastKnownEmail();
+  if (!interactive) {
+    params.set('prompt', 'none');
+    if (hint) params.set('login_hint', hint);
+  } else if (hint) {
+    params.set('login_hint', hint);
+  } else {
+    params.set('prompt', 'select_account');
+  }
   try {
     const responseUrl = await chrome.identity.launchWebAuthFlow({
       url: `https://accounts.google.com/o/oauth2/v2/auth?${params}`,

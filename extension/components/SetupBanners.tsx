@@ -6,15 +6,18 @@
 //                             not here; the native host is macOS/Linux only.
 //   2. Sign in with Google  — no session → the agent/gateway can't run.
 //   3. Install native host  — host disconnected → nothing runs locally.
-//   4. Enable User Scripts   — Chrome permission; the extension can't inject.
-//   5. Pin to toolbar        — convenience; dismissible (persisted).
+//   4. Pin to toolbar        — convenience; dismissible (persisted).
 //
-// State is polled (chrome.action / chrome.userScripts expose no change events),
-// so a banner clears on its own once satisfied — no sidepanel reload needed.
-// Append ?debug-banners=1 (or pass `force`) to render every banner for design.
+// Enabling User Scripts is also required, but it's a hard gate rather than a
+// dismissible nag, so it lives in its own blocking overlay
+// (components/UserScriptsOverlay.tsx) — not in this ordered list.
+//
+// State is polled (chrome.action exposes no change event), so a banner clears
+// on its own once satisfied — no sidepanel reload needed. Append
+// ?debug-banners=1 (or pass `force`) to render every banner for design.
 
 import { useEffect, useState, type ReactElement } from 'react';
-import { Check, Copy, FileCode2, LogIn, Pin, TriangleAlert, X } from 'lucide-react';
+import { Check, Copy, LogIn, Pin, X } from 'lucide-react';
 import { AUTH_SESSION_KEY, AuthCancelledError, getStoredSession, isAuthConfigured, signInWithGoogle, type AuthSession } from '../lib/airglow-auth';
 
 const INSTALL_CMD = 'curl -fsSL https://airglow.dev/install.sh | bash';
@@ -23,8 +26,8 @@ const INSTALL_CMD = 'curl -fsSL https://airglow.dev/install.sh | bash';
 // across sessions (it still auto-hides the moment the icon is pinned).
 const PIN_DISMISSED_KEY = '__pin_banner_dismissed';
 
-export type SetupStep = 'signin' | 'host' | 'userscripts' | 'pin';
-const ALL_STEPS: SetupStep[] = ['signin', 'host', 'userscripts', 'pin'];
+export type SetupStep = 'signin' | 'host' | 'pin';
+const ALL_STEPS: SetupStep[] = ['signin', 'host', 'pin'];
 
 export function GoogleLogo({ size = 16 }: { size?: number }) {
   return (
@@ -45,7 +48,7 @@ function PuzzleIcon({ size = 16, color = 'currentColor', className = '' }: { siz
   );
 }
 
-function Step({ n }: { n: number }) {
+export function Step({ n }: { n: number }) {
   return (
     <span
       className="shrink-0 text-[12px] font-medium w-5 h-5 inline-flex items-center justify-center rounded-full"
@@ -80,33 +83,27 @@ function DismissButton({ onClick }: { onClick: () => void }) {
   );
 }
 
-// Live setup state, polled every 2s (chrome.action / chrome.userScripts emit no
-// change events, so an enabled permission or freshly pinned icon would otherwise
-// stay invisible until the panel is reopened). Host + auth also react instantly
-// to storage changes.
+// Live setup state, polled every 2s (chrome.action emits no change event, so a
+// freshly pinned icon would otherwise stay invisible until the panel is
+// reopened). Host + auth also react instantly to storage changes.
 function useSetupState() {
   const [s, setS] = useState<{
     loaded: boolean;
     authSession: AuthSession | null;
     hostConnected: boolean | null;
-    userScriptsEnabled: boolean | null;
     isPinned: boolean | null;
-  }>({ loaded: false, authSession: null, hostConnected: null, userScriptsEnabled: null, isPinned: null });
+  }>({ loaded: false, authSession: null, hostConnected: null, isPinned: null });
 
   useEffect(() => {
     let alive = true;
     async function probe() {
-      let userScriptsEnabled = false;
-      if (chrome.userScripts) {
-        try { await chrome.userScripts.getScripts(); userScriptsEnabled = true; } catch { userScriptsEnabled = false; }
-      }
       let isPinned: boolean | null = null;
       try { const us = await chrome.action?.getUserSettings?.(); if (us) isPinned = !!us.isOnToolbar; } catch { /* not available */ }
       const stored = await chrome.storage.local.get('__native_host_connected');
       const nh = stored['__native_host_connected'];
       const hostConnected = nh === undefined ? null : !!nh;
       const authSession = await getStoredSession();
-      if (alive) setS({ loaded: true, authSession, hostConnected, userScriptsEnabled, isPinned });
+      if (alive) setS({ loaded: true, authSession, hostConnected, isPinned });
     }
     void probe();
     const id = setInterval(() => { void probe(); }, 2000);
@@ -124,13 +121,11 @@ export function SetupBanners({
   variant = 'sidepanel',
   steps = ALL_STEPS,
   force = false,
-}: { variant?: 'sidepanel' | 'dashboard'; steps?: SetupStep[]; force?: boolean } = {}) {
+  onActiveChange,
+}: { variant?: 'sidepanel' | 'dashboard'; steps?: SetupStep[]; force?: boolean; onActiveChange?: (step: SetupStep | null) => void } = {}) {
   const state = useSetupState();
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
-  // User Scripts is a hard requirement, so its dismiss is session-only (not
-  // persisted) — it returns on reload until the permission is actually enabled.
-  const [userScriptsDismissed, setUserScriptsDismissed] = useState(false);
   const [pinDismissed, setPinDismissed] = useState(false);
   const [installCopied, setInstallCopied] = useState(false);
 
@@ -166,7 +161,7 @@ export function SetupBanners({
   }
 
   const wrap = variant === 'dashboard'
-    ? 'relative p-3.5 rounded-xl border mb-4 w-full max-w-xl'
+    ? 'relative p-3.5 rounded-xl border w-[520px] max-w-full'
     : 'relative m-3 p-3.5 rounded-xl border';
 
   const renderers: Record<SetupStep, () => ReactElement> = {
@@ -225,44 +220,6 @@ export function SetupBanners({
       </div>
     ),
 
-    userscripts: () => (
-      <div className={wrap} style={cardStyle} data-testid="banner-userscripts">
-        <DismissButton onClick={() => setUserScriptsDismissed(true)} />
-        <div className="text-[15px] font-semibold flex items-center gap-2 pr-7" style={{ color: 'var(--fg-primary)' }}>
-          <FileCode2 size={18} style={{ color: 'var(--error)' }} />
-          Enable User Scripts
-        </div>
-        <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
-          <div className="flex items-center gap-2">
-            <Step n={1} />
-            <span>
-              Open{' '}
-              <a
-                href="#"
-                onClick={(e) => { e.preventDefault(); chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` }); }}
-                style={{ color: 'var(--clay)' }}
-              >Extension Settings</a>
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Step n={2} />
-            <span>Scroll down and enable <strong>User scripts</strong></span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Step n={3} />
-            <span>Reload this page</span>
-          </div>
-        </div>
-        <div
-          className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border"
-          style={{ borderColor: 'var(--error)', background: 'color-mix(in srgb, var(--error) 18%, var(--bg-white))', color: 'var(--fg-secondary)', fontSize: '13px' }}
-        >
-          <TriangleAlert size={15} className="shrink-0" style={{ color: 'var(--error)' }} />
-          <span>Airglow won't run until User Scripts are enabled.</span>
-        </div>
-      </div>
-    ),
-
     pin: () => (
       <div className={wrap} style={cardStyle} data-testid="banner-pin">
         <DismissButton onClick={dismissPin} />
@@ -274,7 +231,7 @@ export function SetupBanners({
           <div className="flex items-start gap-2">
             <Step n={1} />
             <span className="inline-flex items-center gap-1 flex-wrap">
-              Click <PuzzleIcon size={18} className="inline-block shrink-0" color="var(--fg-primary)" /> icon <strong>(Extensions)</strong> in Chrome's toolbar
+              Click <PuzzleIcon size={18} className="inline-block shrink-0" color="var(--fg-primary)" /> icon <strong>(Extensions)</strong> in Chrome's top right corner
             </span>
           </div>
           <div className="flex items-start gap-2">
@@ -284,25 +241,35 @@ export function SetupBanners({
             </span>
           </div>
         </div>
+        <img
+          src={chrome.runtime.getURL('pin-instructions.png')}
+          alt="Chrome Extensions menu: the puzzle icon in the top right corner and the pin button next to Airglow"
+          className="mt-3 block mx-auto w-[300px] max-w-full rounded-sm border"
+          style={{ borderColor: 'color-mix(in srgb, var(--error) 22%, var(--border-tertiary))' }}
+        />
       </div>
     ),
   };
+
+  // Strict preference order: the first unmet step wins, the rest stay hidden.
+  // Computed before any early return so the active step can be reported to the
+  // parent (which hides the panel's working surface while a banner is up).
+  let active: SetupStep | null = null;
+  if (state.loaded) {
+    for (const step of steps) {
+      if (step === 'signin' && !state.authSession && isAuthConfigured()) { active = step; break; }
+      if (step === 'host' && state.hostConnected === false) { active = step; break; }
+      if (step === 'pin' && state.isPinned === false && !pinDismissed) { active = step; break; }
+    }
+  }
+  // In force/preview mode every banner renders at once — report no single active.
+  const reported = force ? null : active;
+  useEffect(() => { onActiveChange?.(reported); }, [reported, onActiveChange]);
 
   // Design preview (?debug-banners=1 / planmock): render every owned banner.
   if (force) {
     return <>{steps.map((step) => <div key={step}>{renderers[step]()}</div>)}</>;
   }
-
-  if (!state.loaded) return null;
-
-  // Strict preference order: the first unmet step wins, the rest stay hidden.
-  let active: SetupStep | null = null;
-  for (const step of steps) {
-    if (step === 'signin' && !state.authSession && isAuthConfigured()) { active = step; break; }
-    if (step === 'host' && state.hostConnected === false) { active = step; break; }
-    if (step === 'userscripts' && state.userScriptsEnabled === false && !userScriptsDismissed) { active = step; break; }
-    if (step === 'pin' && state.isPinned === false && !pinDismissed) { active = step; break; }
-  }
-  if (!active) return null;
+  if (!state.loaded || !active) return null;
   return renderers[active]();
 }

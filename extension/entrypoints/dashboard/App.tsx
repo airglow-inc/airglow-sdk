@@ -7,7 +7,10 @@ import logoUrl from '../../lib/branding/icon.svg';
 // (Apache 2.0, https://fonts.google.com/icons?icon.query=extension)
 import LogsPage from './LogsPage';
 import { FeedbackModal } from '../../components/FeedbackModal';
-import { SetupBanners } from '../../components/SetupBanners';
+import { SetupBanners, type SetupStep } from '../../components/SetupBanners';
+import { UserScriptsOverlay } from '../../components/UserScriptsOverlay';
+import { useExtUpdateAvailable, applyExtUpdate } from '../../lib/ext-update';
+import { useHostVersion } from '../../lib/host-version';
 import { AUTH_SESSION_KEY, AuthCancelledError, getStoredSession, signInWithGoogle, signOut, type AuthSession } from '../../lib/airglow-auth';
 import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, getDefaultCloudApiUrl } from '../../lib/cloud-api';
 
@@ -255,6 +258,12 @@ export default function App() {
 
   // Settings modal state
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Active inline setup banner ('pin' | null) reported by SetupBanners, and a
+  // staged extension update (null when up to date). The pin banner renders as a
+  // centered card; the update version drives the "Update" button by the version.
+  const [dashSetup, setDashSetup] = useState<SetupStep | null>(null);
+  const extUpdate = useExtUpdateAvailable();
+  const hostVersion = useHostVersion();
   const [sideButtonEnabled, setSideButtonEnabled] = useState(false);
   const [gatewayUrlInput, setGatewayUrlInput] = useState('');
   // Host self-update state (Settings modal). null = not yet checked.
@@ -1200,10 +1209,10 @@ export default function App() {
         {/* Footer card: server status, Settings, cloud + version */}
         <div className="px-3 pb-2 pt-2">
           <div className="rounded-lg p-2" style={{ background: 'var(--bg-white)', border: '1px solid var(--border-tertiary)' }}>
-            <div className="px-2 pt-1 pb-0.5" data-testid="local-apps-status">
+            <div className="px-2 pt-1 pb-2.5" data-testid="local-apps-status">
               <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-tertiary)' }}>
                 <span className="inline-block w-2 h-2 rounded-full" style={{ background: localOnline === null ? 'var(--fg-tertiary)' : localOnline ? 'var(--olive)' : 'var(--error)' }} />
-                <span><span style={{ color: 'var(--olive)', fontWeight: 600 }}>Local Apps</span> server · {localOnline === null ? '…' : localOnline ? 'Online' : 'Offline'}</span>
+                <span><span style={{ color: 'var(--olive)', fontWeight: 600 }}>Host</span> {localOnline === null ? '…' : localOnline ? 'online' : 'offline'}</span>
               </div>
               {nativeHostConnected === false && (
                 <div className="flex items-center gap-2 mt-1 text-sm" style={{ color: 'var(--error)' }} data-testid="native-host-status">
@@ -1212,34 +1221,67 @@ export default function App() {
                 </div>
               )}
             </div>
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true)}
-              className="w-full h-10 px-3 rounded-lg text-base font-medium cursor-pointer transition-colors border flex items-center gap-2"
-              style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
-              data-testid="settings-button"
-            >
-              <Settings size={16} />
-              Settings
-            </button>
-            <div
-              className="px-2 pt-1.5 mt-1 break-all border-t"
-              style={{ color: gatewayUrlInput.trim() ? 'var(--error)' : 'var(--fg-tertiary)', borderColor: 'var(--border-tertiary)', fontSize: '12px' }}
-              title={(cloudOnline === false ? 'Unreachable — the cloud did not respond.\n' : '') + (gatewayUrlInput.trim() ? `Override — default is ${getDefaultCloudApiUrl()}` : 'Cloud API')}
-              data-testid="sidebar-cloud-api-url"
-            >
-              <span className="inline-flex items-center gap-1.5 align-middle">
-                <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: cloudOnline === null ? 'var(--fg-tertiary)' : cloudOnline ? 'var(--olive)' : 'var(--error)' }} data-testid="sidebar-cloud-api-status-dot" />
-                Cloud API:
-              </span>{' '}
-              {gatewayUrlInput.trim() || getDefaultCloudApiUrl()}
-              {gatewayUrlInput.trim() && ' (override)'}
-              {cloudOnline === false && <span style={{ color: 'var(--error)' }}> — unreachable</span>}
+            <div className="flex flex-col gap-1.5">
+              <button
+                type="button"
+                onClick={() => setSettingsOpen(true)}
+                className="w-full h-10 px-3 rounded-lg text-base font-medium cursor-pointer transition-colors border flex items-center gap-2"
+                style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+                data-testid="settings-button"
+              >
+                <Settings size={16} />
+                Settings
+              </button>
+              {/* Dev-only shortcut to the component mock gallery (planmock.html). */}
+              {import.meta.env.DEV && (
+                <button
+                  type="button"
+                  onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL('planmock.html') })}
+                  className="w-full h-10 px-3 rounded-lg text-base font-medium cursor-pointer transition-colors border flex items-center gap-2"
+                  style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+                  title="Open the component mock gallery (dev only)"
+                  data-testid="mocks-button"
+                >
+                  <LayoutGrid size={16} />
+                  Mocks
+                </button>
+              )}
             </div>
-            <div className="px-2 pt-1" style={{ color: 'var(--fg-tertiary)', fontSize: '12px' }}>
-              Version: {chrome.runtime.getManifest().version}
+            {/* Cloud API row — shown only when overridden away from the default
+                (api.airglow.dev); on the default there's nothing worth surfacing. */}
+            {gatewayUrlInput.trim() && (
+              <div
+                className="px-2 pt-1.5 mt-1 break-all border-t"
+                style={{ color: 'var(--error)', borderColor: 'var(--border-tertiary)', fontSize: '12px' }}
+                title={(cloudOnline === false ? 'Unreachable — the cloud did not respond.\n' : '') + `Override — default is ${getDefaultCloudApiUrl()}`}
+                data-testid="sidebar-cloud-api-url"
+              >
+                <span className="inline-flex items-center gap-1.5 align-middle">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full shrink-0" style={{ background: cloudOnline === null ? 'var(--fg-tertiary)' : cloudOnline ? 'var(--olive)' : 'var(--error)' }} data-testid="sidebar-cloud-api-status-dot" />
+                  Cloud API:
+                </span>{' '}
+                {gatewayUrlInput.trim()} (override)
+                {cloudOnline === false && <span style={{ color: 'var(--error)' }}> — unreachable</span>}
+              </div>
+            )}
+            <div className="px-2 pt-1 flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-tertiary)', fontSize: '12px' }}>
+              <span>v{chrome.runtime.getManifest().version}{hostVersion ? ` (host v${hostVersion})` : ''}</span>
+              {extUpdate && (
+                <button
+                  type="button"
+                  onClick={applyExtUpdate}
+                  className="h-5 px-2 rounded-sm cursor-pointer border-0 font-medium"
+                  style={{ background: 'var(--olive)', color: 'var(--bg-white)', fontSize: '11px' }}
+                  title={`Update to v${extUpdate}`}
+                  data-testid="sidebar-ext-update-button"
+                >
+                  Update to v{extUpdate}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1411,12 +1453,17 @@ export default function App() {
             </div>
           </div>
         ) : (
-        <div className="max-w-3xl">
-          {/* Chrome-setup nags (enable user scripts, then pin) — same ordered
-              gate as the sidepanel. Sign-in and host install are handled by the
-              full-page gates above, so the dashboard only owns these two. */}
-          <SetupBanners variant="dashboard" steps={['userscripts', 'pin']} />
-          {activeTab === 'installed' ? (
+        <div
+          className={dashSetup === 'pin' ? 'flex items-center justify-center' : 'max-w-3xl'}
+          style={dashSetup === 'pin' ? { minHeight: 'calc(100vh - 180px)' } : undefined}
+        >
+          {/* Chrome-setup nag (pin to toolbar). While it's up, it renders as a
+              fixed-width card centered in the content area and the apps/catalog
+              list is hidden until the user pins or dismisses it. Sign-in and host
+              install are handled by the full-page gates above; User Scripts by
+              the blocking UserScriptsOverlay (rendered at the root below). */}
+          <SetupBanners variant="dashboard" steps={['pin']} onActiveChange={setDashSetup} />
+          {dashSetup !== 'pin' && (activeTab === 'installed' ? (
             <>
               {apps === null && (
                 <div className="text-base py-8 text-center" style={{ color: 'var(--fg-tertiary)' }}>Loading...</div>
@@ -1436,7 +1483,7 @@ export default function App() {
             </>
           ) : (
             <CatalogView />
-          )}
+          ))}
         </div>
         )}
           </div>
@@ -1661,14 +1708,17 @@ export default function App() {
             </div>
             <div className="py-2 flex items-center justify-between gap-4" data-testid="settings-host-version-row">
               <div>
-                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Airglow host</div>
-                <div className="text-sm mt-0.5" style={{ color: hostUpdateError ? 'var(--error)' : 'var(--fg-tertiary)' }}>
-                  {hostUpdateError ? hostUpdateError
-                    : !hostUpdate ? 'Not connected.'
-                    : hostUpdate.mode === 'source' ? `v${hostUpdate.current} — running from source`
-                    : hostUpdating ? `Updating to v${hostUpdate.latest}…`
-                    : hostUpdate.updateAvailable ? `v${hostUpdate.current} — v${hostUpdate.latest} available`
-                    : `v${hostUpdate.current} — up to date`}
+                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Airglow</div>
+                <div className="text-sm mt-0.5 flex flex-col gap-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                  <span>Extension: v{chrome.runtime.getManifest().version}</span>
+                  <span style={{ color: hostUpdateError ? 'var(--error)' : undefined }}>
+                    Host: {hostUpdateError ? hostUpdateError
+                      : !hostUpdate ? 'not connected'
+                      : hostUpdate.mode === 'source' ? (import.meta.env.DEV ? `v${hostUpdate.current} — running from source` : `v${hostUpdate.current}`)
+                      : hostUpdating ? `updating to v${hostUpdate.latest}…`
+                      : hostUpdate.updateAvailable ? `v${hostUpdate.current} — v${hostUpdate.latest} available`
+                      : `v${hostUpdate.current}`}
+                  </span>
                 </div>
               </div>
               {hostUpdate?.updateAvailable && hostUpdate.mode === 'binary' && (
@@ -1870,6 +1920,12 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Blocking User Scripts gate — covers the whole dashboard until the
+          Chrome permission is enabled (hard requirement, no dismiss). Gated on
+          a session so the full-page sign-in gate keeps priority when both are
+          unmet (documented order: sign-in before User Scripts). */}
+      {authSession && <UserScriptsOverlay />}
     </div>
   );
 }

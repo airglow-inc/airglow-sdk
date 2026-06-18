@@ -11,6 +11,19 @@
    extension entrypoint so new pages get the right typography for free. */
 @import "../../lib/airglow-base.css";
 
+/* Near-square corners across the dashboard: collapse the medium/large radius
+   tiers onto the small one so cards, banners, popups, and buttons read as
+   near-square (matches the sidepanel). Pills (rounded-full) keep their shape.
+   Scoped to this stylesheet — app UIs render in their own iframes, unaffected. */
+:root {
+  --radius-md: var(--radius-sm);
+  --radius-lg: var(--radius-sm);
+  --radius-xl: var(--radius-sm);
+}
+
+/* Slightly thicker hairline so cards, banners, and popups read more defined. */
+.border { border-width: 1.5px; }
+
 @keyframes spin {
   to { transform: rotate(360deg); }
 }

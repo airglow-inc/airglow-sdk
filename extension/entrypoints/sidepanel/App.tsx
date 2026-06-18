@@ -15,11 +15,14 @@ import {
   MessageSquare, Plus, ScrollText, Search, Square, SquareTerminal, Wand2, Workflow, X,
 } from 'lucide-react';
 import { Markdown } from './markdown';
-import { AppContextLine, PinnedPlan, type PlanItem } from './strips';
+import { AppContextLine, PinnedPlan, PinnedTask, type PlanItem } from './strips';
 import { FeedbackModal } from '../../components/FeedbackModal';
 import { AnnouncementBanner } from '../../components/AnnouncementBanner';
-import { SetupBanners } from '../../components/SetupBanners';
+import { SetupBanners, type SetupStep } from '../../components/SetupBanners';
+import { useExtUpdateAvailable, applyExtUpdate } from '../../lib/ext-update';
 import { SignInOverlay } from '../../components/SignInOverlay';
+import { AUTH_SESSION_KEY } from '../../lib/airglow-auth';
+import { UserScriptsOverlay } from '../../components/UserScriptsOverlay';
 import { WindowsUnsupportedBanner } from '../../components/WindowsUnsupportedBanner';
 
 const GITHUB_REPO_URL = 'https://github.com/airglow-inc/airglow-sdk';
@@ -33,6 +36,7 @@ type AgentEvent =
   | { type: 'tool_start'; toolId: string; name: string; input: Record<string, any> }
   | { type: 'tool_end'; toolId: string; name: string; ok: boolean; summary: string }
   | { type: 'plan'; items: PlanItem[] }
+  | { type: 'task'; title: string }
   | { type: 'app_context'; appId: string; name: string }
   | { type: 'approval_request'; approvalId: string; action: string; detail: string }
   | { type: 'approval_resolved'; approvalId: string; approved: boolean }
@@ -118,31 +122,43 @@ function toolPresentation(name: string, input: Record<string, any>, summary: str
     return { Icon: Globe, label: `${running ? 'Searching' : 'Searched'} the web for ${q}`.slice(0, 90), detail };
   }
   if (name === 'read') return { Icon: FileText, label: `Read ${basename(String(input.path ?? ''))}`, detail };
-  if (name === 'write') return { Icon: FilePlus2, label: `Created ${basename(String(input.path ?? ''))}`, detail };
+  if (name === 'write') return { Icon: FilePlus2, label: `Wrote ${basename(String(input.path ?? ''))}`, detail };
   if (name === 'edit') return { Icon: FilePen, label: `Edited ${basename(String(input.path ?? ''))}`, detail };
   if (name === 'glob' || name === 'grep') return { Icon: Search, label: `Searched ${String(input.pattern ?? '')}`.slice(0, 60), detail };
 
   if (name === 'bash') {
     const cmd = String(input.command ?? '');
+    // The model's stated intent (bash `description` arg) is the user-facing
+    // label when present; the command-shape fallbacks below fill the icon and
+    // the label for older turns that predate the field.
+    const intent = typeof input.description === 'string' ? input.description.trim() : '';
     // A screenshot path anywhere in the output (shot is often part of a
     // compound command) → render the image inline.
     const shot = detail.match(/shots\/([A-Za-z0-9_.-]+\.(?:jpe?g|png|webp))/);
     const imageUrl = shot ? `${daemonOrigin}/api/shots/${shot[1]}` : undefined;
+    let Icon: typeof FileText = SquareTerminal;
+    let label = `Ran ${cmd.slice(0, 60) || 'a command'}`;
     const fetchCmd = cmd.match(/airglow\s+fetch\s+(\S+)/);
-    if (fetchCmd) return { Icon: Globe, label: `${running ? 'Fetching' : 'Fetched'} ${fetchCmd[1]}`.slice(0, 70), detail, imageUrl };
     const browser = cmd.match(/airglow\s+browser\s+(\w+)\s*(.*)/);
-    if (browser) {
+    if (fetchCmd) {
+      Icon = Globe;
+      label = `${running ? 'Fetching' : 'Fetched'} ${fetchCmd[1]}`;
+    } else if (browser) {
       const [, sub, rest] = browser;
-      if (sub === 'open') return { Icon: Globe, label: `Opened ${(rest.match(/https?:\/\/\S+/) || ['page'])[0]}`.slice(0, 70), detail, imageUrl };
-      if (sub === 'nav') return { Icon: Globe, label: 'Navigated tab', detail, imageUrl };
-      if (sub === 'eval') return { Icon: SquareTerminal, label: 'Ran JS in the page', detail, imageUrl };
-      if (sub === 'html') return { Icon: FileText, label: 'Read page HTML', detail, imageUrl };
-      if (sub === 'logs') return { Icon: ScrollText, label: 'Checked browser logs', detail, imageUrl };
-      if (sub === 'tabs') return { Icon: Globe, label: 'Listed open tabs', detail, imageUrl };
-      if (sub === 'close') return { Icon: Globe, label: 'Closed a tab', detail, imageUrl };
-      if (sub === 'shot') return { Icon: Camera, label: 'Took a screenshot', detail, imageUrl };
+      const bySub: Record<string, { Icon: typeof FileText; label: string }> = {
+        open: { Icon: Globe, label: `Opened ${(rest.match(/https?:\/\/\S+/) || ['page'])[0]}` },
+        nav: { Icon: Globe, label: 'Navigated tab' },
+        eval: { Icon: SquareTerminal, label: 'Ran JS in the page' },
+        html: { Icon: FileText, label: 'Read page HTML' },
+        logs: { Icon: ScrollText, label: 'Checked browser logs' },
+        tabs: { Icon: Globe, label: 'Listed open tabs' },
+        close: { Icon: Globe, label: 'Closed a tab' },
+        shot: { Icon: Camera, label: 'Took a screenshot' },
+      };
+      const m = bySub[sub];
+      if (m) { Icon = m.Icon; label = m.label; }
     }
-    return { Icon: SquareTerminal, label: `Ran ${cmd.slice(0, 60) || 'a command'}`, detail, imageUrl };
+    return { Icon, label: (intent || label).slice(0, 90), detail, imageUrl };
   }
 
   return { Icon: SquareTerminal, label: name, detail };
@@ -478,6 +494,7 @@ export default function App() {
   const [running, setRunning] = useState(false);
   const [thinking, setThinking] = useState(false);
   const [plan, setPlan] = useState<PlanItem[] | null>(null);
+  const [task, setTask] = useState<string | null>(null);
   const [input, setInput] = useState('');
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   // Expanded state of the live activity peek (the chevron on the status line).
@@ -495,6 +512,13 @@ export default function App() {
   const [appsOpen, setAppsOpen] = useState(false);
   const appsHoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
+  // The active inline setup banner ('host' | 'pin' | null), reported by
+  // SetupBanners. While the pin banner is up we hide the panel's working
+  // surface so the user finishes pinning before doing anything else.
+  const [setupStep, setSetupStep] = useState<SetupStep | null>(null);
+  // Staged extension update (null when up to date) → the version + Update button
+  // in the composer footer.
+  const extUpdate = useExtUpdateAvailable();
 
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const sessionIdRef = useRef(sessionId);
@@ -503,7 +527,17 @@ export default function App() {
   // latest value without re-subscribing.
   const runningRef = useRef(running);
   runningRef.current = running;
+  // Timestamp of the last agent event received from the daemon. A running turn
+  // emits events steadily; a long silence means the live stream dropped events
+  // between daemon and panel (the background relay has no buffer) — the
+  // watchdog uses this to trigger a history reconcile.
+  const lastEventAtRef = useRef(0);
+  // Highest live-event seq applied (the daemon stamps each agent event with a
+  // per-session monotonic seq). Lets a resync replay the buffered turn while
+  // the live stream dedups anything already applied. Reset on a new chat.
+  const lastSeqRef = useRef(0);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const pendingReplies = useRef(new Map<string, (msg: any) => void>());
   const nextReqId = useRef(1);
   // Where the current turn's items start, and when the turn began — used to
@@ -511,6 +545,13 @@ export default function App() {
   const turnStartRef = useRef<{ index: number; startedAt: number } | null>(null);
   // App context announced during the current turn → render an app card after.
   const turnAppRef = useRef<{ id: string; name: string } | null>(null);
+  // The last turn we submitted (text + images), and — when it failed with
+  // AUTH_SESSION_INVALID — the turn to auto-resend once the user re-signs-in.
+  const lastTurnRef = useRef<{ text: string; images: PendingImage[] } | null>(null);
+  const pendingAuthRetryRef = useRef<{ text: string; images: PendingImage[] } | null>(null);
+  // Holds the latest submitTurn closure so the auth-session listener (below,
+  // mounted once) always calls the current one rather than a stale capture.
+  const submitTurnRef = useRef<(text: string, images: PendingImage[], opts?: { echo?: boolean }) => void>(() => {});
   // The window this sidepanel is docked to — sent with agent:start so the
   // agent's `airglow browser tabs` can mark this window's active tab as
   // `current` (each window has its own sidepanel instance).
@@ -518,6 +559,31 @@ export default function App() {
   useEffect(() => {
     chrome.windows.getCurrent().then((w) => { windowIdRef.current = w.id; }).catch(() => {});
   }, []);
+
+  // Auto-resend a turn that failed with AUTH_SESSION_INVALID once a fresh
+  // session lands (user signed back in via the overlay). The background pushes
+  // the new token to the daemon on this same storage change; the short delay
+  // lets it arrive before the resent turn reaches the gateway.
+  useEffect(() => {
+    const onChange = (c: Record<string, chrome.storage.StorageChange>) => {
+      if (!(AUTH_SESSION_KEY in c)) return;
+      const next = c[AUTH_SESSION_KEY].newValue as { token?: unknown; expiresAt?: unknown } | undefined;
+      const valid = !!next && typeof next.token === 'string' && next.token.length > 0
+        && typeof next.expiresAt === 'number' && next.expiresAt > Date.now();
+      const turn = pendingAuthRetryRef.current;
+      if (valid && turn && !runningRef.current) {
+        pendingAuthRetryRef.current = null;
+        setTimeout(() => submitTurnRef.current(turn.text, turn.images, { echo: false }), 500);
+      }
+    };
+    chrome.storage?.local?.onChanged.addListener(onChange);
+    return () => chrome.storage?.local?.onChanged.removeListener(onChange);
+  }, []);
+  // Auto-focus the composer when the sidepanel opens (and once the host
+  // becomes available, since the textarea is disabled while disconnected).
+  useEffect(() => {
+    if (hostConnected !== false) inputRef.current?.focus();
+  }, [hostConnected]);
 
   // Detect Windows once on mount — the native host can't run there.
   useEffect(() => {
@@ -598,18 +664,34 @@ export default function App() {
   // of truth: if it reports no live turn, clear the spinner and fold the
   // orphaned turn into a "Worked" group. Triggered on daemon (re)connect and
   // when the panel becomes visible again.
-  async function reconcileRunning(): Promise<void> {
+  async function reconcileRunning(resync = false): Promise<void> {
     const sid = sessionIdRef.current;
     if (!sid) return;
     const res = await request({ type: 'agent:history', sessionId: sid });
     if (!res) return; // daemon unreachable — leave state as-is, retry next signal
-    if (res.running) { setRunning(true); return; }
+    // The history request itself re-pins the daemon→panel event route (so a
+    // connector/SW recycle stops orphaning the live stream). On an explicit
+    // resync (silence watchdog, reconnect) also rebuild + replay the live turn
+    // from the daemon's event buffer, recovering anything missed during the gap.
+    if (res.running) {
+      if (resync) applyHistory(res);
+      else setRunning(true);
+      return;
+    }
     if (!runningRef.current) return; // already idle — nothing to reconcile
-    setItems((prev) => collapseTurn(prev));
-    setRunning(false);
-    setThinking(false);
-    turnStartRef.current = null;
-    turnAppRef.current = null;
+    // The backend turn is over but the panel still shows it running — we missed
+    // the tail of the live stream. Rebuild from persisted history (the source of
+    // truth) so a missed answer is recovered, not just the spinner cleared.
+    // Falls back to collapsing the live items if history is unavailable.
+    if (Array.isArray(res.messages) && res.messages.length > 0) {
+      applyHistory(res);
+    } else {
+      setItems((prev) => collapseTurn(prev));
+      setRunning(false);
+      setThinking(false);
+      turnStartRef.current = null;
+      turnAppRef.current = null;
+    }
   }
 
   function applyEvent(ev: AgentEvent): void {
@@ -634,7 +716,7 @@ export default function App() {
         break;
       case 'tool_start':
         setThinking(false);
-        if (ev.name === 'plan') break; // rendered via the plan event
+        if (ev.name === 'plan' || ev.name === 'task') break; // rendered via the plan/task strips
         setItems((prev) => [...prev, { kind: 'tool', toolId: ev.toolId, name: ev.name, input: ev.input, status: 'running', summary: '' }]);
         break;
       case 'tool_end':
@@ -646,6 +728,9 @@ export default function App() {
         break;
       case 'plan':
         setPlan(ev.items);
+        break;
+      case 'task':
+        setTask(ev.title);
         break;
       case 'app_context':
         setAppChip({ id: ev.appId, name: ev.name });
@@ -669,8 +754,60 @@ export default function App() {
         break;
       case 'error':
         setThinking(false);
+        // A rejected session token: the background drops it → SignInOverlay
+        // appears. Stash this turn and skip the error bubble — it auto-resends
+        // once the user signs back in (see the AUTH_SESSION_KEY listener), so
+        // the message goes through instead of dead-ending on a red error.
+        if (ev.code === 'AUTH_SESSION_INVALID' && lastTurnRef.current) {
+          pendingAuthRetryRef.current = lastTurnRef.current;
+          break;
+        }
         setItems((prev) => [...prev, { kind: 'error', text: ev.message, code: ev.code, resetHours: ev.resetHours }]);
         break;
+    }
+  }
+
+  // Rebuild the panel from a daemon history reply. A finished session is a
+  // straight reconstruct. A live (running) turn rebuilds completed turns from
+  // persisted history, then replays the daemon's live event buffer so the
+  // in-flight turn renders exactly as it streamed — including events emitted
+  // while the panel was closed (the relay has no buffer; the daemon does).
+  // Idempotent: safe on mount, on reconnect, and from the silence watchdog.
+  function applyHistory(res: any): void {
+    if (!res || !Array.isArray(res.messages)) return;
+    if (typeof res.lastSeq === 'number') lastSeqRef.current = res.lastSeq;
+    if (res.running) {
+      const base = reconstructItems(res.messages, null, res.times);
+      const turnUser = res.turnUserMessage ? reconstructItems([res.turnUserMessage], null).items : [];
+      const baseItems = [...base.items, ...turnUser];
+      setItems(baseItems);
+      setPlan(base.plan);
+      setTask(base.task);
+      setThinking(false);
+      setRunning(true);
+      turnStartRef.current = {
+        index: baseItems.length,
+        startedAt: typeof res.turnStartedAt === 'number' ? res.turnStartedAt : Date.now(),
+      };
+      turnAppRef.current = null;
+      if (res.meta?.appId) setAppChip({ id: res.meta.appId, name: res.meta.appName || res.meta.appId });
+      // Reset the watchdog clock so this fresh replay isn't immediately re-run.
+      lastEventAtRef.current = Date.now();
+      // Replay the buffered turn (these carry seq ≤ lastSeq; the live stream's
+      // own dedup skips them, so apply directly here).
+      for (const e of (Array.isArray(res.events) ? res.events : [])) {
+        applyEvent(e.event as AgentEvent);
+      }
+    } else {
+      const rec = reconstructItems(res.messages, res.meta, res.times);
+      setItems(rec.items);
+      setPlan(rec.plan);
+      setTask(rec.task);
+      setRunning(false);
+      setThinking(false);
+      turnStartRef.current = null;
+      turnAppRef.current = null;
+      setAppChip(res.meta?.appId ? { id: res.meta.appId, name: res.meta.appName || res.meta.appId } : null);
     }
   }
 
@@ -684,6 +821,13 @@ export default function App() {
       port.onMessage.addListener((msg: any) => {
         if (msg?.type === 'agent:event') {
           if (msg.sessionId && sessionIdRef.current && msg.sessionId !== sessionIdRef.current) return;
+          // Drop events already applied via a resync replay (idempotent across
+          // reconnects). Untagged events (older daemon) always apply.
+          if (typeof msg.seq === 'number') {
+            if (msg.seq <= lastSeqRef.current) return;
+            lastSeqRef.current = msg.seq;
+          }
+          lastEventAtRef.current = Date.now();
           applyEvent(msg.event as AgentEvent);
         } else if (typeof msg?.reqId === 'string') {
           const resolve = pendingReplies.current.get(msg.reqId);
@@ -695,7 +839,14 @@ export default function App() {
       });
       port.onDisconnect.addListener(() => {
         if (portRef.current === port) portRef.current = null;
-        setTimeout(connect, 500);
+        setTimeout(() => {
+          connect();
+          // The panel port was down — any events the daemon emitted during the
+          // gap were dropped (the relay has no buffer). If a turn was running,
+          // resync against the daemon's event buffer once the new port is wired
+          // so the missed tail (text / tools / turn_done) is recovered.
+          if (runningRef.current) setTimeout(() => { void reconcileRunning(true); }, 400);
+        }, 500);
       });
     }
     connect();
@@ -716,8 +867,10 @@ export default function App() {
         const connected = !!changes['__native_host_connected'].newValue;
         setHostConnected(connected);
         // Daemon (re)connected — give the connector handshake a moment, then
-        // re-sync run-state so a restart's stale spinner clears itself.
-        if (connected) setTimeout(() => { void reconcileRunning(); }, 500);
+        // resync: clears a restart's stale spinner, and replays the live turn's
+        // event buffer if it's still running (the daemon survived, the link
+        // didn't).
+        if (connected) setTimeout(() => { void reconcileRunning(true); }, 500);
       }
       if ('__daemon_origin' in changes && typeof changes['__daemon_origin'].newValue === 'string') {
         setDaemonOrigin(changes['__daemon_origin'].newValue);
@@ -735,6 +888,21 @@ export default function App() {
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
+
+  // Watchdog for a stuck live turn. A running turn emits events steadily; a
+  // long silence means the live stream dropped the tail (SW suspend, port
+  // reconnect, daemon native-messaging hiccup) — the relay has no buffer, so a
+  // dropped text/turn_done leaves the answer missing and the spinner stuck.
+  // The resync rebuilds + replays the daemon's event buffer to recover. Safe
+  // during a genuinely busy turn: re-pins the route and re-renders the same
+  // turn (a long bash/install legitimately emits nothing in between).
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => {
+      if (Date.now() - lastEventAtRef.current > 15_000) void reconcileRunning(true);
+    }, 5_000);
+    return () => clearInterval(t);
+  }, [running]);
 
   // Apps injected into the active tab of this window. Recomputed on tab
   // switch, navigation, and app list / disabled-set changes.
@@ -851,18 +1019,15 @@ export default function App() {
     };
   }, []);
 
-  // Resume the last session's history on mount.
+  // Resume the last session on mount (reopening the panel remounts fresh).
+  // applyHistory restores the full transcript and, if a turn is still running
+  // in the daemon, replays its live event buffer with the true start time — so
+  // the agent keeps going and the view comes back as it was, not from scratch.
   useEffect(() => {
     if (!sessionId) return;
     void (async () => {
       const res = await request({ type: 'agent:history', sessionId });
-      if (!res || !Array.isArray(res.messages)) return;
-      const rec = reconstructItems(res.messages, res.meta);
-      setItems(rec.items);
-      setPlan(rec.plan);
-      setRunning(!!res.running);
-      if (res.running) turnStartRef.current = { index: rec.items.length, startedAt: Date.now() };
-      if (res.meta?.appId) setAppChip({ id: res.meta.appId, name: res.meta.appName || res.meta.appId });
+      applyHistory(res);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -882,20 +1047,27 @@ export default function App() {
     return () => clearInterval(t);
   }, [running]);
 
-  function send(): void {
+  // Run a turn. `echo` adds the user bubble (a normal send); the auth-retry path
+  // passes echo:false because the bubble from the failed attempt is already on
+  // screen, so it re-runs without duplicating it.
+  function submitTurn(text: string, images: PendingImage[], opts?: { echo?: boolean }): void {
     if (hostConnected === false) return; // host required to run anything
-    const text = input.trim();
-    if ((!text && pendingImages.length === 0) || running) return;
-    const images = pendingImages;
-    setInput('');
-    setPendingImages([]);
-    setItems((prev) => {
-      turnStartRef.current = { index: prev.length + 1, startedAt: Date.now() };
-      return [...prev, { kind: 'user', text, images: images.length ? images.map((im) => im.dataUrl) : undefined }];
-    });
+    if ((!text && images.length === 0) || running) return;
+    lastTurnRef.current = { text, images };
+    if (opts?.echo === false) {
+      setItems((prev) => { turnStartRef.current = { index: prev.length, startedAt: Date.now() }; return prev; });
+    } else {
+      setItems((prev) => {
+        turnStartRef.current = { index: prev.length + 1, startedAt: Date.now() };
+        return [...prev, { kind: 'user', text, images: images.length ? images.map((im) => im.dataUrl) : undefined }];
+      });
+    }
     turnAppRef.current = null;
     setRunning(true);
     setLiveOpen(false);
+    // Reset the watchdog clock so the first event of this turn has a full grace
+    // window before a silence reconcile can fire.
+    lastEventAtRef.current = Date.now();
     post({
       type: 'agent:start',
       text,
@@ -904,6 +1076,17 @@ export default function App() {
       images: images.map((im) => ({ media_type: im.mediaType, data: im.dataUrl.split(',')[1] ?? '' })),
     });
   }
+
+  function send(): void {
+    const text = input.trim();
+    if ((!text && pendingImages.length === 0) || running || hostConnected === false) return;
+    const images = pendingImages;
+    setInput('');
+    setPendingImages([]);
+    submitTurn(text, images, { echo: true });
+  }
+  // Latest submitTurn closure, for the storage listener (mounted with [] deps).
+  submitTurnRef.current = submitTurn;
 
   // Paste images from the clipboard into the composer (max 4 per message).
   function onPaste(e: React.ClipboardEvent): void {
@@ -943,11 +1126,14 @@ export default function App() {
     localStorage.removeItem(CURRENT_SESSION_KEY);
     setItems([]);
     setPlan(null);
+    setTask(null);
     setThinking(false);
     setAppChip(null);
     setRunning(false);
     setSessionsOpen(false);
     turnStartRef.current = null;
+    lastSeqRef.current = 0;
+    inputRef.current?.focus();
   }
 
   async function openSessions(): Promise<void> {
@@ -960,13 +1146,13 @@ export default function App() {
     setSessionsOpen(false);
     setSessionId(meta.id);
     localStorage.setItem(CURRENT_SESSION_KEY, meta.id);
+    setItems([]);
+    setPlan(null);
+    setTask(null);
+    lastSeqRef.current = 0;
     setAppChip(meta.appId ? { id: meta.appId, name: meta.appName || meta.appId } : null);
     const res = await request({ type: 'agent:history', sessionId: meta.id });
-    const rec = res && Array.isArray(res.messages) ? reconstructItems(res.messages, res.meta) : { items: [], plan: null };
-    setItems(rec.items);
-    setPlan(rec.plan);
-    setRunning(!!res?.running);
-    turnStartRef.current = res?.running ? { index: rec.items.length, startedAt: Date.now() } : null;
+    applyHistory(res);
   }
 
   // ── Live-turn presentation ──
@@ -1161,7 +1347,8 @@ export default function App() {
         <AnnouncementBanner compact />
       </div>
 
-      {/* Task plan — pinned above the stream */}
+      {/* Agent's objective + optional step plan — pinned above the stream */}
+      {task && <PinnedTask title={task} />}
       {plan && plan.length > 0 && <PinnedPlan items={plan} />}
 
       {/* Sessions drawer — same language as the header: tinted bar, one
@@ -1179,7 +1366,7 @@ export default function App() {
               <div className="text-[13px] p-3" style={{ color: 'var(--fg-tertiary)' }}>No past chats yet.</div>
             ) : (
               <div
-                className="rounded-[10px] border overflow-hidden"
+                className="rounded-sm border overflow-hidden"
                 style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)' }}
               >
                 {sessions.map((s, i) => (
@@ -1206,12 +1393,17 @@ export default function App() {
         </div>
       )}
 
-      {/* Ordered setup gate: install host → enable user scripts → pin to
-          toolbar. Only the highest-priority unmet step shows; it polls so each
-          banner clears itself once satisfied. (Windows is handled by the
-          full-screen takeover above; sign-in by the blocking SignInOverlay
-          below, which supersedes the old inline 'signin' banner here.) */}
-      <SetupBanners variant="sidepanel" steps={['host', 'userscripts', 'pin']} />
+      {/* Ordered setup gate: install host → pin to toolbar. Only the
+          highest-priority unmet step shows; it polls so each banner clears
+          itself once satisfied. (Windows is handled by the full-screen takeover
+          above; sign-in and enabling User Scripts by the blocking overlays
+          below, which supersede the old inline banners here.) */}
+      <SetupBanners variant="sidepanel" steps={['host', 'pin']} onActiveChange={setSetupStep} />
+
+      {/* Hide the panel's working surface (missing-keys, chat, composer) while
+          the pin banner is up — the user pins Airglow before anything else.
+          Overlays (sign-in, user-scripts) and the banner itself stay visible. */}
+      {setupStep !== 'pin' && (<>
 
       {/* Missing env keys for apps active on this tab */}
       {hostConnected !== false && (
@@ -1236,8 +1428,8 @@ export default function App() {
                 ] as const).map(({ Icon, title, text, color }) => (
                   <div
                     key={title}
-                    className="flex flex-col items-center text-center gap-1.5 p-3 rounded-xl border"
-                    style={{ background: 'var(--bg-white)', borderColor: `color-mix(in srgb, ${color} 40%, var(--bg-white))` }}
+                    className="flex flex-col items-center text-center gap-1.5 p-3 rounded-xl border-2"
+                    style={{ background: 'var(--bg-white)', borderColor: `color-mix(in srgb, ${color} 60%, var(--bg-white))` }}
                   >
                     <span className="flex items-center gap-2">
                       <span
@@ -1368,8 +1560,16 @@ export default function App() {
       {/* Composer */}
       <div className="p-3 shrink-0">
         <div
-          className="rounded-sm border py-2 pl-4 pr-2"
+          className="rounded-sm border py-2 pl-4 pr-2 cursor-text"
           style={{ background: 'var(--bg-white)', borderColor: 'var(--border-secondary)', boxShadow: 'var(--shadow-sm)' }}
+          onMouseDown={(e) => {
+            // Clicking the composer's padding/edges should focus the input rather
+            // than do nothing; leave the textarea and buttons to their own handling.
+            if (e.target !== inputRef.current && !(e.target as HTMLElement).closest('button')) {
+              e.preventDefault();
+              inputRef.current?.focus();
+            }
+          }}
         >
           {pendingImages.length > 0 && (
             <div className="flex flex-wrap gap-2 pt-1 pb-2">
@@ -1390,6 +1590,8 @@ export default function App() {
           )}
           <div className="flex items-center gap-2">
           <textarea
+            ref={inputRef}
+            autoFocus
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onPaste={onPaste}
@@ -1458,8 +1660,26 @@ export default function App() {
             tooltip="Send feedback"
             onClick={() => setFeedbackOpen(true)}
           />
+          {/* Version + self-update, bottom-right. The Update button only shows
+              once Chrome has staged a newer Web Store build (never in dev). */}
+          <div className="ml-auto flex items-center gap-1.5 pr-1 relative top-1" data-testid="sidepanel-version">
+            <span style={{ color: 'var(--fg-tertiary)', fontSize: '11px' }}>v{chrome.runtime.getManifest().version}</span>
+            {extUpdate && (
+              <button
+                type="button"
+                onClick={applyExtUpdate}
+                className="h-5 px-2 rounded-sm cursor-pointer border-0 font-medium"
+                style={{ background: 'var(--olive)', color: 'var(--bg-white)', fontSize: '11px' }}
+                title={`Update to v${extUpdate}`}
+                data-testid="sidepanel-ext-update-button"
+              >
+                Update
+              </button>
+            )}
+          </div>
         </div>
       </div>
+      </>)}
 
       <FeedbackModal
         open={feedbackOpen}
@@ -1467,9 +1687,11 @@ export default function App() {
         source={{ appId: 'sidepanel', appName: 'Airglow Sidepanel', sourceType: 'extension-sidepanel' }}
       />
 
-      {/* Blocking auth gate — covers the whole panel until there's a session,
-          so the agent can't be messaged signed-out. Tries a silent sign-in on
-          mount; otherwise shows the one-click Google CTA over everything. */}
+      {/* Blocking gates — each covers the whole panel until its requirement is
+          met. User Scripts is a Chrome permission the extension can't inject
+          without; the auth gate keeps the agent unmessageable signed-out and
+          stacks on top (documented priority: sign-in before User Scripts). */}
+      <UserScriptsOverlay />
       <SignInOverlay />
     </div>
   );
@@ -1563,7 +1785,7 @@ function IconButton({ label, Icon, onClick, align = 'left', showLabel = false }:
         aria-label={label}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
-        className={`inline-flex items-center justify-center h-9 rounded-[10px] cursor-pointer ${showLabel ? 'gap-1.5 px-3' : 'w-9'}`}
+        className={`inline-flex items-center justify-center h-9 rounded-sm cursor-pointer ${showLabel ? 'gap-1.5 px-3' : 'w-9'}`}
         style={{
           color: 'var(--fg-secondary)',
           background: hover ? 'var(--gray-150)' : 'var(--bg-white)',
@@ -1587,14 +1809,18 @@ function IconButton({ label, Icon, onClick, align = 'left', showLabel = false }:
 
 // Rebuild the chat stream from persisted Anthropic-format messages, applying
 // the same collapse rule as live turns: per assistant turn, everything except
-// the final text answer goes into a WorkGroup (seconds = 0 → duration
-// unknown, the group renders a plain "Worked" label). Thinking blocks are
-// dropped entirely; the last plan tool call becomes the pinned plan. Image
-// data is stripped in transport (1MB native-messaging cap) — user images
-// arrive as {source:{type:'stripped'}} and render as placeholder chips.
-function reconstructItems(messages: any[], meta: any): { items: ChatItem[]; plan: PlanItem[] | null } {
+// the final text answer goes into a WorkGroup. The group's "Worked for X"
+// duration comes from the per-message timestamps (`times`, index-aligned with
+// `messages`): turn start = the user message that opened it, end = the turn's
+// last message; missing timestamps (legacy sessions) → plain "Worked".
+// Thinking blocks are dropped entirely; the last plan tool call becomes the
+// pinned plan. Image data is stripped in transport (1MB native-messaging cap)
+// — user images arrive as {source:{type:'stripped'}} and render as
+// placeholder chips.
+function reconstructItems(messages: any[], meta: any, times?: number[]): { items: ChatItem[]; plan: PlanItem[] | null; task: string | null } {
   const items: ChatItem[] = [];
   let plan: PlanItem[] | null = null;
+  let task: string | null = null;
   const resultById = new Map<string, { ok: boolean; summary: string }>();
   for (const msg of messages) {
     if (msg.role !== 'user' || !Array.isArray(msg.content)) continue;
@@ -1611,6 +1837,12 @@ function reconstructItems(messages: any[], meta: any): { items: ChatItem[]; plan
   }
 
   let turn: ChatItem[] = [];
+  // Wall-clock bounds (ms) of the assistant turn currently in `turn`, from the
+  // persisted per-message timestamps — start = the user message that opened it,
+  // end = the latest turn message. Drives "Worked for X" on reload; null
+  // (legacy sessions without timestamps) → plain "Worked".
+  let turnStartTs: number | null = null;
+  let turnEndTs: number | null = null;
 
   const flushTurn = () => {
     if (turn.length === 0) return;
@@ -1619,26 +1851,44 @@ function reconstructItems(messages: any[], meta: any): { items: ChatItem[]; plan
       if (turn[i].kind === 'text') { lastTextIdx = i; break; }
     }
     const collapsible = turn.filter((_, i) => i !== lastTextIdx);
-    if (collapsible.length > 0) items.push({ kind: 'work', seconds: 0, children: collapsible });
+    if (collapsible.length > 0) {
+      const seconds = turnStartTs != null && turnEndTs != null && turnEndTs > turnStartTs
+        ? (turnEndTs - turnStartTs) / 1000
+        : 0;
+      items.push({ kind: 'work', seconds, children: collapsible });
+    }
     if (lastTextIdx >= 0) items.push(turn[lastTextIdx]);
     turn = [];
   };
 
-  for (const msg of messages) {
+  for (let mi = 0; mi < messages.length; mi++) {
+    const msg = messages[mi];
+    const ts = times?.[mi];
     const blocks = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: String(msg.content) }];
     if (msg.role === 'user') {
+      // tool_result user messages belong to the running turn — extend its end.
+      if (typeof ts === 'number' && blocks.some((b: any) => b.type === 'tool_result')) turnEndTs = ts;
       // Images precede their text in a user message; attach them to it.
       let images: (string | null)[] = [];
       for (const block of blocks) {
         if (block.type === 'image') {
           images.push(block.source?.type === 'base64' ? `data:${block.source.media_type};base64,${block.source.data}` : null);
         } else if (block.type === 'text' && block.text) {
+          // Daemon-injected tab snapshot (session.ts formatTabContext) — context
+          // for the agent, not a user-authored message; keep it out of the bubble.
+          if (block.text.startsWith('<airglow-context>')) continue;
           flushTurn();
           items.push({ kind: 'user', text: block.text, images: images.length ? images : undefined });
           images = [];
+          // This user message opens the next turn.
+          turnStartTs = typeof ts === 'number' ? ts : null;
+          turnEndTs = typeof ts === 'number' ? ts : null;
         }
       }
     } else {
+      // Assistant messages run through to the turn's final answer — the latest
+      // one bounds the turn's end.
+      if (typeof ts === 'number') turnEndTs = ts;
       for (const block of blocks) {
         if (block.type === 'text' && block.text) {
           turn.push({ kind: 'text', text: block.text });
@@ -1666,6 +1916,10 @@ function reconstructItems(messages: any[], meta: any): { items: ChatItem[]; plan
             plan = block.input.items;
             continue;
           }
+          if (block.name === 'task' && typeof block.input?.title === 'string') {
+            task = block.input.title;
+            continue;
+          }
           const result = resultById.get(block.id);
           turn.push({
             kind: 'tool',
@@ -1681,5 +1935,5 @@ function reconstructItems(messages: any[], meta: any): { items: ChatItem[]; plan
   }
   flushTurn();
   if (meta?.appId) items.push({ kind: 'appcard', appId: meta.appId, name: meta.appName || meta.appId });
-  return { items, plan };
+  return { items, plan, task };
 }

@@ -7,7 +7,19 @@
 :root {
   --plan-green: #6b9442;
   --plan-green-strong: #527a2c;
+
+  /* Near-square corners across the sidepanel: collapse the medium/large radius
+     tiers onto the small one so every card, banner, popup, and button matches
+     the composer input (rounded-sm). Chat bubbles (rounded-2xl) and pills
+     (rounded-full) are untouched and keep their shape. Scoped to this stylesheet
+     (the sidepanel page) — the shared theme tokens are unchanged elsewhere. */
+  --radius-md: var(--radius-sm);
+  --radius-lg: var(--radius-sm);
+  --radius-xl: var(--radius-sm);
 }
+
+/* Slightly thicker hairline so cards, banners, and popups read more defined. */
+.border { border-width: 1.5px; }
 
 html, body, #root {
   height: 100%;

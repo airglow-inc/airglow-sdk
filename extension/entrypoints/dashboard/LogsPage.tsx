@@ -242,11 +242,15 @@ export default function LogsPage() {
                     </span>
                     {isNew && (
                       <span
-                        className="text-xs font-semibold shrink-0 px-1.5 py-0.5 rounded uppercase tracking-wide"
-                        style={{ color: 'var(--bg-white)', background: 'var(--error)' }}
+                        className="text-xs font-semibold shrink-0 px-1.5 py-0.5 rounded tracking-wide"
+                        style={{
+                          color: '#1d4ed8',
+                          background: 'color-mix(in srgb, #1d4ed8 12%, transparent)',
+                          border: '1px solid color-mix(in srgb, #1d4ed8 55%, transparent)',
+                        }}
                         data-testid={`log-entry-${i}-new`}
                       >
-                        New
+                        new
                       </span>
                     )}
                     <span
@@ -256,6 +260,9 @@ export default function LogsPage() {
                         background: entry.source === 'airglow'
                           ? 'color-mix(in srgb, var(--sky) 12%, transparent)'
                           : 'color-mix(in srgb, var(--olive) 12%, transparent)',
+                        border: entry.source === 'airglow'
+                          ? '1px solid color-mix(in srgb, var(--sky) 55%, transparent)'
+                          : '1px solid color-mix(in srgb, var(--olive) 55%, transparent)',
                         minWidth: '50px',
                         textAlign: 'center',
                       }}

@@ -2,13 +2,15 @@ import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
 import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
 import { APP_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, type AppManifest, type SourcedManifest } from '../lib/app-loader';
+import { buildSdkCode } from '../lib/airglow-sdk';
 import { runtimeConfig } from '../lib/runtime-config';
-import { trackDashboardOpened, trackSidepanelOpened, trackLoggedIn, trackHostInstalled, trackAgentMessageSent, trackAgentResponseReceived, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
+import { trackDashboardOpened, trackSidepanelOpened, trackLoggedIn, trackHostInstalled, trackAgentMessageSent, trackAgentResponseReceived, trackSidepanelError, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
 import * as posthog from '../lib/posthog';
 import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from '../lib/airglow-identity';
-import { AUTH_SESSION_KEY, ensureSession, getStoredSession } from '../lib/airglow-auth';
+import { AUTH_SESSION_KEY, ensureSession, getStoredSession, signInWithGoogle } from '../lib/airglow-auth';
 import { CLOUD_API_URL_OVERRIDE_KEY, getCloudApiOverride, getCloudApiUrl } from '../lib/cloud-api';
 import { ANNOUNCEMENTS_CACHE_KEY, ANNOUNCEMENTS_DISMISSED_KEY, INSTALLED_AT_KEY, pickAnnouncement } from '../lib/announcements';
+import { EXT_UPDATE_KEY, checkForExtUpdate } from '../lib/ext-update';
 
 export default defineBackground(() => {
   log('service worker started');
@@ -394,6 +396,11 @@ export default defineBackground(() => {
   // Where the daemon serves local apps; written from the connector handshake,
   // read by the app loader as the local source origin.
   const DAEMON_ORIGIN_KEY = '__daemon_origin';
+  // Daemon version from the `ready` handshake — attached to sidepanel-error reports.
+  let daemonVersion: string | null = null;
+  // The last `error` agent-event message, held so the matching `turn_done`
+  // (which carries the HTTP status) can report the full surfaced error together.
+  let pendingAgentError: { message: string; code?: string } | null = null;
   function setNativeHostConnected(connected: boolean) {
     chrome.storage.local.set({ [NATIVE_HOST_CONNECTED_KEY]: connected });
     // First successful connection on this profile = the host got installed.
@@ -445,6 +452,9 @@ export default defineBackground(() => {
           email: session?.email ?? email,
           gatewayUrl,
           authToken: session?.token ?? null,
+          // So the daemon can name the dashboard's chrome-extension:// URL to the
+          // agent (dev vs Web Store builds have different ids).
+          extensionId: chrome.runtime.id,
         });
       })
       .catch((e) => logger.warn('airglow', `identity send failed: ${e instanceof Error ? e.message : String(e)}`));
@@ -486,6 +496,7 @@ export default defineBackground(() => {
       });
     } else if (msg.type === 'ready') {
       log(`daemon ready at ${msg.daemonOrigin} (v${msg.daemonVersion ?? '?'})`);
+      if (typeof msg.daemonVersion === 'string') daemonVersion = msg.daemonVersion;
       if (typeof msg.daemonOrigin === 'string' && /^http:\/\/127\.0\.0\.1:\d+$/.test(msg.daemonOrigin)) {
         chrome.storage.local.get(DAEMON_ORIGIN_KEY).then(async (r) => {
           if (r[DAEMON_ORIGIN_KEY] !== msg.daemonOrigin) {
@@ -499,19 +510,59 @@ export default defineBackground(() => {
       // Identify this browser to the daemon so agent sessions carry the
       // user's identity (gateway auth/billing) and the gateway URL override.
       sendIdentityToHost();
+    } else if (msg.type === 'agent:auth_refresh') {
+      // The daemon's gateway call hit AUTH_SESSION_INVALID (token expired,
+      // secret rotated, or the dev switched gateway between prod and local).
+      // Silently re-mint against the current backend — no UI while Google is
+      // still signed in. signInWithGoogle persists the new session, which fires
+      // the storage listener → sendIdentityToHost, so the daemon picks up the
+      // fresh token and retries the turn. If silent sign-in is unavailable
+      // (signed out of Google), the daemon times out and surfaces the error.
+      void (async () => {
+        try {
+          await signInWithGoogle({ interactive: false });
+          log('silent auth refresh succeeded (gateway token re-minted)');
+        } catch (e) {
+          // No silent Google session to re-mint from. The stored token is
+          // known-bad (the gateway just rejected it), so drop it: the daemon's
+          // wait ends immediately (token → null) and the sidepanel's
+          // SignInOverlay appears, turning a dead error into a one-click
+          // re-sign-in.
+          logger.info('airglow', `silent auth refresh unavailable, clearing stale session: ${e instanceof Error ? e.message : String(e)}`);
+          await chrome.storage.local.remove(AUTH_SESSION_KEY);
+        }
+      })();
     } else if (typeof msg.type === 'string' && msg.type.startsWith('agent:')) {
       // Agent chat traffic from the daemon → connected chat clients.
       // A turn_done marks a completed response; its stopReason tells us whether
-      // the turn errored (see trackAgentResponseReceived).
+      // the turn errored (see trackAgentResponseReceived). The preceding `error`
+      // event carries the user-surfaced text; we hold it so turn_done (which has
+      // the HTTP status) can report both together as a sidepanel_error.
+      if (msg.type === 'agent:event' && msg.event?.type === 'error') {
+        pendingAgentError = { message: String(msg.event.message ?? ''), code: typeof msg.event.code === 'string' ? msg.event.code : undefined };
+      }
       if (msg.type === 'agent:event' && msg.event?.type === 'turn_done') {
         const ev = msg.event;
+        const stopReason = String(ev.stopReason ?? 'unknown');
         trackAgentResponseReceived(
-          String(ev.stopReason ?? 'unknown'),
+          stopReason,
           typeof ev.errorStatus === 'number' ? ev.errorStatus : undefined,
           typeof ev.errorCode === 'string' ? ev.errorCode : undefined,
         ).catch((e) =>
           logger.warn('airglow', `trackAgentResponseReceived failed: ${e instanceof Error ? e.message : String(e)}`),
         );
+        if (stopReason === 'error' || stopReason === 'max_iterations') {
+          trackSidepanelError({
+            message: pendingAgentError?.message ?? `agent turn ${stopReason}`,
+            status: typeof ev.errorStatus === 'number' ? ev.errorStatus : undefined,
+            code: (typeof ev.errorCode === 'string' ? ev.errorCode : undefined) ?? pendingAgentError?.code,
+            sessionId: typeof msg.sessionId === 'string' ? msg.sessionId : undefined,
+            hostVersion: daemonVersion ?? undefined,
+          }).catch((e) =>
+            logger.warn('airglow', `trackSidepanelError failed: ${e instanceof Error ? e.message : String(e)}`),
+          );
+        }
+        pendingAgentError = null;
       }
       for (const port of agentPorts) {
         try { port.postMessage(msg); } catch {}
@@ -559,7 +610,7 @@ export default defineBackground(() => {
       domGetHtml(msg.tabId, msg.selector, msg.frame).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
     } else if (msg.type === 'eval' && typeof msg.tabId === 'number') {
       ensureAgentBanner(msg.tabId);
-      domEval(msg.tabId, msg.code, msg.frame, msg.main).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
+      domEval(msg.tabId, msg.code, msg.frame, msg.main, msg.app).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
     } else if (msg.type === 'newTab') {
       reply(msg, openInDebugGroup(msg.url, msg.active !== false).then((r: any) => {
         if (typeof r?.id === 'number') paintBannerOnNextLoad(r.id);
@@ -853,7 +904,47 @@ export default defineBackground(() => {
     evalWorldReady = true;
   }
 
-  async function domEval(tabId: number, code: string, frame?: string | null, main?: boolean) {
+  // Wrap user code so `await` works and a bare expression yields its value.
+  // The code runs as an async function body (needs 'unsafe-eval' in the world —
+  // both the eval world and --app's world set it). `return (code)` is tried
+  // first so an expression returns its value; on a syntax error (statements) it
+  // falls back to running them as-is (value undefined). Most of the SDK is async
+  // (storage/rpc/llm return promises), so without this `eval` would hand back a
+  // stringified Promise instead of the resolved value.
+  function evalBody(code: string): string {
+    return `(async () => {
+      const __AF = Object.getPrototypeOf(async function(){}).constructor;
+      const __mk = (src) => { try { return new __AF('return (' + src + '\\n);'); } catch (e) { return new __AF(src); } };
+      try {
+        const __v = await __mk(${JSON.stringify(code)})();
+        try { return { value: JSON.parse(JSON.stringify(__v ?? null)) }; } catch { return { value: String(__v) }; }
+      } catch (e) { return { error: String((e && e.message) || e) }; }
+    })()`;
+  }
+
+  // `eval --app ID`: run `code` in app ID's own userscript world (worldId
+  // `airglow:ID`), so the SDK's chrome.runtime.sendMessage passes the
+  // background's worldId == `airglow:ID` check and storage/rpc/llm scope to that
+  // app. The app's world is normally CSP `script-src 'self'` (no eval); widen it
+  // to permit the wrapper. The SDK is (re)injected only when absent, so a live
+  // app instance on the tab is left intact. The widening resets the next time
+  // apps are registered.
+  async function evalInAppWorld(tabId: number, frameId: number, appId: string, code: string) {
+    await chrome.userScripts.configureWorld({ worldId: `airglow:${appId}`, csp: "script-src 'self' 'unsafe-eval'", messaging: true });
+    const sdk = buildSdkCode(appId, 'userscript');
+    const js = `if (typeof globalThis.airglow === 'undefined') {\n${sdk}\n}\n${evalBody(code)}`;
+    const results = await chrome.userScripts.execute({
+      target: { tabId, frameIds: [frameId] },
+      worldId: `airglow:${appId}`,
+      injectImmediately: true,
+      js: [{ code: js }],
+    } as any);
+    const r = (results as any)?.[0];
+    if (r?.error) return { error: String(r.error?.message || r.error) };
+    return r?.result ?? { error: 'no result' };
+  }
+
+  async function domEval(tabId: number, code: string, frame?: string | null, main?: boolean, app?: string | null) {
     // Our own chrome-extension:// pages (the dashboard, side panel) can't be reached
     // by chrome.scripting/userScripts — host_permissions don't match that scheme.
     // chrome.debugger is the only bypass; it also ignores page CSP, so the top
@@ -865,15 +956,15 @@ export default defineBackground(() => {
     // to run in the page's MAIN world instead: sees page globals, but the page's CSP
     // applies to eval (so it can be blocked on strict-CSP sites).
     //
-    // An IIFE expression: userScripts.execute returns the script's completion value
-    // (it runs `code` as a script, not a function body — so no top-level `return`).
-    // The MAIN-world path wraps the same body in a func instead.
-    const body = `(() => { try { const __v = (0, eval)(${JSON.stringify(code)});`
-      + ` try { return { value: JSON.parse(JSON.stringify(__v ?? null)) }; } catch { return { value: String(__v) }; }`
-      + ` } catch (e) { return { error: String((e && e.message) || e) }; } })()`;
+    // The body is an async IIFE; userScripts.execute / scripting.executeScript
+    // await the returned promise and hand back its resolved value.
+    const body = evalBody(code);
     try {
       const frameId = await resolveFrameId(tabId, frame);
       if (!main && chrome.userScripts?.execute) {
+        // --app: run in app `app`'s userscript world with its `airglow` SDK in
+        // scope, so storage/rpc/llm calls route with that app's identity.
+        if (app) return evalInAppWorld(tabId, frameId, app, code);
         await ensureEvalWorld();
         const results = await chrome.userScripts.execute({
           target: { tabId, frameIds: [frameId] },
@@ -886,12 +977,14 @@ export default defineBackground(() => {
         return r?.result ?? { error: 'no result' };
       }
       // MAIN world (explicit --main, or fallback when userScripts.execute is
-      // unavailable): sees page globals; the page CSP can block eval.
+      // unavailable): sees page globals; the page CSP can block eval/Function.
       const [res] = await chrome.scripting.executeScript({
         target: { tabId, frameIds: [frameId] }, world: 'MAIN' as any,
-        func: (src: string) => {
+        func: async (src: string) => {
           try {
-            const v = (0, eval)(src);
+            const AF: any = Object.getPrototypeOf(async function(){}).constructor;
+            let fn; try { fn = new AF('return (' + src + '\n);'); } catch { fn = new AF(src); }
+            const v = await fn();
             try { return { value: JSON.parse(JSON.stringify(v ?? null)) }; } catch { return { value: String(v) }; }
           } catch (e: any) { return { error: String((e && e.message) || e) }; }
         },
@@ -958,6 +1051,8 @@ export default defineBackground(() => {
       const res = await cdpSend(tabId, 'Runtime.evaluate', {
         expression,
         returnByValue: true,
+        // Resolve a promise result (e.g. an airglow.* call) to its value.
+        awaitPromise: true,
         ...(contextId ? { contextId } : {}),
       });
       if (res?.exceptionDetails) {
@@ -1213,6 +1308,18 @@ export default defineBackground(() => {
     if (alarm.name === 'airglow:announcements') void pollAnnouncements();
   });
   void pollAnnouncements();
+
+  // Extension self-update: force a Web Store check every 20 min, and persist a
+  // staged newer version (Chrome fires onUpdateAvailable once it's downloaded)
+  // so the dashboard + sidepanel can offer an "Update" button. No-op in dev.
+  chrome.alarms.create('airglow:ext-update', { periodInMinutes: 20 });
+  chrome.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === 'airglow:ext-update') void checkForExtUpdate();
+  });
+  chrome.runtime.onUpdateAvailable.addListener((details) => {
+    if (details?.version) void chrome.storage.local.set({ [EXT_UPDATE_KEY]: details.version });
+  });
+  void checkForExtUpdate();
 
   // Toolbar badge: a red "!" on the extension icon whenever an undismissed
   // announcement is active (same pick rule as the banner) — so a pinned user

@@ -59,7 +59,7 @@ export function AnnouncementBanner({ override, compact }: { override?: Announcem
   if (!active) return null;
 
   const critical = active.severity === 'critical';
-  const accent = critical ? 'var(--error)' : 'var(--olive)';
+  const accent = critical ? 'var(--error)' : 'var(--sky)';
   const Icon = critical ? TriangleAlert : Megaphone;
 
   const dismiss = () => {

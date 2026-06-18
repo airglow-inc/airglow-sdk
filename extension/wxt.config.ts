@@ -28,10 +28,9 @@ export default defineConfig({
     host_permissions: ['<all_urls>'],
     // Pinned public key → deterministic extension ID: comikpjjijckpjkobpkkpnnhlcpmagic
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9FHeG+dnrLhRUck2ePMNCSv6cdemPh2AvKYRnGeMLCXA4cWa80uxRGp3inkhl8kTH5Q3ctLJ2GGqf9YwLEoqDPYdbQ+q7U2l6oEInTzz5ZdDnxOh47SiuyrsQSmEODRPSiScIdv9f3BD5YPtLeDxbx6qjGoQ3oqemPTthDir+b/b4V2jGhcrZrh2NYpk2jGrHqkVdq2L5sYLy0SEQoApsOOOaU22s3i8eVA0KBEQL46r07ItpfJm2373TZrWOhE/DIBGhWGSoQIJtGchW9KU8TALuTsWNV14waeDrE8PH0pnbmqoQJJGRyrZaUl1KB0K85+X7x+ue5Ns3lrC/dEnugIDAQAB',
-    // Google sign-in uses chrome.identity.launchWebAuthFlow (the WEB OAuth
+    // Google sign-in uses chrome.identity.launchWebAuthFlow (the Web OAuth
     // client in lib/airglow-auth.ts), which needs only the `identity`
-    // permission above — no manifest `oauth2` block. We intentionally do not use
-    // getAuthToken / a Chrome-Extension OAuth client; see lib/airglow-auth.ts.
+    // permission above — no manifest `oauth2` block.
     icons: {
       16: 'icon-16.png',
       32: 'icon-32.png',

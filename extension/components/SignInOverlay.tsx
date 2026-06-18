@@ -80,7 +80,7 @@ export function SignInOverlay() {
       data-testid="signin-overlay"
     >
       <div
-        className="w-full max-w-[340px] rounded-2xl border p-6 text-center"
+        className="w-full max-w-[340px] rounded-sm border p-6 text-center"
         style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', boxShadow: '0 12px 40px rgba(17, 17, 16, 0.18)' }}
       >
         <div
