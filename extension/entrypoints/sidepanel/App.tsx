@@ -277,6 +277,21 @@ function WorkGroup({ item, daemonOrigin }: { item: Extract<ChatItem, { kind: 'wo
 }
 
 function AppCard({ appId, name }: { appId: string; name: string }) {
+  // Transient feedback for "Show me" when no matching tab is open / nothing to
+  // highlight. Cleared after a moment.
+  const [showMeNote, setShowMeNote] = useState<string | null>(null);
+  function showMe(): void {
+    chrome.runtime.sendMessage(
+      { type: 'airglow:highlight-entrypoint', appId, name },
+      (res) => {
+        void chrome.runtime.lastError;
+        const outcome = res?.outcome;
+        if (outcome === 'shown') return; // page flashed — no note needed
+        setShowMeNote(outcome === 'no-entrypoint' ? 'No on-page button to show' : 'Open the app’s site first');
+        setTimeout(() => setShowMeNote(null), 2600);
+      },
+    );
+  }
   return (
     <div className="my-2 p-3 rounded-xl border flex items-center gap-3" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)' }} data-testid="app-card">
       <div
@@ -287,8 +302,20 @@ function AppCard({ appId, name }: { appId: string; name: string }) {
       </div>
       <div className="min-w-0 flex-1">
         <div className="text-[13.5px] font-semibold truncate" style={{ color: 'var(--fg-primary)' }}>{name}</div>
-        <div className="text-[12px]" style={{ color: 'var(--fg-tertiary)' }}>App</div>
+        <div className="text-[12px]" style={{ color: 'var(--fg-tertiary)' }}>{showMeNote ?? 'App'}</div>
       </div>
+      <button
+        onClick={showMe}
+        title="Highlight this app's button on the page"
+        className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-[13px] font-medium cursor-pointer border shrink-0"
+        style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-secondary)', color: 'var(--fg-primary)' }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-primary)'; }}
+        data-testid="app-card-show-me"
+      >
+        <Wand2 size={13} />
+        Show me
+      </button>
       <button
         onClick={() => chrome.tabs.create({ url: chrome.runtime.getURL(`dashboard.html?app=${appId}`) })}
         className="inline-flex items-center gap-1.5 h-8 px-3 rounded-full text-[13px] font-medium cursor-pointer border shrink-0"
@@ -500,6 +527,9 @@ export default function App() {
   // Expanded state of the live activity peek (the chevron on the status line).
   const [liveOpen, setLiveOpen] = useState(false);
   const [appChip, setAppChip] = useState<{ id: string; name: string } | null>(null);
+  // Set when the agent built an app whose site isn't open: a one-line nudge to
+  // open it (the background highlights the entrypoint once a matching tab is up).
+  const [entrypointHint, setEntrypointHint] = useState<{ appId: string; name: string; hosts: string[] } | null>(null);
   const [hostConnected, setHostConnected] = useState<boolean | null>(null);
   // Windows has no native host (macOS/Linux only) — gates the unsupported view.
   const [isWindows, setIsWindows] = useState(false);
@@ -545,6 +575,13 @@ export default function App() {
   const turnStartRef = useRef<{ index: number; startedAt: number } | null>(null);
   // App context announced during the current turn → render an app card after.
   const turnAppRef = useRef<{ id: string; name: string } | null>(null);
+  // Mirror of `appChip` readable from the (mount-time) event closures, which
+  // can't see current state. Used to resolve the session's app on turn_done
+  // even when no app_context fired this turn (edits to an existing app).
+  const appRef = useRef<{ id: string; name: string } | null>(null);
+  // Did the current turn write/edit app files? Gates the entrypoint highlight
+  // so pure Q&A turns don't re-flash the page.
+  const turnDidWriteRef = useRef(false);
   // The last turn we submitted (text + images), and — when it failed with
   // AUTH_SESSION_INVALID — the turn to auto-resend once the user re-signs-in.
   const lastTurnRef = useRef<{ text: string; images: PendingImage[] } | null>(null);
@@ -598,6 +635,9 @@ export default function App() {
       () => { void chrome.runtime.lastError; },
     );
   }, []);
+
+  // Keep appRef in sync so mount-time event closures can read the session's app.
+  useEffect(() => { appRef.current = appChip; }, [appChip]);
 
   function post(msg: Record<string, unknown>): void {
     try { portRef.current?.postMessage(msg); } catch {}
@@ -716,6 +756,9 @@ export default function App() {
         break;
       case 'tool_start':
         setThinking(false);
+        // Note app-file writes this turn → gate the entrypoint highlight on
+        // turn_done (don't re-flash the page for pure Q&A turns).
+        if (ev.name === 'write' || ev.name === 'edit') turnDidWriteRef.current = true;
         if (ev.name === 'plan' || ev.name === 'task') break; // rendered via the plan/task strips
         setItems((prev) => [...prev, { kind: 'tool', toolId: ev.toolId, name: ev.name, input: ev.input, status: 'running', summary: '' }]);
         break;
@@ -744,14 +787,27 @@ export default function App() {
           it.kind === 'approval' && it.approvalId === ev.approvalId ? { ...it, resolved: ev.approved } : it,
         ));
         break;
-      case 'turn_done':
+      case 'turn_done': {
         setItems((prev) => collapseTurn(prev));
+        // If this turn built/edited an app, ask the background to highlight its
+        // entrypoint on a matching tab (or hint the user if none is open). Use
+        // the turn's app, else the session's app (edits to an existing app emit
+        // no app_context). Only when files were actually written.
+        const app = turnAppRef.current ?? appRef.current;
+        if (app && turnDidWriteRef.current && ev.stopReason !== 'error' && ev.stopReason !== 'stopped') {
+          chrome.runtime.sendMessage(
+            { type: 'airglow:app-built', appId: app.id, name: app.name },
+            () => { void chrome.runtime.lastError; },
+          );
+        }
+        turnDidWriteRef.current = false;
         turnStartRef.current = null;
         turnAppRef.current = null;
         setRunning(false);
         setThinking(false);
         setLiveOpen(false);
         break;
+      }
       case 'error':
         setThinking(false);
         // A rejected session token: the background drops it → SignInOverlay
@@ -829,6 +885,13 @@ export default function App() {
           }
           lastEventAtRef.current = Date.now();
           applyEvent(msg.event as AgentEvent);
+        } else if (msg?.type === 'airglow:entrypoint-hint') {
+          // Background built an app whose site isn't open — nudge the user.
+          setEntrypointHint({
+            appId: String(msg.appId ?? ''),
+            name: String(msg.name ?? ''),
+            hosts: Array.isArray(msg.hosts) ? msg.hosts : [],
+          });
         } else if (typeof msg?.reqId === 'string') {
           const resolve = pendingReplies.current.get(msg.reqId);
           if (resolve) {
@@ -1063,6 +1126,8 @@ export default function App() {
       });
     }
     turnAppRef.current = null;
+    turnDidWriteRef.current = false;
+    setEntrypointHint(null);
     setRunning(true);
     setLiveOpen(false);
     // Reset the watchdog clock so the first event of this turn has a full grace
@@ -1559,6 +1624,31 @@ export default function App() {
 
       {/* Composer */}
       <div className="p-3 shrink-0">
+        {entrypointHint && (
+          <div
+            className="mb-2 px-3 py-2 rounded-lg border flex items-center gap-2 text-[12.5px]"
+            style={{
+              background: 'color-mix(in srgb, var(--clay) 8%, var(--bg-white))',
+              borderColor: 'color-mix(in srgb, var(--clay) 30%, var(--border-tertiary))',
+              color: 'var(--fg-secondary)',
+            }}
+            data-testid="entrypoint-hint"
+          >
+            <Wand2 size={14} style={{ color: 'var(--clay-interactive)', flex: 'none' }} />
+            <span className="min-w-0 flex-1">
+              Open {entrypointHint.hosts.length ? entrypointHint.hosts.join(', ') : 'the app’s site'} to
+              see {entrypointHint.name || 'your new app'} — we’ll point out what changed.
+            </span>
+            <button
+              onClick={() => setEntrypointHint(null)}
+              aria-label="Dismiss"
+              className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded cursor-pointer"
+              style={{ background: 'transparent', border: 0, color: 'var(--fg-tertiary)' }}
+            >
+              <X size={12} />
+            </button>
+          </div>
+        )}
         <div
           className="rounded-sm border py-2 pl-4 pr-2 cursor-text"
           style={{ background: 'var(--bg-white)', borderColor: 'var(--border-secondary)', boxShadow: 'var(--shadow-sm)' }}

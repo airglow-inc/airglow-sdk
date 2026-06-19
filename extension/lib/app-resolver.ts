@@ -20,6 +20,11 @@ export interface AppManifest {
   userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
   server_env?: Record<string, { label?: string }>;
   host_permissions?: string[];
+  // Optional: CSS selector of the clickable element the app injects into the
+  // page (the button/pill the user clicks). Used to highlight the entrypoint
+  // on the page after the app is built. Authored by the agent; absent for
+  // apps with no clickable entrypoint (e.g. pure-CSS apps).
+  entrypoint?: { selector: string };
   // App-source-injected: whether the app exposes a UI entrypoint.
   _hasUi?: boolean;
   // Daemon-injected: names of `server/*.ts` RPC handlers. Surfaced in the
