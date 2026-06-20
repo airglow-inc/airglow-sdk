@@ -17,6 +17,9 @@ import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, get
 const APP_ORDER_KEY = '__app_order';
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
 const SIDE_BUTTON_KEY = '__side_button_enabled';
+// Auto-highlight an app's entrypoint on the page after a build. Defaults on
+// (enabled unless explicitly set false).
+const HIGHLIGHT_CHANGES_KEY = '__highlight_changes_enabled';
 type AppVisibility = 'public' | 'hidden';
 
 interface AppManifest {
@@ -265,6 +268,7 @@ export default function App() {
   const extUpdate = useExtUpdateAvailable();
   const hostVersion = useHostVersion();
   const [sideButtonEnabled, setSideButtonEnabled] = useState(false);
+  const [highlightChangesEnabled, setHighlightChangesEnabled] = useState(true);
   const [gatewayUrlInput, setGatewayUrlInput] = useState('');
   // Host self-update state (Settings modal). null = not yet checked.
   const [hostUpdate, setHostUpdate] = useState<{
@@ -519,12 +523,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, CLOUD_API_URL_OVERRIDE_KEY], (result) => {
+    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, HIGHLIGHT_CHANGES_KEY, CLOUD_API_URL_OVERRIDE_KEY], (result) => {
       const nh = result['__native_host_connected'];
       setNativeHostConnected(nh === undefined ? null : (nh as boolean));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
+      setHighlightChangesEnabled(result[HIGHLIGHT_CHANGES_KEY] !== false);
       setGatewayUrlInput(typeof result[CLOUD_API_URL_OVERRIDE_KEY] === 'string' ? result[CLOUD_API_URL_OVERRIDE_KEY] : '');
       getStoredSession().then((session) => {
         setAuthSession(session);
@@ -555,6 +560,9 @@ export default function App() {
       }
       if (SIDE_BUTTON_KEY in changes) {
         setSideButtonEnabled(!!changes[SIDE_BUTTON_KEY].newValue);
+      }
+      if (HIGHLIGHT_CHANGES_KEY in changes) {
+        setHighlightChangesEnabled(changes[HIGHLIGHT_CHANGES_KEY].newValue !== false);
       }
     };
     chrome.storage.local.onChanged.addListener(onChange);
@@ -590,6 +598,11 @@ export default function App() {
   function setSideButton(next: boolean) {
     setSideButtonEnabled(next);
     chrome.storage.local.set({ [SIDE_BUTTON_KEY]: next });
+  }
+
+  function setHighlightChanges(next: boolean) {
+    setHighlightChangesEnabled(next);
+    chrome.storage.local.set({ [HIGHLIGHT_CHANGES_KEY]: next });
   }
 
   function saveGatewayUrl() {
@@ -1673,6 +1686,41 @@ export default function App() {
                   style={{
                     width: 18, height: 18,
                     left: sideButtonEnabled ? 22 : 2,
+                    background: 'var(--bg-white)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </label>
+            <label
+              className="flex items-center justify-between gap-4 py-2 cursor-pointer"
+              data-testid="settings-highlight-changes-row"
+            >
+              <div>
+                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Highlight changes</div>
+                <div className="text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                  After an app is built or edited, glow its button on the page so you can find what changed.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={highlightChangesEnabled}
+                onClick={() => setHighlightChanges(!highlightChangesEnabled)}
+                className="relative shrink-0 transition-colors cursor-pointer rounded-full border"
+                style={{
+                  boxSizing: 'border-box',
+                  width: 44, height: 24,
+                  background: highlightChangesEnabled ? 'var(--olive)' : 'var(--bg-tertiary)',
+                  borderColor: highlightChangesEnabled ? 'var(--olive)' : 'var(--border-secondary)',
+                }}
+                data-testid="settings-highlight-changes-toggle"
+              >
+                <span
+                  className="absolute top-1/2 -translate-y-1/2 rounded-full transition-all"
+                  style={{
+                    width: 18, height: 18,
+                    left: highlightChangesEnabled ? 22 : 2,
                     background: 'var(--bg-white)',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                   }}

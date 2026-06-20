@@ -419,6 +419,21 @@ export default defineBackground(() => {
     if (agentTurnTimer) { clearTimeout(agentTurnTimer); agentTurnTimer = undefined; }
     if (active) agentTurnTimer = setTimeout(() => { agentTurnActive = false; }, 6 * 60_000);
   }
+
+  // "Highlight changes" setting (dashboard Settings). Gates the AUTOMATIC
+  // entrypoint glow after a build; the manual "Show me" button ignores it.
+  // Defaults on (enabled unless explicitly set false). Cached so the hot path
+  // is sync; kept fresh via the storage listener below.
+  const HIGHLIGHT_CHANGES_KEY = '__highlight_changes_enabled';
+  let highlightChangesEnabled = true;
+  chrome.storage.local.get(HIGHLIGHT_CHANGES_KEY, (r) => {
+    highlightChangesEnabled = r[HIGHLIGHT_CHANGES_KEY] !== false;
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && HIGHLIGHT_CHANGES_KEY in changes) {
+      highlightChangesEnabled = changes[HIGHLIGHT_CHANGES_KEY].newValue !== false;
+    }
+  });
   function setNativeHostConnected(connected: boolean) {
     chrome.storage.local.set({ [NATIVE_HOST_CONNECTED_KEY]: connected });
     // First successful connection on this profile = the host got installed.
@@ -889,7 +904,9 @@ export default defineBackground(() => {
   function highlightScript(selector: string | null) {
     const RING_ID = '__airglow_entrypoint_glow';
     const STYLE_ID = '__airglow_entrypoint_style';
+    const HIDE_ID = '__airglow_entrypoint_hide';
     document.getElementById(RING_ID)?.remove();
+    document.getElementById(HIDE_ID)?.remove();
 
     function visibleEnough(el: Element): boolean {
       const he = el as HTMLElement;
@@ -940,6 +957,27 @@ export default defineBackground(() => {
       ].join(';');
       (document.body || document.documentElement).appendChild(ring);
 
+      // A dismiss affordance pinned at the top of the page while the highlight
+      // is showing — so the user can clear it without clicking the button.
+      const hide = document.createElement('button');
+      hide.id = HIDE_ID;
+      hide.type = 'button';
+      hide.textContent = 'Hide button highlights';
+      hide.style.cssText = [
+        'all: initial', 'position: fixed', 'top: 12px', 'left: 50%',
+        'transform: translateX(-50%)', 'z-index: 2147483646',
+        'pointer-events: auto', 'cursor: pointer',
+        'padding: 7px 14px', 'border-radius: 9999px',
+        'background: rgba(22,22,28,0.92)', 'color: #f3f4f6',
+        'border: 1px solid rgba(255,255,255,0.14)',
+        'font: 600 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        'letter-spacing: 0.01em', 'box-shadow: 0 6px 20px rgba(0,0,0,0.32)',
+        'backdrop-filter: blur(10px)', '-webkit-backdrop-filter: blur(10px)',
+        'transition: opacity 0.4s ease', 'opacity: 1',
+      ].join(';');
+      hide.addEventListener('click', () => dismiss());
+      (document.body || document.documentElement).appendChild(hide);
+
       const PAD = 6;
       function place() {
         const r = target.getBoundingClientRect();
@@ -965,12 +1003,13 @@ export default defineBackground(() => {
         cancelAnimationFrame(raf);
         target.removeEventListener('click', dismiss, true);
         ring.style.opacity = '0';
-        setTimeout(() => ring.remove(), 450);
+        hide.style.opacity = '0';
+        setTimeout(() => { ring.remove(); hide.remove(); }, 450);
       }
-      // Stays until the user clicks the entrypoint itself. The ring is
-      // pointer-events:none, so the click still reaches the button normally;
-      // capture + once guarantees we catch it even if the button's own handler
-      // re-renders it.
+      // Stays until the user clicks the entrypoint itself, or the "Hide button
+      // highlights" pill. The ring is pointer-events:none, so a click on the
+      // entrypoint still reaches the button normally; capture + once guarantees
+      // we catch it even if the button's own handler re-renders it.
       target.addEventListener('click', dismiss, { capture: true, once: true } as AddEventListenerOptions);
     }
 
@@ -1096,6 +1135,7 @@ export default defineBackground(() => {
   const pendingSourceHighlights = new Map<string, string>(); // appId → display name
   let sourceFlushTimer: ReturnType<typeof setTimeout> | undefined;
   function noteAppsChanged(appIds: string[]) {
+    if (!highlightChangesEnabled) return; // auto-highlight disabled in Settings
     for (const appId of appIds) {
       const m = getAppManifests().find((mm) => mm.id === appId);
       if (m) pendingSourceHighlights.set(appId, m.name || appId);
@@ -1117,6 +1157,7 @@ export default defineBackground(() => {
 
   // Fire any pending highlight whose app matches a freshly loaded/activated tab.
   function firePendingForTab(tabId: number, url: string | undefined) {
+    if (!highlightChangesEnabled) { pendingHighlights.clear(); return; }
     if (!url || pendingHighlights.size === 0) return;
     const now = Date.now();
     for (const [appId, p] of pendingHighlights) {
@@ -1852,6 +1893,7 @@ export default defineBackground(() => {
     if (msg?.type === 'airglow:app-built') {
       const appId = typeof msg.appId === 'string' ? msg.appId : '';
       const name = typeof msg.name === 'string' ? msg.name : appId;
+      if (!highlightChangesEnabled) { sendResponse({ ok: true, outcome: 'disabled' }); return true; }
       log(`highlight: app-built received appId=${appId || '(none)'}`);
       if (!appId) { sendResponse({ ok: false, error: 'no appId' }); return true; }
       highlightAppEntrypoint(appId, name, { hintIfMissing: true })
