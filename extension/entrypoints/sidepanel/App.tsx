@@ -1231,11 +1231,11 @@ export default function App() {
             appsHoverTimer.current = setTimeout(() => setAppsOpen(false), 180);
           };
           return (
-            <div className="ml-auto relative" onMouseEnter={openNow} onMouseLeave={closeSoon}>
+            <div className="ml-auto relative shrink-0" onMouseEnter={openNow} onMouseLeave={closeSoon}>
               {/* A bordered card like the icon buttons; while the dropdown is
                   open its bottom corners square off and merge into the card. */}
               <button
-                className="relative inline-flex items-center gap-1.5 h-9 px-3 cursor-default text-[13px] font-medium"
+                className="relative inline-flex items-center gap-1.5 h-9 px-3 cursor-default text-[13px] font-medium whitespace-nowrap"
                 style={{
                   color: 'var(--fg-primary)',
                   background: 'var(--bg-white)',
