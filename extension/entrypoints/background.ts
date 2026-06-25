@@ -356,6 +356,11 @@ export default defineBackground(() => {
       logger.error('airglow', `userscript registration failed: ${e}`);
     }
 
+    // A real per-app source change (not a bulk re-register, and tabs were
+    // reloaded) → glow the changed apps' entrypoints. Note them now; they flush
+    // after a debounce, or at turn_done when a sidepanel turn is in flight.
+    if (!force && !skipReload && changedApps.length > 0) noteAppsChanged(changedApps);
+
     // Run startup scripts after registration (non-blocking for page injection)
     const startupManifests = force ? manifests : manifests.filter(m => changedApps.includes(m.id));
     runStartupScripts(startupManifests).catch((e) =>
@@ -401,6 +406,34 @@ export default defineBackground(() => {
   // The last `error` agent-event message, held so the matching `turn_done`
   // (which carries the HTTP status) can report the full surfaced error together.
   let pendingAgentError: { message: string; code?: string } | null = null;
+
+  // True while a sidepanel agent turn is running. Source-change highlights are
+  // suppressed during a turn (the sidepanel highlights once at turn_done, so we
+  // don't glow mid-turn or double-fire); external/manual edits — which have no
+  // turn — glow via the source-change path. A safety timer clears the flag so a
+  // missed turn_done (SW recycle, etc.) can't suppress highlights forever.
+  let agentTurnActive = false;
+  let agentTurnTimer: ReturnType<typeof setTimeout> | undefined;
+  function setAgentTurnActive(active: boolean) {
+    agentTurnActive = active;
+    if (agentTurnTimer) { clearTimeout(agentTurnTimer); agentTurnTimer = undefined; }
+    if (active) agentTurnTimer = setTimeout(() => { agentTurnActive = false; }, 6 * 60_000);
+  }
+
+  // "Highlight changes" setting (dashboard Settings). Gates the AUTOMATIC
+  // entrypoint glow after a build; the manual "Show me" button ignores it.
+  // Defaults on (enabled unless explicitly set false). Cached so the hot path
+  // is sync; kept fresh via the storage listener below.
+  const HIGHLIGHT_CHANGES_KEY = '__highlight_changes_enabled';
+  let highlightChangesEnabled = true;
+  chrome.storage.local.get(HIGHLIGHT_CHANGES_KEY, (r) => {
+    highlightChangesEnabled = r[HIGHLIGHT_CHANGES_KEY] !== false;
+  });
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && HIGHLIGHT_CHANGES_KEY in changes) {
+      highlightChangesEnabled = changes[HIGHLIGHT_CHANGES_KEY].newValue !== false;
+    }
+  });
   function setNativeHostConnected(connected: boolean) {
     chrome.storage.local.set({ [NATIVE_HOST_CONNECTED_KEY]: connected });
     // First successful connection on this profile = the host got installed.
@@ -542,6 +575,10 @@ export default defineBackground(() => {
         pendingAgentError = { message: String(msg.event.message ?? ''), code: typeof msg.event.code === 'string' ? msg.event.code : undefined };
       }
       if (msg.type === 'agent:event' && msg.event?.type === 'turn_done') {
+        setAgentTurnActive(false);
+        // Glow any apps whose source changed during this turn (sidepanel edits,
+        // any tool). Deferred to here so the page glows once the agent is done.
+        flushSourceHighlights();
         const ev = msg.event;
         const stopReason = String(ev.stopReason ?? 'unknown');
         trackAgentResponseReceived(
@@ -845,6 +882,298 @@ export default defineBackground(() => {
       });
     } catch { /* unscriptable page (chrome://, NTP, etc.) — skip silently */ }
   }
+
+  // ───── Entrypoint highlight ─────
+  // After the agent builds/edits an app that injects UI, briefly frame the
+  // app's entrypoint element (the button/pill the user clicks) on the page so
+  // they can find what changed. The sidepanel triggers this on turn_done
+  // (airglow:app-built); the work happens here because the background owns tabs
+  // + scripting. We frame the entrypoint ONLY — never click it — so the app's
+  // own UI/animation never fires. Palette matches the activity glow above.
+
+  // Apps whose matching site wasn't open at build time: highlight fires when
+  // the user next lands on a matching tab. Entries expire after 10 min.
+  const pendingHighlights = new Map<string, { selector: string | null; patterns: string[]; name: string; ts: number }>();
+  const PENDING_HIGHLIGHT_TTL_MS = 10 * 60_000;
+
+  // Injected into the page (MAIN world). Resolves the entrypoint (explicit
+  // selector, else a scan for airglow-* injected interactive elements), polls
+  // briefly in case the userscript hasn't re-injected yet after the edit, then
+  // draws a pulsing clay ring framing it. Stays until the user clicks the
+  // entrypoint itself (or it leaves the page).
+  function highlightScript(selector: string | null) {
+    const RING_ID = '__airglow_entrypoint_glow';
+    const STYLE_ID = '__airglow_entrypoint_style';
+    const HIDE_ID = '__airglow_entrypoint_hide';
+    document.getElementById(RING_ID)?.remove();
+    document.getElementById(HIDE_ID)?.remove();
+
+    function visibleEnough(el: Element): boolean {
+      const he = el as HTMLElement;
+      const r = he.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4) return false;
+      const cs = getComputedStyle(he);
+      if (cs.visibility === 'hidden' || cs.display === 'none' || cs.opacity === '0') return false;
+      return true;
+    }
+    function resolveTarget(): HTMLElement | null {
+      if (selector) {
+        try {
+          const el = document.querySelector(selector) as HTMLElement | null;
+          if (el && visibleEnough(el)) return el;
+        } catch { /* invalid selector — fall through to the scan */ }
+      }
+      // Fallback: elements the app likely injected, by the airglow-* convention.
+      const all = Array.from(document.querySelectorAll('[id^="airglow-"], [data-testid]')) as HTMLElement[];
+      const cands = all.filter((el) => {
+        const tid = (el.dataset && el.dataset.testid) || '';
+        return (/airglow/i.test(el.id) || /airglow/i.test(tid)) && visibleEnough(el);
+      });
+      if (cands.length === 0) return null;
+      if (cands.length === 1) return cands[0];
+      const prefer = cands.find((el) =>
+        /(button|btn|toggle|pill)/i.test(el.id + ' ' + ((el.dataset && el.dataset.testid) || '')),
+      );
+      return prefer || cands[0];
+    }
+
+    function draw(target: HTMLElement) {
+      if (!document.getElementById(STYLE_ID)) {
+        const s = document.createElement('style');
+        s.id = STYLE_ID;
+        s.textContent =
+          '@keyframes __airglow_ep_pulse {' +
+          ' 0%,100% { box-shadow: 0 0 0 2px rgba(251,134,74,0.9), 0 0 14px 3px rgba(251,134,74,0.45); }' +
+          ' 50% { box-shadow: 0 0 0 3px rgba(251,134,74,1), 0 0 26px 7px rgba(251,134,74,0.7); } }';
+        (document.head || document.documentElement).appendChild(s);
+      }
+      const ring = document.createElement('div');
+      ring.id = RING_ID;
+      ring.style.cssText = [
+        'all: initial', 'position: fixed', 'pointer-events: none', 'z-index: 2147483646',
+        'border-radius: 10px', 'box-sizing: border-box',
+        'animation: __airglow_ep_pulse 1.5s ease-in-out infinite',
+        'transition: opacity 0.4s ease', 'opacity: 1',
+      ].join(';');
+      (document.body || document.documentElement).appendChild(ring);
+
+      // A dismiss affordance pinned at the top of the page while the highlight
+      // is showing — so the user can clear it without clicking the button.
+      const hide = document.createElement('button');
+      hide.id = HIDE_ID;
+      hide.type = 'button';
+      hide.textContent = 'Hide button highlights';
+      hide.style.cssText = [
+        'all: initial', 'position: fixed', 'top: 12px', 'left: 50%',
+        'transform: translateX(-50%)', 'z-index: 2147483646',
+        'pointer-events: auto', 'cursor: pointer',
+        'padding: 7px 14px', 'border-radius: 9999px',
+        'background: rgba(22,22,28,0.92)', 'color: #f3f4f6',
+        'border: 1px solid rgba(255,255,255,0.14)',
+        'font: 600 12.5px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
+        'letter-spacing: 0.01em', 'box-shadow: 0 6px 20px rgba(0,0,0,0.32)',
+        'backdrop-filter: blur(10px)', '-webkit-backdrop-filter: blur(10px)',
+        'transition: opacity 0.4s ease', 'opacity: 1',
+      ].join(';');
+      hide.addEventListener('click', () => dismiss());
+      (document.body || document.documentElement).appendChild(hide);
+
+      const PAD = 6;
+      function place() {
+        const r = target.getBoundingClientRect();
+        ring.style.left = (r.left - PAD) + 'px';
+        ring.style.top = (r.top - PAD) + 'px';
+        ring.style.width = (r.width + PAD * 2) + 'px';
+        ring.style.height = (r.height + PAD * 2) + 'px';
+      }
+      place();
+      // Reposition each frame so the ring tracks layout shifts. Also dismiss if
+      // the target leaves the DOM (SPA nav, userscript re-render) so the ring
+      // never strands as a zero-size dot at the corner.
+      let raf = requestAnimationFrame(function loop() {
+        if (!target.isConnected) { dismiss(); return; }
+        place();
+        raf = requestAnimationFrame(loop);
+      });
+
+      let done = false;
+      function dismiss() {
+        if (done) return;
+        done = true;
+        cancelAnimationFrame(raf);
+        target.removeEventListener('click', dismiss, true);
+        ring.style.opacity = '0';
+        hide.style.opacity = '0';
+        setTimeout(() => { ring.remove(); hide.remove(); }, 450);
+      }
+      // Stays until the user clicks the entrypoint itself, or the "Hide button
+      // highlights" pill. The ring is pointer-events:none, so a click on the
+      // entrypoint still reaches the button normally; capture + once guarantees
+      // we catch it even if the button's own handler re-renders it.
+      target.addEventListener('click', dismiss, { capture: true, once: true } as AddEventListenerOptions);
+    }
+
+    const immediate = resolveTarget();
+    if (immediate) { draw(immediate); return; }
+    // The tab may not have re-injected the userscript yet (app source just
+    // changed). Poll for up to 5s before giving up.
+    let waited = 0;
+    const STEP = 250, MAX = 5000;
+    const iv = setInterval(() => {
+      waited += STEP;
+      const el = resolveTarget();
+      if (el) { clearInterval(iv); draw(el); }
+      else if (waited >= MAX) clearInterval(iv);
+    }, STEP);
+  }
+
+  async function highlightEntrypoint(tabId: number, selector: string | null) {
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'MAIN',
+        func: highlightScript,
+        args: [selector],
+      });
+    } catch { /* unscriptable page (chrome://, store, …) — skip */ }
+  }
+
+  // Highlight a found tab robustly against the source-change reload. Editing an
+  // app reloads its matching tabs, which would wipe an injection done at
+  // turn_done. So inject now if the tab is already idle, AND re-inject on every
+  // load-complete for the next 8s — catching the reload (or a late/extra one).
+  // highlightScript removes any existing ring first, so redrawing is harmless.
+  const reinjectCleanup = new Map<number, () => void>();
+  function highlightTabWhenReady(tabId: number, selector: string | null) {
+    chrome.tabs.get(tabId).then((t) => {
+      if (t.status === 'complete') void highlightEntrypoint(tabId, selector);
+    }).catch(() => {});
+    reinjectCleanup.get(tabId)?.(); // replace any prior arm for this tab
+    const onUpdated = (id: number, info: { status?: string }) => {
+      if (id === tabId && info.status === 'complete') void highlightEntrypoint(tabId, selector);
+    };
+    const timer = setTimeout(cleanup, 8000);
+    function cleanup() {
+      clearTimeout(timer);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      reinjectCleanup.delete(tabId);
+    }
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    reinjectCleanup.set(tabId, cleanup);
+  }
+
+  // An app's entrypoint selector + the URL patterns its userscripts match.
+  // null when the app injects no userscripts (nothing to highlight).
+  function entrypointInfo(appId: string): { selector: string | null; patterns: string[] } | null {
+    const m = getAppManifests().find((mm) => mm.id === appId);
+    if (!m || !m.userscripts?.length) return null;
+    const patterns = m.userscripts.flatMap((us) => us.matches);
+    if (patterns.length === 0) return null;
+    return { selector: m.entrypoint?.selector ?? null, patterns };
+  }
+
+  // The tab to highlight: prefer the active tab of the last-focused window when
+  // it matches; else the most-recently-active matching tab.
+  async function pickMatchingTab(patterns: string[]): Promise<chrome.tabs.Tab | null> {
+    const tabs = (await chrome.tabs.query({})).filter(
+      (t) => typeof t.url === 'string' && patterns.some((p) => urlMatchesPattern(p, t.url!)),
+    );
+    if (tabs.length === 0) return null;
+    let focusedWin: number | undefined;
+    try { focusedWin = (await chrome.windows.getLastFocused())?.id; } catch {}
+    const active = tabs.find((t) => t.active && t.windowId === focusedWin) || tabs.find((t) => t.active);
+    if (active) return active;
+    return [...tabs].sort((a, b) => (b.lastAccessed ?? 0) - (a.lastAccessed ?? 0))[0];
+  }
+
+  // Display hostnames from match patterns, for the sidepanel hint ("Open x.com…").
+  function hostsFromPatterns(patterns: string[]): string[] {
+    const out = new Set<string>();
+    for (const p of patterns) {
+      const m = /^[*a-z]+:\/\/([^/]+)/i.exec(p);
+      if (!m) continue;
+      const host = m[1].replace(/^\*\./, '');
+      if (host && host !== '*') out.add(host);
+    }
+    return [...out];
+  }
+
+  // Highlight an app's entrypoint on a matching tab now; or, when none is open
+  // and hintIfMissing is set, remember it and hint the user via the sidepanel.
+  async function highlightAppEntrypoint(
+    appId: string,
+    name: string,
+    opts?: { hintIfMissing?: boolean },
+  ): Promise<'shown' | 'pending' | 'no-entrypoint'> {
+    const info = entrypointInfo(appId);
+    if (!info) { log(`highlight ${appId}: no userscripts/patterns → skip`); return 'no-entrypoint'; }
+    const tab = await pickMatchingTab(info.patterns);
+    log(`highlight ${appId}: selector=${info.selector ?? '(scan)'} patterns=${info.patterns.join(',')} tab=${tab?.id ?? 'none'}`);
+    if (tab?.id != null) {
+      highlightTabWhenReady(tab.id, info.selector);
+      return 'shown';
+    }
+    if (opts?.hintIfMissing) {
+      pendingHighlights.set(appId, { selector: info.selector, patterns: info.patterns, name, ts: Date.now() });
+      const hosts = hostsFromPatterns(info.patterns);
+      for (const port of agentPorts) {
+        try { port.postMessage({ type: 'airglow:entrypoint-hint', appId, name, hosts }); } catch {}
+      }
+    }
+    return 'pending';
+  }
+
+  // Entrypoint highlight is driven by the source-change signal — ground truth
+  // that an app's files actually changed — so it covers EVERY edit path: the
+  // sidepanel agent (any tool, including bash), an external coding agent in
+  // ~/.airglow, and manual edits. Changed apps accumulate here; timing:
+  //   • no sidepanel turn running → debounced flush (a burst of edits glows
+  //     once, after it settles);
+  //   • a sidepanel turn running → deferred; flushed at turn_done, so we glow
+  //     once when the agent finishes rather than mid-turn.
+  const SOURCE_HIGHLIGHT_DEBOUNCE_MS = 1200;
+  const pendingSourceHighlights = new Map<string, string>(); // appId → display name
+  let sourceFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  function noteAppsChanged(appIds: string[]) {
+    if (!highlightChangesEnabled) return; // auto-highlight disabled in Settings
+    for (const appId of appIds) {
+      const m = getAppManifests().find((mm) => mm.id === appId);
+      if (m) pendingSourceHighlights.set(appId, m.name || appId);
+    }
+    if (pendingSourceHighlights.size === 0 || agentTurnActive) return; // turn → flush at turn_done
+    if (sourceFlushTimer) clearTimeout(sourceFlushTimer);
+    sourceFlushTimer = setTimeout(flushSourceHighlights, SOURCE_HIGHLIGHT_DEBOUNCE_MS);
+  }
+  function flushSourceHighlights() {
+    if (sourceFlushTimer) { clearTimeout(sourceFlushTimer); sourceFlushTimer = undefined; }
+    if (pendingSourceHighlights.size === 0) return;
+    const entries = [...pendingSourceHighlights.entries()];
+    pendingSourceHighlights.clear();
+    for (const [appId, name] of entries) {
+      log(`highlight ${appId}: source changed → glow`);
+      void highlightAppEntrypoint(appId, name, { hintIfMissing: true });
+    }
+  }
+
+  // Fire any pending highlight whose app matches a freshly loaded/activated tab.
+  function firePendingForTab(tabId: number, url: string | undefined) {
+    if (!highlightChangesEnabled) { pendingHighlights.clear(); return; }
+    if (!url || pendingHighlights.size === 0) return;
+    const now = Date.now();
+    for (const [appId, p] of pendingHighlights) {
+      if (now - p.ts > PENDING_HIGHLIGHT_TTL_MS) { pendingHighlights.delete(appId); continue; }
+      if (p.patterns.some((pat) => urlMatchesPattern(pat, url))) {
+        pendingHighlights.delete(appId);
+        void highlightEntrypoint(tabId, p.selector);
+      }
+    }
+  }
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === 'complete') firePendingForTab(tabId, tab.url);
+  });
+  chrome.tabs.onActivated.addListener(({ tabId }) => {
+    chrome.tabs.get(tabId).then((t) => firePendingForTab(tabId, t.url)).catch(() => {});
+  });
 
   // Paint the banner after an agent-driven navigation completes. Idea: when the
   // agent navigates/reloads/opens a tab, the *next* onCompleted on that tab's
@@ -1210,6 +1539,7 @@ export default defineBackground(() => {
       if (typeof msg?.type === 'string' && msg.type.startsWith('agent:')) {
         // agent:start is a user-initiated turn → count it as a sent message.
         if (msg.type === 'agent:start') {
+          setAgentTurnActive(true);
           trackAgentMessageSent().catch((e) =>
             logger.warn('airglow', `trackAgentMessageSent failed: ${e instanceof Error ? e.message : String(e)}`),
           );
@@ -1555,6 +1885,32 @@ export default defineBackground(() => {
         logger.warn('airglow', `get page apps failed: ${e instanceof Error ? e.message : String(e)}`);
         sendResponse({ error: 'get page apps failed' });
       });
+      return true;
+    }
+
+    // Sidepanel reports a completed build for an app that injects UI → highlight
+    // its entrypoint on a matching tab, or pend + hint the user if none is open.
+    if (msg?.type === 'airglow:app-built') {
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      const name = typeof msg.name === 'string' ? msg.name : appId;
+      if (!highlightChangesEnabled) { sendResponse({ ok: true, outcome: 'disabled' }); return true; }
+      log(`highlight: app-built received appId=${appId || '(none)'}`);
+      if (!appId) { sendResponse({ ok: false, error: 'no appId' }); return true; }
+      highlightAppEntrypoint(appId, name, { hintIfMissing: true })
+        .then((outcome) => sendResponse({ ok: true, outcome }))
+        .catch((e) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
+      return true;
+    }
+
+    // Sidepanel "Show me on the page" re-trigger → highlight now if a matching
+    // tab is open. Don't pend/hint: the user explicitly asked for it now.
+    if (msg?.type === 'airglow:highlight-entrypoint') {
+      const appId = typeof msg.appId === 'string' ? msg.appId : '';
+      const name = typeof msg.name === 'string' ? msg.name : appId;
+      if (!appId) { sendResponse({ ok: false, error: 'no appId' }); return true; }
+      highlightAppEntrypoint(appId, name)
+        .then((outcome) => sendResponse({ ok: outcome === 'shown', outcome }))
+        .catch((e) => sendResponse({ ok: false, error: e instanceof Error ? e.message : String(e) }));
       return true;
     }
 

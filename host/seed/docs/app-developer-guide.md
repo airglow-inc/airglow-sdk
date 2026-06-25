@@ -58,6 +58,7 @@ Editing `package.json` by hand also works — run `bun install` after; nothing i
   "userscripts": [
     { "file": "userscripts/hn.ts", "matches": ["*://news.ycombinator.com/*"] }
   ],
+  "entrypoint": { "selector": "#airglow-hn-tagger-button" },
   "server_env": {
     "ANTHROPIC_API_KEY": { "label": "Anthropic API Key" }
   }
@@ -72,6 +73,7 @@ Editing `package.json` by hand also works — run `bun install` after; nothing i
 | `defaultEnabled` | boolean | First-encounter default. `false` starts the app disabled the first time this `id` is seen; the user's toggle is authoritative after. Default `true`. |
 | `startup` | string | Path to a startup script; runs once per extension boot. |
 | `userscripts[]` | array | `{ file, matches, allFrames?, runAt? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns); `runAt` defaults to `"document_idle"`. |
+| `entrypoint` | object | Optional. `{ selector }` — the CSS selector of the clickable element the app injects into the page (the button/pill the user clicks). Airglow briefly highlights it on the page after the app is built so the user can find it. Set it to the exact selector your userscript creates (e.g. `"#airglow-cinema-button"`). Omit for apps with no clickable entrypoint (pure-CSS, shortcut-only). |
 | `secrets` | object | Client-scoped secrets. Each entry `{ label, description? }`. Surfaced in the Secrets UI and as "Client keys" callouts; read via `airglow.storage.get('KEY')`. |
 | `server_env` | object | Server-scoped env vars. Each entry `{ label, description? }`. Missing keys are reported by the daemon and prompted per app; read via `process.env.KEY` in `server/*.ts` only. Declarative — not enforced. |
 
