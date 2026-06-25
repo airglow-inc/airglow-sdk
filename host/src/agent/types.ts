@@ -12,12 +12,28 @@ export type AgentEvent =
   | { type: 'plan'; items: { text: string; done: boolean }[] }
   | { type: 'task'; title: string }
   | { type: 'app_context'; appId: string; name: string }
-  | { type: 'approval_request'; approvalId: string; action: string; detail: string }
-  | { type: 'approval_resolved'; approvalId: string; approved: boolean }
+  // startedAt is the turn's wall-clock start (ms) — the authoritative source for
+  // the client's "Worked for X" duration, so it survives a panel that lost its
+  // own start ref (reopen / resync / SW recycle mid-turn).
   // errorStatus/errorCode are set only when stopReason==='error': the HTTP
   // status (0 = daemon could not reach the gateway at all) and a coarse failure
   // code, so chat clients can report which kind of failure a turn hit.
-  | { type: 'turn_done'; stopReason: string; errorStatus?: number; errorCode?: string }
+  | { type: 'turn_done'; stopReason: string; startedAt?: number | null; errorStatus?: number; errorCode?: string }
+  // A user message injected mid-turn (a follow-up sent while the agent was
+  // working). Carries no image bytes (1MB transport cap) — imageCount drives
+  // placeholder chips; clientId lets the originating panel skip its own
+  // optimistic echo. Lives in the event buffer so a resync replays it.
+  | { type: 'user_message'; text: string; imageCount?: number; clientId?: string }
+  // A queued follow-up has been folded into the conversation (drainPending) and
+  // is no longer waiting — chat clients drop the "in queue" pill on the matching
+  // bubbles. clientIds are the follow-ups' optimistic-send ids. Buffered like
+  // user_message so a resync replays the queued→injected transition.
+  | { type: 'followup_injected'; clientIds: string[] }
+  // A transient connection failure is being retried (network drop, upstream
+  // 5xx/429, or a stalled model stream). `attempt` is the 1-based retry index.
+  // Chat UIs show a "reconnecting" indicator until the next stream event lands;
+  // a retry that ultimately fails ends as a normal `error` + turn_done.
+  | { type: 'reconnecting'; attempt: number }
   | { type: 'error'; message: string; code?: string; resetHours?: number };
 
 export interface SessionMeta {

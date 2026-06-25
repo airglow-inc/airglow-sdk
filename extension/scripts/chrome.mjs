@@ -3,7 +3,7 @@
  * Launch Chrome with the Airglow extension loaded and CDP enabled.
  *
  * Usage:
- *   node scripts/chrome.mjs [--extension <dir>] [--user-data-dir=<dir>] [--fresh] [--no-cdp] [--no-native-host]
+ *   node scripts/chrome.mjs [--extension <dir>] [--user-data-dir=<dir>] [--profile <1-5>] [--port <n>] [--color <name>] [--fresh] [--no-cdp] [--no-native-host]
  *
  * Defaults (all resolved against cwd, so the same script serves multiple
  * checkouts — run it from the extension dir, or pass --extension):
@@ -48,7 +48,10 @@ const DEFAULT_EXTENSION_DIR = resolve(__dirname, '..', '..', 'extension');
 const WORKSPACE_DIR = resolve(process.cwd(), '.airglow');
 const DEFAULT_USER_DATA_DIR = join(WORKSPACE_DIR, 'chrome-profile');
 const FRESH_USER_DATA_DIR = join(WORKSPACE_DIR, 'chrome-profile-fresh');
-const THEME_DIR = join(WORKSPACE_DIR, 'dev-theme');
+// Numbered persistent profiles for running several dev browsers side by side.
+// Kept under ~/.airglow (not the per-checkout .airglow) so they're shared across
+// checkouts and survive repo cleanups.
+const USERDIRS_ROOT = join(homedir(), '.airglow', '.userdirs');
 
 const CHROME_BIN = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const SYSTEM_DEFAULT_PROFILE = join(process.env.HOME || '', 'Library/Application Support/Google/Chrome/Default');
@@ -72,61 +75,70 @@ const extDir = resolve(extDirArg || DEFAULT_EXTENSION_DIR);
 const fresh = args.includes('--fresh');
 const noCdp = args.includes('--no-cdp');
 const noNativeHost = args.includes('--no-native-host') || args.includes('--no-nm');
+// Numbered persistent profile (1-5). Each maps to ~/.airglow/.userdirs/dir<N>,
+// letting several dev browsers run side by side without colliding on the
+// single-writer profile lock.
+const profileArg = flagValue('profile');
+if (profileArg !== undefined && !/^[1-5]$/.test(profileArg)) {
+  console.error(`--profile must be a number from 1 to 5 (got "${profileArg}").`);
+  process.exit(1);
+}
 // CDP websocket port for debugging. Override to run a second browser alongside
 // one already on the default port (the websocket is single-occupancy; the load
-// pipe below is independent of it).
-const cdpPort = Number(flagValue('cdp-port') ?? 9222);
+// pipe below is independent of it). `--port` is the short alias for `--cdp-port`.
+// With --profile N and no explicit port, derive 9221+N so the five profiles get
+// distinct ports automatically (profile 1 -> 9222, ... profile 5 -> 9226).
+const cdpPort = Number(
+  flagValue('port') ?? flagValue('cdp-port') ?? (profileArg ? 9221 + Number(profileArg) : 9222),
+);
 const askEmail = args.includes('--ask-email');
 const noPasswords = args.includes('--no-passwords');
 
+// Named toolbar themes for the dev browser. `--color <name>` rewrites the theme
+// manifest with the chosen palette; without it the existing manifest is kept
+// (or the default written on first run). Each entry tints the title bar + tab
+// strip so the dev browser is visually distinct from your daily Chrome.
+const THEMES = {
+  sage:     { frame: [218, 232, 213], text: [50, 70, 50],   link: [80, 120, 80]  },
+  orange:   { frame: [251, 222, 196], text: [120, 64, 24],  link: [205, 110, 40] },
+  sky:      { frame: [205, 226, 245], text: [40, 65, 100],  link: [55, 110, 185] },
+  lavender: { frame: [228, 220, 246], text: [72, 56, 104],  link: [122, 92, 196] },
+  rose:     { frame: [248, 214, 224], text: [110, 48, 72],  link: [190, 78, 122] },
+};
+const DEFAULT_THEME = 'sage';
+const colorArg = flagValue('color');
+if (colorArg && !THEMES[colorArg]) {
+  console.error(`Unknown --color "${colorArg}". Choose one of: ${Object.keys(THEMES).join(', ')}.`);
+  process.exit(1);
+}
+
 if (args.includes('--help') || args.includes('-h')) {
-  console.log(`Usage: pnpm chrome[:fresh] [--no-cdp] [--ask-email] [--no-passwords] [--extension <dir>] [--user-data-dir=<dir>]
+  console.log(`Launch Chrome with the Airglow extension + CDP.
+Usage: pnpm chrome [-- <flags>]   (prefix flags with \`--\`, e.g. \`pnpm chrome -- --profile 2\`)
 
-Launches Chrome with the Airglow extension loaded and CDP enabled.
-
-Flags:
-  --extension <dir>   Unpacked extension dir to load. Defaults to
-                      <sdk>/extension. Use this to point at a different build
-                      (e.g. \`pnpm chrome --extension ../../airglow/extension/.output/chrome-mv3\`).
-                      Accepts --extension <dir> or --extension=<dir>. A bare
-                      positional path also works, but pnpm strips positional
-                      args unless you write \`pnpm chrome -- <dir>\`.
-  --fresh             Use a separate profile dir and wipe it before launch.
-                      Seeds the new profile from the regular dev profile
-                      (Preferences, History, …) minus auth/session files.
-  --no-cdp            Launch without CDP flags and without loading the
-                      extension. Use to sign in to Google in the dev profile
-                      (Google blocks sign-in when CDP is on); quit Chrome
-                      when done and re-run \`pnpm chrome\` to resume with CDP.
-  --no-native-host    Don't register the native host (skips \`airglow install\`,
-                      so no workspace reseed and no manifest writes to other
-                      browsers) and remove any manifest left in this profile.
-                      The host shows as not connected and no daemon spawns.
-                      Use for clean-install tests or the onboarding card.
-  --ask-email         Skip the dev-build email auto-seed so the email-required
-                      gate fires on the next app open. Use to test the
-                      email-onboarding flow without a prod build.
-                      With CDP: written automatically. With --no-cdp: prints
-                      a one-liner to paste into the SW DevTools console.
-  --no-passwords      Skip seeding saved passwords from the system default
-                      Chrome profile (~/Library/Application Support/Google/
-                      Chrome/Default). By default, "Login Data" SQLite files
-                      are copied into <user-data-dir>/Default on every
-                      launch so saved passwords carry over. Other profile
-                      contents are left untouched. Decryption relies on the
-                      user-wide "Chrome Safe Storage" Keychain entry.
-  --user-data-dir=<dir>  Override the profile directory.
-  --help, -h          Show this message.
-
-Profiles live under <cwd>/.airglow/:
-  chrome-profile        regular (pnpm chrome)
-  chrome-profile-fresh  wiped each --fresh run`);
+  --profile <1-5>    Persistent profile ~/.airglow/.userdirs/dir<N>; port 9221+N. Run several at once.
+  --port <n>         CDP debug port (default 9222). Alias --cdp-port.
+  --color <name>     Tint the title bar: sage, orange, sky, lavender, rose (default sage).
+  --extension <dir>  Unpacked extension to load (default <sdk>/extension).
+  --user-data-dir=<dir>  Profile dir override (wins over --profile).
+  --fresh            Separate profile, wiped before launch.
+  --no-cdp           No CDP, extension not loaded. Use to sign in to Google.
+  --no-native-host   Don't register the native host (host shows disconnected).
+  --ask-email        Clear dev email so the email gate fires on next app open.
+  --no-passwords     Don't seed saved passwords from your default Chrome profile.
+  --help, -h         Show this message.`);
   process.exit(0);
 }
 const userDataDir = resolve(
   args.find(a => a.startsWith('--user-data-dir='))?.split('=')[1]
-    || (fresh ? FRESH_USER_DATA_DIR : DEFAULT_USER_DATA_DIR)
+    || (profileArg ? join(USERDIRS_ROOT, `dir${profileArg}`)
+        : fresh ? FRESH_USER_DATA_DIR : DEFAULT_USER_DATA_DIR)
 );
+// Theme extension dir is per-profile, so `--color` on one profile never bleeds
+// into another and concurrent launches can't race on a shared manifest.
+const THEME_DIR = join(userDataDir, 'dev-theme');
+
+if (profileArg) console.log(`Profile ${profileArg}: ${userDataDir} (CDP :${cdpPort})`);
 
 if (fresh) {
   console.log(`Wiping fresh profile: ${userDataDir}`);
@@ -221,11 +233,16 @@ if (!noPasswords) {
 }
 
 // Generate a tiny theme extension to color the dev-Chrome chrome (frame, toolbar,
-// tabs). Visually distinguishes the dev browser from your daily Chrome. Only
-// created if missing — edit .airglow/dev-theme/manifest.json to change colors.
+// tabs). Visually distinguishes the dev browser from your daily Chrome. Rewritten
+// every launch from --color (or sage by default) — no cache, so each launch's
+// color is explicit and the default profile stays sage.
 mkdirSync(THEME_DIR, { recursive: true });
 const themeManifestPath = join(THEME_DIR, 'manifest.json');
-if (!existsSync(themeManifestPath)) {
+// Chrome reuses "Cached Theme.pak" when the manifest version is unchanged, so
+// drop it to force a recompile when the color changed since last launch.
+rmSync(join(THEME_DIR, 'Cached Theme.pak'), { force: true });
+{
+  const t = THEMES[colorArg || DEFAULT_THEME];
   writeFileSync(themeManifestPath, JSON.stringify({
     manifest_version: 3,
     name: 'Airglow Dev',
@@ -233,20 +250,20 @@ if (!existsSync(themeManifestPath)) {
     theme: {
       colors: {
         // Only color the title bar + tab strip. Toolbar (URL row) stays Chrome default.
-        // Pale sage — subtle "this is the dev browser" tint without shouting.
-        frame:                [218, 232, 213],
-        tab_background_text:  [70,   90,  70],
-        tab_text:             [50,   70,  50],
+        frame:                t.frame,
+        tab_background_text:  t.text,
+        tab_text:             t.text,
         // Force the toolbar icons + separators to neutral gray so they don't
         // inherit the frame color and bleed into the URL row.
         toolbar_button_icon:  [95,  99, 104],
         // Keep the new-tab page neutral so it doesn't inherit the frame color.
         ntp_background:       [255, 255, 255],
-        ntp_text:             [50,   70,  50],
-        ntp_link:             [80,  120,  80],
+        ntp_text:             t.text,
+        ntp_link:             t.link,
       },
     },
   }, null, 2));
+  if (colorArg) console.log(`Toolbar theme: ${colorArg}`);
 }
 
 const chromeArgs = [

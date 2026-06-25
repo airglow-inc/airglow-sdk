@@ -3,7 +3,7 @@
 // page (entrypoints/planmock) renders the exact same components as the app.
 
 import { useState } from 'react';
-import { Check, ChevronDown, ChevronRight, ListChecks, Target } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, ListChecks } from 'lucide-react';
 
 export type PlanItem = { text: string; done: boolean };
 
@@ -26,7 +26,7 @@ export function PinnedTask({ title }: { title: string }) {
           className="inline-flex items-center justify-center w-[18px] h-[18px] rounded-full shrink-0"
           style={{ background: 'color-mix(in srgb, var(--sky) 18%, transparent)', color: 'var(--sky)' }}
         >
-          <Target size={12} />
+          <ListChecks size={12} />
         </span>
         <span className="shrink-0 font-bold tracking-wide" style={{ color: 'var(--sky)' }}>TASK</span>
         <span className="truncate font-medium text-[12.5px]" style={{ color: 'var(--fg-secondary)' }}>{title}</span>

@@ -1,6 +1,6 @@
 import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
-import { handleAirglowMessage, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
+import { handleAirglowMessage, openAppInDashboard, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
 import { APP_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, type AppManifest, type SourcedManifest } from '../lib/app-loader';
 import { buildSdkCode } from '../lib/airglow-sdk';
 import { runtimeConfig } from '../lib/runtime-config';
@@ -610,14 +610,29 @@ export default defineBackground(() => {
       // setups). `chatWindow: true` = the window whose sidepanel chat drives
       // this session (sidepanelWindowId, resolved by the daemon; falls back to
       // the last-focused window), and its active tab is `current` — the page
-      // the user is looking at. role "agent" = the agent's own debug window.
+      // the user is looking at. role "agent" = THIS session's own window (open
+      // and test here); "agent-other" = another agent session's window, or the
+      // shared anonymous window (read-only — not yours); "user" = the user's.
+      const reqSession: string | null = typeof msg.sessionId === 'string' ? msg.sessionId : null;
       Promise.all([
         chrome.tabs.query({}),
         typeof msg.sidepanelWindowId === 'number'
           ? Promise.resolve(msg.sidepanelWindowId)
           : chrome.windows.getLastFocused().then((w) => w?.id).catch(() => undefined),
         getDebugWindow(),
-      ]).then(([tabs, chatWindowId, debugWindowId]) => {
+        getAgentWindows(),
+      ]).then(([tabs, chatWindowId, debugWindowId, agentWins]) => {
+        // Every agent-owned window in this browser: per-session windows from
+        // storage + the shared anonymous window. The requesting session's own is
+        // `agent`; the rest are `agent-other`. (A session with no window yet, or
+        // an anonymous caller before its first open, has ownId null → nothing is
+        // tagged `agent` until it opens a tab.)
+        const ownId: number | null = reqSession
+          ? agentWins[reqSession]?.windowId ?? null
+          : (typeof debugWindowId === 'number' ? debugWindowId : null);
+        const allAgentIds = Object.values(agentWins).map((v) => v.windowId);
+        if (typeof debugWindowId === 'number') allAgentIds.push(debugWindowId);
+        const otherIds = allAgentIds.filter((id) => id !== ownId);
         const byWindow = new Map<number, { id?: number; title?: string; url?: string; current?: boolean }[]>();
         for (const t of tabs) {
           let list = byWindow.get(t.windowId);
@@ -629,91 +644,242 @@ export default defineBackground(() => {
             ...(t.active && t.windowId === chatWindowId ? { current: true } : {}),
           });
         }
-        const rank = (id: number) => (id === chatWindowId ? 0 : id === debugWindowId ? 1 : 2);
+        const isOwn = (id: number) => id === ownId;
+        const isOtherAgent = (id: number) => !isOwn(id) && otherIds.includes(id);
+        const role = (id: number) => (isOwn(id) ? 'agent' : isOtherAgent(id) ? 'agent-other' : 'user');
+        const rank = (id: number) => (id === chatWindowId ? 0 : isOwn(id) ? 1 : isOtherAgent(id) ? 2 : 3);
         // No windowId in the payload: no command takes one, and opaque ids
         // only invite the model to reason about them. role + chatWindow carry
         // all the semantics.
         const windows = [...byWindow.entries()]
           .sort(([a], [b]) => rank(a) - rank(b))
           .map(([windowId, windowTabs]) => ({
-            role: windowId === debugWindowId ? 'agent' : 'user',
+            role: role(windowId),
             ...(windowId === chatWindowId ? { chatWindow: true } : {}),
             tabs: windowTabs,
           }));
         sendToHost({ type: 'reply', reqId: msg.reqId, payload: { windows } });
       });
     } else if (msg.type === 'getHtml' && typeof msg.tabId === 'number') {
-      ensureAgentBanner(msg.tabId);
-      domGetHtml(msg.tabId, msg.selector, msg.frame).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
+      reply(msg, (async () => {
+        await timedStep('activate tab for html', () => activateIfOwn(msg.tabId, typeof msg.sessionId === 'string' ? msg.sessionId : null), 3000);
+        flashAgentBanner(msg.tabId);
+        return timedStep('read html', () => domGetHtml(msg.tabId, msg.selector, msg.frame), 9000,
+          `tab ${msg.tabId}'s page is unresponsive (likely CPU-pegged); recover with \`airglow browser close --tab ${msg.tabId}\` or \`nav\` — those run browser-side and work even when the page is wedged`);
+      })(), 9800);
     } else if (msg.type === 'eval' && typeof msg.tabId === 'number') {
-      ensureAgentBanner(msg.tabId);
-      domEval(msg.tabId, msg.code, msg.frame, msg.main, msg.app).then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }));
+      reply(msg, (async () => {
+        await timedStep('activate tab for eval', () => activateIfOwn(msg.tabId, typeof msg.sessionId === 'string' ? msg.sessionId : null), 3000);
+        flashAgentBanner(msg.tabId);
+        return timedStep('evaluate script', () => domEval(msg.tabId, msg.code, msg.frame, msg.main, msg.app), stepTimeout(msg.timeout),
+          `tab ${msg.tabId}'s page is unresponsive (likely CPU-pegged); recover with \`airglow browser close --tab ${msg.tabId}\` or \`nav\` — those run browser-side and work even when the page is wedged`);
+      })(), 14500);
     } else if (msg.type === 'newTab') {
-      reply(msg, openInDebugGroup(msg.url, msg.active !== false).then((r: any) => {
+      reply(msg, openAgentTab(msg.url, msg.active !== false, typeof msg.sessionId === 'string' ? msg.sessionId : null).then((r: any) => {
         if (typeof r?.id === 'number') paintBannerOnNextLoad(r.id);
         return r;
       }));
     } else if (msg.type === 'navigate' && typeof msg.tabId === 'number') {
-      paintBannerOnNextLoad(msg.tabId);
-      reply(msg, chrome.tabs.update(msg.tabId, { url: msg.url }).then((t) => ({ id: t?.id, url: msg.url })));
+      reply(msg, (async () => {
+        await timedStep('activate tab for navigation', () => activateIfOwn(msg.tabId, typeof msg.sessionId === 'string' ? msg.sessionId : null), 3000);
+        paintBannerOnNextLoad(msg.tabId);
+        const t = await timedStep('navigate tab', () => chrome.tabs.update(msg.tabId, { url: msg.url }), 9000);
+        return { id: t?.id, url: msg.url };
+      })(), 9800);
     } else if (msg.type === 'closeTab' && typeof msg.tabId === 'number') {
-      reply(msg, chrome.tabs.remove(msg.tabId).then(() => ({ closed: msg.tabId })));
+      reply(msg, timedStep('close tab', () => chrome.tabs.remove(msg.tabId).then(() => ({ closed: msg.tabId })), 9000), 9500);
     } else if (msg.type === 'capture' && typeof msg.tabId === 'number') {
-      ensureAgentBanner(msg.tabId);
-      reply(msg, captureTab(msg.tabId));
+      reply(msg, (async () => {
+        await timedStep('activate tab for screenshot', () => activateIfOwn(msg.tabId, typeof msg.sessionId === 'string' ? msg.sessionId : null), 3000);
+        flashAgentBanner(msg.tabId);
+        return timedStep('capture screenshot', () => captureTab(msg.tabId), stepTimeout(msg.timeout),
+          `tab ${msg.tabId}'s page is unresponsive (likely CPU-pegged); recover with \`airglow browser close --tab ${msg.tabId}\` or \`nav\` — those run browser-side and work even when the page is wedged`);
+      })(), 14500);
     }
   }
 
-  // Screenshot a tab as JPEG (quality 90 — much smaller than png). captureVisibleTab
-  // grabs the active tab of a window AND hangs if that window isn't focused, so we
-  // activate the tab and bring its window to the front first. (CDP can capture a
-  // background tab without stealing focus; this can't, without the debugger API.)
+  // Screenshot a tab as JPEG (quality 90 — much smaller than png). We use CDP's
+  // Page.captureScreenshot instead of chrome.tabs.captureVisibleTab: the latter
+  // only grabs the *focused* window's active tab (and hangs otherwise), forcing us
+  // to yank the agent's background window to the front on every shot. CDP captures
+  // a background tab in place — no focus steal. Cost: attaching the debugger shows
+  // Chrome's "Airglow started debugging this browser" infobar, but only on the
+  // agent's own background debug tabs, which the user isn't looking at.
   async function captureTab(tabId: number) {
-    const tab = await chrome.tabs.get(tabId);
+    const tab = await chrome.tabs.get(tabId).catch(() => null);
     if (!tab || tab.windowId == null) return { error: 'no such tab' };
-    if (!tab.active) await chrome.tabs.update(tabId, { active: true });
-    await chrome.windows.update(tab.windowId, { focused: true });
-    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 90 });
-    return { dataUrl };
+    try {
+      await ensureAttached(tabId);
+      const { data } = await cdpSend(tabId, 'Page.captureScreenshot', { format: 'jpeg', quality: 90 });
+      if (!data) return { error: 'capture returned no data' };
+      return { dataUrl: `data:image/jpeg;base64,${data}` };
+    } catch (e: any) {
+      return { error: String(e?.message || e) };
+    }
   }
 
-  // ───── Agent debug window ─────
-  // Tabs opened by `dom open` go into a dedicated, unfocused window so the agent's
-  // tabs stay out of the user's working set. We track the window by id (NOT a tab
-  // group): Chrome's saved-tab-groups feature relocates a group into the main
-  // window within ~1s of creation, which makes a separate group-window impossible.
-  // A plain window has no such behavior, so it persists. The id survives SW
-  // restarts via storage; a browser restart drops it and we make a new one.
-  const DEBUG_WINDOW_KEY = '__debug_window';
+  // ───── Agent windows ─────
+  // Tabs the agent opens go into a dedicated, unfocused window — one per agent
+  // session — so concurrent agents never share a window and fight over its single
+  // active-tab slot. Inside that window the tabs sit in a colored "Airglow" tab
+  // group, a visible marker that those tabs are agent-controlled.
+  //
+  // The session→window map lives HERE (chrome.storage), not in the daemon: window
+  // ids are per-browser and the daemon's memory is wiped on restart, which would
+  // orphan a session's window (its next tab would fork into a new window). The
+  // daemon just forwards `sessionId`; we own reuse, role-labeling, and own-tab
+  // activation. chrome.storage survives daemon AND service-worker restarts; only
+  // a browser restart invalidates the ids, which the validate-or-recreate handles.
+  // A caller with no session (anonymous: piped/headless, no AIRGLOW_SESSION, no
+  // TTY) shares one find-or-create window tracked under the legacy debug keys.
+  //
+  // CRITICAL: the group MUST be created with `createProperties.windowId` set to
+  // the agent window. Chrome's SavedTabGroups feature otherwise consolidates a
+  // group born in an unfocused window into the *active* (user's) window within
+  // ~1s, yanking the agent's tabs out of their window — pinning the group's home
+  // window at creation prevents that (verified).
+  const DEBUG_WINDOW_KEY = '__debug_window'; // anonymous (session-less) window
+  const DEBUG_GROUP_KEY = '__debug_group';
+  const AGENT_WINDOWS_KEY = '__agent_windows'; // { [sessionId]: { windowId, groupId } }
+
+  type AgentWin = { windowId: number; groupId: number };
+
+  async function getAgentWindows(): Promise<Record<string, AgentWin>> {
+    const r = await chrome.storage.local.get(AGENT_WINDOWS_KEY);
+    const m = r[AGENT_WINDOWS_KEY];
+    return m && typeof m === 'object' ? (m as Record<string, AgentWin>) : {};
+  }
+
+  async function setAgentWindow(sessionId: string, v: AgentWin): Promise<void> {
+    const m = await getAgentWindows();
+    m[sessionId] = v;
+    await chrome.storage.local.set({ [AGENT_WINDOWS_KEY]: m });
+  }
 
   async function getDebugWindow(): Promise<number | null> {
     const r = await chrome.storage.local.get(DEBUG_WINDOW_KEY);
     const id = r[DEBUG_WINDOW_KEY];
     if (typeof id !== 'number') return null;
     try { await chrome.windows.get(id); return id; }
-    catch { log(`debug-window: stored window ${id} gone`); return null; }
+    catch { log(`agent-window: stored window ${id} gone`); return null; }
   }
 
-  async function openInDebugGroup(url: string, active: boolean) {
-    const winId = await getDebugWindow();
-    if (winId != null) {
-      try {
-        const tab = await chrome.tabs.create({ windowId: winId, url, active });
-        log(`debug-window: added tab ${tab.id} to window ${winId}`);
-        return { id: tab.id, url: tab.url, windowId: winId };
-      } catch (e: any) { log(`debug-window: add failed (${e?.message}); new window`); }
+  // Put `tabId` into the agent group in `windowId`: reuse `groupId` if still
+  // valid, else create a fresh group PINNED to this window (see CRITICAL above)
+  // and style it. Returns the group id.
+  async function ensureAgentGroup(tabId: number, windowId: number, groupId: number | null): Promise<number> {
+    if (groupId != null && groupId >= 0) {
+      try { await chrome.tabs.group({ groupId, tabIds: [tabId] }); return groupId; }
+      catch { /* stale group (window recreated) → create a fresh one below */ }
     }
-    const win = await chrome.windows.create({ url, focused: false });
-    const tab = win?.tabs?.[0];
-    if (!win?.id || !tab?.id) return { error: 'failed to create debug window' };
-    await chrome.storage.local.set({ [DEBUG_WINDOW_KEY]: win.id });
-    log(`debug-window: new window ${win.id} tab ${tab.id}`);
-    return { id: tab.id, url: tab.url, windowId: win.id };
+    const gid = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
+    // 'grey' is the nearest Chrome tab-group color to black (no black in the enum).
+    try { await chrome.tabGroups.update(gid, { title: 'Airglow', color: 'grey' }); } catch {}
+    return gid;
+  }
+
+  // The window id the given session (or the anonymous caller) owns, or null.
+  async function ownWindowFor(sessionId: string | null): Promise<number | null> {
+    if (sessionId) return (await getAgentWindows())[sessionId]?.windowId ?? null;
+    return getDebugWindow();
+  }
+
+  // Open a tab in the caller's agent window. With a sessionId: reuse that
+  // session's stored window/group if still alive, else create a fresh window+group
+  // and persist it under the session. Anonymous (no sessionId): the single
+  // find-or-create window+group under the legacy debug keys.
+  async function openAgentTab(url: string, active: boolean, sessionId: string | null) {
+    let windowId: number | null = null;
+    let groupId: number | null = null;
+    if (sessionId) {
+      const cur = (await getAgentWindows())[sessionId];
+      if (cur) { windowId = cur.windowId; groupId = cur.groupId; }
+    } else {
+      const r = await chrome.storage.local.get([DEBUG_WINDOW_KEY, DEBUG_GROUP_KEY]);
+      windowId = typeof r[DEBUG_WINDOW_KEY] === 'number' ? r[DEBUG_WINDOW_KEY] : null;
+      groupId = typeof r[DEBUG_GROUP_KEY] === 'number' ? r[DEBUG_GROUP_KEY] : null;
+    }
+    // A dead window id (browser restarted, or user closed it) → fresh window+group.
+    if (windowId != null) {
+      try { await chrome.windows.get(windowId); }
+      catch { windowId = null; groupId = null; }
+    }
+    let tab: chrome.tabs.Tab | undefined;
+    if (windowId != null) {
+      tab = await chrome.tabs.create({ windowId, url, active });
+    } else {
+      const win = await chrome.windows.create({ url, focused: false });
+      windowId = win?.id ?? null;
+      tab = win?.tabs?.[0];
+      groupId = null; // fresh window → fresh group
+    }
+    if (windowId == null || !tab?.id) return { error: 'failed to create agent window' };
+    try {
+      groupId = await ensureAgentGroup(tab.id, windowId, groupId);
+    } catch (e: any) {
+      log(`agent-window: grouping failed (${e?.message})`);
+      groupId = -1;
+    }
+    if (sessionId) await setAgentWindow(sessionId, { windowId, groupId });
+    else await chrome.storage.local.set({ [DEBUG_WINDOW_KEY]: windowId, [DEBUG_GROUP_KEY]: groupId });
+    log(`agent-window: tab ${tab.id} in window ${windowId} group ${groupId} (session ${sessionId ?? 'anon'})`);
+    return { id: tab.id, url: tab.url, windowId, groupId };
+  }
+
+  // Make the agent's OWN tab the active one in its window before acting on it: a
+  // non-active tab is timer-throttled and may be discarded (unloaded), so
+  // eval/html/shot would hit a dead page. Only the session's own window is
+  // touched — reads on a user/other-agent tab never steal their active tab. We
+  // set `active`, never `focused`, so the window is not brought to the front.
+  async function activateIfOwn(tabId: number, sessionId: string | null): Promise<void> {
+    const ownWin = await ownWindowFor(sessionId);
+    if (ownWin == null) return;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (tab.windowId === ownWin && !tab.active) {
+        await chrome.tabs.update(tabId, { active: true });
+      }
+    } catch {}
+  }
+
+  function withTimeout<T>(label: string, p: Promise<T>, timeoutMs: number, hint?: string): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${timeoutMs}ms${hint ? ` — ${hint}` : ''}`)),
+        timeoutMs,
+      );
+      p.then((value) => {
+        clearTimeout(timer);
+        resolve(value);
+      }, (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+    });
+  }
+
+  function timedStep<T>(label: string, fn: () => Promise<T>, timeoutMs: number, hint?: string): Promise<T> {
+    return withTimeout(label, Promise.resolve().then(fn), timeoutMs, hint);
+  }
+
+  // Inner timeout for renderer-bound ops (eval / screenshot). Defaults to 8s —
+  // long enough for a healthy page, short enough that a wedged tab surfaces
+  // fast — and an agent may raise it up to the 14s hard ceiling via --timeout.
+  // The 14.5s outer reply + 15s daemon backstops already cover that ceiling.
+  function stepTimeout(v: unknown): number {
+    return Math.min(14000, Math.max(1000, Number(v) || 8000));
+  }
+
+  function flashAgentBanner(tabId: number) {
+    void withTimeout('agent banner injection', ensureAgentBanner(tabId), 1500).catch((e) => {
+      logger.warn('airglow', `agent banner skipped: ${e instanceof Error ? e.message : String(e)}`);
+    });
   }
 
   // Resolve a tab-control promise into a native-host reply, normalizing errors.
-  function reply(msg: any, p: Promise<any>) {
-    p.then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }))
+  function reply(msg: any, p: Promise<any>, timeoutMs = 14500) {
+    withTimeout(`browser ${msg?.type ?? 'command'}`, p, timeoutMs)
+      .then((payload) => sendToHost({ type: 'reply', reqId: msg.reqId, payload }))
       .catch((e) => sendToHost({ type: 'reply', reqId: msg.reqId, payload: { error: String(e?.message || e) } }));
   }
 
@@ -1221,10 +1387,11 @@ export default defineBackground(() => {
     } catch (e: any) { return { error: String(e?.message || e) }; }
   }
 
-  // eval runs in a dedicated USER_SCRIPT world. User scripts are exempt from the
-  // page's CSP (same mechanism that runs app userscripts on strict-CSP sites), so
-  // arbitrary expressions work everywhere — unlike MAIN-world eval, which the page
-  // CSP can block. The world's own CSP is set to permit eval; the page's is untouched.
+  // eval first runs in a dedicated USER_SCRIPT world. Most pages allow that
+  // wrapper, but some strict-CSP pages still block the Function constructor used
+  // to turn a CLI string into executable code. For normal eval we fall back to
+  // CDP Runtime.evaluate, which evaluates the expression directly and is not
+  // subject to the page's script-src unsafe-eval rule.
   const EVAL_WORLD_ID = 'airglow-eval';
   let evalWorldReady = false;
   async function ensureEvalWorld() {
@@ -1249,6 +1416,13 @@ export default defineBackground(() => {
         try { return { value: JSON.parse(JSON.stringify(__v ?? null)) }; } catch { return { value: String(__v) }; }
       } catch (e) { return { error: String((e && e.message) || e) }; }
     })()`;
+  }
+
+  function isCspEvalBlocked(payload: unknown): boolean {
+    const error = payload && typeof payload === 'object' && 'error' in payload
+      ? String((payload as { error?: unknown }).error ?? '')
+      : '';
+    return /Content Security Policy|unsafe-eval|violates.*script-src/i.test(error);
   }
 
   // `eval --app ID`: run `code` in app ID's own userscript world (worldId
@@ -1302,8 +1476,9 @@ export default defineBackground(() => {
           js: [{ code: body }],
         } as any);
         const r = (results as any)?.[0];
-        if (r?.error) return { error: String(r.error?.message || r.error) };
-        return r?.result ?? { error: 'no result' };
+        const payload = r?.error ? { error: String(r.error?.message || r.error) } : r?.result ?? { error: 'no result' };
+        if (isCspEvalBlocked(payload)) return cdpEval(tabId, code, frame);
+        return payload;
       }
       // MAIN world (explicit --main, or fallback when userScripts.execute is
       // unavailable): sees page globals; the page CSP can block eval/Function.
@@ -1319,8 +1494,14 @@ export default defineBackground(() => {
         },
         args: [code],
       });
-      return res?.result ?? { error: 'no result' };
-    } catch (e: any) { return { error: String(e?.message || e) }; }
+      const payload = res?.result ?? { error: 'no result' };
+      if (isCspEvalBlocked(payload)) return cdpEval(tabId, code, frame);
+      return payload;
+    } catch (e: any) {
+      const payload = { error: String(e?.message || e) };
+      if (!app && isCspEvalBlocked(payload)) return cdpEval(tabId, code, frame);
+      return payload;
+    }
   }
 
   // ───── Driving our own chrome-extension:// pages via chrome.debugger (CDP) ─────
@@ -1392,8 +1573,38 @@ export default defineBackground(() => {
     } catch (e: any) { return { error: String(e?.message || e) }; }
   }
 
-  function cdpEval(tabId: number, code: string, frame?: string | null) {
-    return cdpEvaluate(tabId, code, frame);
+  function cdpEvalExpression(code: string): string {
+    return `(async () => {
+      try {
+        const __v = await (${code}
+);
+        try { return { value: JSON.parse(JSON.stringify(__v ?? null)) }; } catch { return { value: String(__v) }; }
+      } catch (e) { return { error: String((e && e.message) || e) }; }
+    })()`;
+  }
+
+  function cdpEvalStatements(code: string): string {
+    return `(async () => {
+      try {
+${code}
+        return { value: null };
+      } catch (e) { return { error: String((e && e.message) || e) }; }
+    })()`;
+  }
+
+  function normalizeEvalPayload(result: { value: any } | { error: string }) {
+    if ('error' in result) return result;
+    const value = result.value;
+    if (value && typeof value === 'object' && ('value' in value || 'error' in value)) return value;
+    return { value: value ?? null };
+  }
+
+  async function cdpEval(tabId: number, code: string, frame?: string | null) {
+    const expressionResult = await cdpEvaluate(tabId, cdpEvalExpression(code), frame);
+    if ('error' in expressionResult && /SyntaxError|Unexpected token|Unexpected identifier/i.test(expressionResult.error)) {
+      return normalizeEvalPayload(await cdpEvaluate(tabId, cdpEvalStatements(code), frame));
+    }
+    return normalizeEvalPayload(expressionResult);
   }
 
   async function cdpGetHtml(tabId: number, selector?: string | null, frame?: string | null) {
@@ -1528,7 +1739,7 @@ export default defineBackground(() => {
 
   // ───── Agent chat relay (sidepanel ⇄ daemon) ─────
   // The sidepanel connects a Port named 'airglow-agent'; its messages
-  // (agent:start / agent:approval / agent:sessions) go to the daemon over
+  // (agent:start / agent:followup / agent:sessions) go to the daemon over
   // native messaging, and daemon agent:* messages fan out to all chat ports.
   const agentPorts = new Set<chrome.runtime.Port>();
   chrome.runtime.onConnect.addListener((port) => {
@@ -1537,8 +1748,9 @@ export default defineBackground(() => {
     port.onDisconnect.addListener(() => agentPorts.delete(port));
     port.onMessage.addListener((msg: any) => {
       if (typeof msg?.type === 'string' && msg.type.startsWith('agent:')) {
-        // agent:start is a user-initiated turn → count it as a sent message.
-        if (msg.type === 'agent:start') {
+        // agent:start / agent:followup are user-initiated turns → count as a
+        // sent message.
+        if (msg.type === 'agent:start' || msg.type === 'agent:followup') {
           setAgentTurnActive(true);
           trackAgentMessageSent().catch((e) =>
             logger.warn('airglow', `trackAgentMessageSent failed: ${e instanceof Error ? e.message : String(e)}`),
@@ -1788,9 +2000,12 @@ export default defineBackground(() => {
       return true;
     }
 
-    // airglow:open-app is handled in handleAirglowMessage (airglow-message-handler.ts)
-    // — the single listener both the userscript and app_ui paths reach. See there
-    // for the page/popup-window/tab-reuse logic.
+    // SDK-bridge `airglow:open-app` (userscript/app_ui paths, `_airglow`-flagged)
+    // is served by handleAirglowMessage above. The edge-button popup sends a
+    // plain `airglow:open-app` (no `_airglow` flag), so it falls through to here.
+    if (msg?.type === 'airglow:open-app') {
+      return openAppInDashboard(msg, sendResponse);
+    }
 
     // ── Dashboard actions ──
     if (msg?.type === 'airglow:reload-apps') {

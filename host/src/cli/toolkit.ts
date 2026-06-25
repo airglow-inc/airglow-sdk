@@ -3,7 +3,7 @@
 // live under the pseudo-app "agent") and by app developers (--app <id> acts in
 // that app's connection scope).
 
-import { probeDaemon } from '../daemon/index';
+import { requireDaemon } from './daemon';
 
 const HELP = `airglow toolkit — discover and call third-party tools (Gmail, Notion, Sheets, …)
 
@@ -45,11 +45,7 @@ export async function runToolkitCli(argv: string[]): Promise<void> {
     process.exit(cmd ? 0 : 1);
   }
 
-  const daemon = await probeDaemon();
-  if (!daemon) {
-    console.error('airglow daemon is not running. It starts automatically when Chrome (with the Airglow extension) is open.');
-    process.exit(1);
-  }
+  const daemon = await requireDaemon();
   const base = `http://127.0.0.1:${daemon.port}/api/connectors`;
   const appId = typeof flags.app === 'string' && flags.app ? flags.app : 'agent';
   const account = typeof flags.account === 'string' && flags.account ? flags.account : undefined;

@@ -89,6 +89,62 @@ export function ensureAirglowOnPath(): string {
   return binDir;
 }
 
+// Put the bin dir on the user's *interactive* PATH so coding agents they run
+// in the workspace (Claude Code, Codex — terminal or desktop app) inherit it
+// and never need a per-command `export PATH`. This is distinct from the
+// daemon's own agent, which injects the bin dir into its bash PATH directly
+// (daemon/index.ts → tools.ts); external agents only get whatever their
+// launching shell exported.
+//
+// Marker-guarded and idempotent: the block is rewritten in place on reinstall,
+// never duplicated, and a runtime `case` guard keeps PATH from growing even
+// when several rc files (e.g. .zshrc + .zprofile) each source it. No sudo —
+// everything written is under $HOME. Append-only: never touches the user's
+// existing lines.
+export function ensureBinOnShellPath(binDir: string, home: string = homedir()): void {
+  const dir = binDir.startsWith(home + '/') ? `$HOME${binDir.slice(home.length)}` : binDir;
+  const BEGIN = '# >>> airglow PATH >>>';
+  const END = '# <<< airglow PATH <<<';
+  const block =
+    `${BEGIN}\n` +
+    '# Added by `airglow install` — puts the airglow CLI on PATH for coding agents.\n' +
+    `case ":$PATH:" in *":${dir}:"*) ;; *) export PATH="${dir}:$PATH" ;; esac\n` +
+    `${END}\n`;
+
+  // Cover both the login file (GUI-launched agents spawn login shells) and the
+  // interactive file (terminal agents inherit an interactive shell's env).
+  const shell = basename(process.env.SHELL || '');
+  const f = (name: string) => join(home, name);
+  const files =
+    shell === 'zsh' ? [f('.zshrc'), f('.zprofile')]
+    : shell === 'bash' ? [f('.bashrc'), existsSync(f('.bash_profile')) ? f('.bash_profile') : f('.profile')]
+    : [f('.profile')];
+
+  for (const file of files) {
+    try {
+      let current = '';
+      try { current = readFileSync(file, 'utf8'); } catch {}
+      const b = current.indexOf(BEGIN);
+      let next: string;
+      if (b !== -1) {
+        const e = current.indexOf(END, b);
+        if (e === -1) continue; // malformed block — leave the file untouched
+        next = current.slice(0, b) + block.trimEnd() + current.slice(e + END.length);
+      } else if (current === '') {
+        next = block;
+      } else {
+        next = current + (current.endsWith('\n') ? '' : '\n') + '\n' + block;
+      }
+      if (next !== current) {
+        writeFileSync(file, next);
+        console.log(`PATH: updated ${file}`);
+      }
+    } catch (e: any) {
+      console.error(`could not update ${file} for PATH: ${e?.message ?? e}`);
+    }
+  }
+}
+
 // The executable Chrome should spawn.
 function hostExecutablePath(): string {
   const isCompiled = Bun.main.includes('$bunfs');
@@ -111,7 +167,8 @@ export async function runInstall(argv: string[]): Promise<void> {
     process.exit(1);
   }
   ensureStateDirs();
-  ensureAirglowOnPath(); // also writes the `bun` shim agents rely on
+  const binDir = ensureAirglowOnPath(); // also writes the `bun` shim agents rely on
+  ensureBinOnShellPath(binDir); // make the CLI discoverable to agents the user runs here
   await seedWorkspace();
 
   const extraDirs = argv.filter((a) => !a.startsWith('-'));

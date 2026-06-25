@@ -11,8 +11,8 @@
 import { type ComponentType, type ReactNode, useEffect, useRef, useState } from 'react';
 import {
   ArrowUp, Bot, Camera, ChevronDown, ChevronRight, CircleAlert, ExternalLink, FileText,
-  FilePen, FilePlus2, Globe, HelpCircle, History, Image as ImageIcon, KeyRound, LayoutGrid,
-  MessageSquare, Plus, ScrollText, Search, Square, SquareTerminal, Wand2, Workflow, X,
+  FilePen, FilePlus2, Globe, HelpCircle, History, Hourglass, Image as ImageIcon, KeyRound,
+  LayoutGrid, MessageSquare, Plus, ScrollText, Search, Square, SquareTerminal, Wand2, Workflow, X,
 } from 'lucide-react';
 import { Markdown } from './markdown';
 import { AppContextLine, PinnedPlan, PinnedTask, type PlanItem } from './strips';
@@ -38,9 +38,13 @@ type AgentEvent =
   | { type: 'plan'; items: PlanItem[] }
   | { type: 'task'; title: string }
   | { type: 'app_context'; appId: string; name: string }
-  | { type: 'approval_request'; approvalId: string; action: string; detail: string }
-  | { type: 'approval_resolved'; approvalId: string; approved: boolean }
-  | { type: 'turn_done'; stopReason: string }
+  | { type: 'turn_done'; stopReason: string; startedAt?: number | null }
+  | { type: 'user_message'; text: string; imageCount?: number; clientId?: string }
+  | { type: 'followup_injected'; clientIds: string[] }
+  // A transient connection drop is being retried (network, upstream 5xx, or a
+  // stalled stream). Drives the "Reconnecting…" status until the stream resumes;
+  // a retry that ultimately fails arrives as a normal `error` + turn_done.
+  | { type: 'reconnecting'; attempt: number }
   | { type: 'error'; message: string; code?: string; resetHours?: number };
 
 interface SessionMeta {
@@ -56,15 +60,17 @@ type ToolItem = { kind: 'tool'; toolId: string; name: string; input: Record<stri
 // User images are data URLs; null = stripped in transport (history reload),
 // rendered as a placeholder chip.
 type ChatItem =
-  | { kind: 'user'; text: string; images?: (string | null)[] }
+  // `queued` (with the optimistic-send `clientId`) marks a follow-up that's been
+  // sent but not yet folded into the running turn — renders an "in queue" pill
+  // until a followup_injected event for that clientId arrives.
+  | { kind: 'user'; text: string; images?: (string | null)[]; clientId?: string; queued?: boolean }
   | { kind: 'text'; text: string }
   | ToolItem
   | { kind: 'work'; seconds: number; children: ChatItem[] }
   | { kind: 'appcard'; appId: string; name: string }
-  | { kind: 'approval'; approvalId: string; detail: string; resolved: boolean | null }
   | { kind: 'error'; text: string; code?: string; resetHours?: number };
 
-type PendingImage = { mediaType: string; dataUrl: string };
+type PendingImage = { mediaType: string; dataUrl: string; thumb: string };
 
 // An app whose userscript matches the active tab's page. `enabled` = its
 // userscripts are registered with Chrome, i.e. actually injected. `visible` =
@@ -98,6 +104,73 @@ function fmtDuration(seconds: number): string {
   const mins = Math.floor(seconds / 60);
   const secs = Math.max(0, Math.round(seconds % 60));
   return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+}
+
+// ── Attached-image thumbnails ───────────────────────────────────────────────
+// Native messaging caps daemon→panel messages at 1MB, so the daemon strips
+// base64 image bytes from the transcript it sends back (session.ts
+// stripImagesForTransport). Without help, a reopened panel or a mid-turn resync
+// would replace the user's attachment with a placeholder chip. We keep a small
+// downscaled thumbnail of each attached image, keyed by its position in the
+// session's image stream, and re-attach it when rebuilding from history. The
+// store is capped per session; over budget, the oldest thumbnails drop to a chip.
+const THUMB_KEY = (sid: string) => `__airglow_thumbs_${sid}`;
+const THUMB_BUDGET = 5_000_000; // ~5MB of thumbnail data per session
+
+// Downscale a data URL to a small JPEG preview (max edge `max`px). Falls back to
+// the original on any canvas/decoding error.
+function makeThumb(dataUrl: string, max = 256): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const w = Math.max(1, Math.round(img.width * scale));
+      const h = Math.max(1, Math.round(img.height * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) { resolve(dataUrl); return; }
+      ctx.drawImage(img, 0, 0, w, h);
+      try { resolve(canvas.toDataURL('image/jpeg', 0.7)); }
+      catch { resolve(dataUrl); }
+    };
+    img.onerror = () => resolve(dataUrl);
+    img.src = dataUrl;
+  });
+}
+
+function loadThumbs(sid: string | null): Record<number, string> {
+  if (!sid) return {};
+  try { return JSON.parse(localStorage.getItem(THUMB_KEY(sid)) || '{}'); }
+  catch { return {}; }
+}
+
+function saveThumbs(sid: string | null, map: Record<number, string>): void {
+  if (!sid) return;
+  // Enforce the per-session budget: evict the lowest indices first. A miss on
+  // reload simply renders that image as a chip again.
+  let total = 0;
+  for (const k of Object.keys(map)) total += map[+k]?.length ?? 0;
+  if (total > THUMB_BUDGET) {
+    for (const id of Object.keys(map).map(Number).sort((a, b) => a - b)) {
+      if (total <= THUMB_BUDGET) break;
+      total -= map[id]?.length ?? 0;
+      delete map[id];
+    }
+  }
+  try { localStorage.setItem(THUMB_KEY(sid), JSON.stringify(map)); } catch {}
+}
+
+// Count top-level user image blocks (attachments) across messages — used to
+// keep the running thumbnail index aligned with the persisted transcript.
+function countAttachedImages(messages: any[]): number {
+  let n = 0;
+  for (const msg of messages ?? []) {
+    if (msg?.role !== 'user' || !Array.isArray(msg.content)) continue;
+    for (const b of msg.content) if (b?.type === 'image') n++;
+  }
+  return n;
 }
 
 // Cap displayed tool output, noting how much was cut. Mirrors the daemon's
@@ -330,36 +403,6 @@ function AppCard({ appId, name }: { appId: string; name: string }) {
   );
 }
 
-function ApprovalCard({ item, onResolve }: { item: Extract<ChatItem, { kind: 'approval' }>; onResolve: (ok: boolean) => void }) {
-  return (
-    <div className="my-2 p-3 rounded-xl border" style={{ background: 'color-mix(in srgb, var(--clay) 7%, var(--bg-white))', borderColor: 'color-mix(in srgb, var(--clay) 35%, var(--border-tertiary))' }}>
-      <div className="text-[13px] font-medium" style={{ color: 'var(--fg-primary)' }}>{item.detail}</div>
-      {item.resolved === null ? (
-        <div className="flex gap-2 mt-2.5">
-          <button
-            onClick={() => onResolve(true)}
-            className="h-8 px-3.5 rounded-full text-[13px] font-medium cursor-pointer border"
-            style={{ background: 'var(--clay)', borderColor: 'var(--clay)', color: 'var(--bg-white)' }}
-          >
-            Allow
-          </button>
-          <button
-            onClick={() => onResolve(false)}
-            className="h-8 px-3.5 rounded-full text-[13px] font-medium cursor-pointer border"
-            style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-secondary)', color: 'var(--fg-secondary)' }}
-          >
-            Deny
-          </button>
-        </div>
-      ) : (
-        <div className="mt-1.5 text-[12px]" style={{ color: 'var(--fg-tertiary)' }}>
-          {item.resolved ? 'Allowed' : 'Denied'}
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ── Main app ──
 
 // Env keys declared by installed apps (manifest.server_env) that nothing
@@ -520,6 +563,11 @@ export default function App() {
   const [sessionId, setSessionId] = useState<string | null>(() => localStorage.getItem(CURRENT_SESSION_KEY));
   const [running, setRunning] = useState(false);
   const [thinking, setThinking] = useState(false);
+  // The model connection dropped and is being retried. Shows a "Reconnecting…"
+  // status (distinct from "Thinking") so a stalled turn reads as a problem being
+  // worked on, not silent progress. Cleared the moment the stream resumes (next
+  // text/tool/thinking event) or the turn ends.
+  const [reconnecting, setReconnecting] = useState(false);
   const [plan, setPlan] = useState<PlanItem[] | null>(null);
   const [task, setTask] = useState<string | null>(null);
   const [input, setInput] = useState('');
@@ -570,6 +618,10 @@ export default function App() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const pendingReplies = useRef(new Map<string, (msg: any) => void>());
   const nextReqId = useRef(1);
+  // clientIds of follow-ups this panel already rendered optimistically. The
+  // daemon echoes each follow-up back as a user_message event (so other panels
+  // and a resync see it); the originating panel skips its own to avoid a dup.
+  const echoedFollowupIds = useRef(new Set<string>());
   // Where the current turn's items start, and when the turn began — used to
   // collapse the turn's activity into a WorkGroup on turn_done.
   const turnStartRef = useRef<{ index: number; startedAt: number } | null>(null);
@@ -582,6 +634,12 @@ export default function App() {
   // Did the current turn write/edit app files? Gates the entrypoint highlight
   // so pure Q&A turns don't re-flash the page.
   const turnDidWriteRef = useRef(false);
+  // Downscaled previews of the user's attached images, keyed by their running
+  // index in this session's image stream, plus the next index to assign. Lets a
+  // history rebuild (the daemon strips image bytes) re-attach a thumbnail
+  // instead of a placeholder chip. See the thumbnail helpers above.
+  const thumbsRef = useRef<Record<number, string>>({});
+  const imageCountRef = useRef(0);
   // The last turn we submitted (text + images), and — when it failed with
   // AUTH_SESSION_INVALID — the turn to auto-resend once the user re-signs-in.
   const lastTurnRef = useRef<{ text: string; images: PendingImage[] } | null>(null);
@@ -656,8 +714,8 @@ export default function App() {
 
   // Collapse the finished turn: everything between turn start and the last
   // text item becomes a WorkGroup; the last text item stays visible as the
-  // final answer. Plan and approval items stay visible too.
-  function collapseTurn(prev: ChatItem[]): ChatItem[] {
+  // final answer. Plan items stay visible too.
+  function collapseTurn(prev: ChatItem[], startedAtOverride?: number | null): ChatItem[] {
     // Turn start is normally tracked in turnStartRef, but a SW recycle or a
     // resumed turn can lose it — fall back to the last user message so the
     // turn still collapses instead of rendering fully expanded.
@@ -668,7 +726,12 @@ export default function App() {
         if (prev[i].kind === 'user') { startIndex = i + 1; break; }
       }
     }
-    const startedAt = turnStartRef.current?.startedAt ?? 0;
+    // Prefer the daemon's authoritative turn start (from turn_done) — it
+    // survives a panel that lost its own ref mid-turn (reopen/resync); the
+    // local ref is the fallback for an older daemon that omits it.
+    const startedAt = (typeof startedAtOverride === 'number' && startedAtOverride > 0)
+      ? startedAtOverride
+      : (turnStartRef.current?.startedAt ?? 0);
     const turn = { index: startIndex, startedAt };
     const slice = prev.slice(turn.index);
     let lastTextIdx = -1;
@@ -679,7 +742,7 @@ export default function App() {
     const keep: ChatItem[] = [];
     slice.forEach((it, i) => {
       const isFinalText = i === lastTextIdx;
-      // Errors stay visible (like plan/approval/appcard) — never hidden inside
+      // Errors stay visible (like plan/appcard) — never hidden inside
       // the steps group, so a failed turn surfaces its reason.
       if (!isFinalText && (it.kind === 'tool' || it.kind === 'text')) collapsible.push(it);
       else keep.push(it);
@@ -690,7 +753,7 @@ export default function App() {
       const seconds = turn.startedAt ? (Date.now() - turn.startedAt) / 1000 : 0;
       result.push({ kind: 'work', seconds, children: collapsible });
     }
-    // Final answer (and plan/approvals) go after the work group.
+    // Final answer (and plan) goes after the work group.
     result.push(...keep);
     const app = turnAppRef.current;
     if (app) result.push({ kind: 'appcard', appId: app.id, name: app.name });
@@ -729,6 +792,7 @@ export default function App() {
       setItems((prev) => collapseTurn(prev));
       setRunning(false);
       setThinking(false);
+      setReconnecting(false);
       turnStartRef.current = null;
       turnAppRef.current = null;
     }
@@ -739,12 +803,22 @@ export default function App() {
       case 'session_started':
         setSessionId(ev.sessionId);
         localStorage.setItem(CURRENT_SESSION_KEY, ev.sessionId);
+        // The first turn recorded its thumbnails before the id existed — persist
+        // them now under the assigned session id.
+        saveThumbs(ev.sessionId, thumbsRef.current);
         setRunning(true);
         break;
       case 'thinking':
+        // The stream resumed — a new model step opened a thinking block.
+        setReconnecting(false);
         setThinking(true);
         break;
+      case 'reconnecting':
+        // A transient drop is being retried; keep the spinner but relabel it.
+        setReconnecting(true);
+        break;
       case 'text_delta':
+        setReconnecting(false);
         setThinking(false);
         setItems((prev) => {
           const last = prev[prev.length - 1];
@@ -755,6 +829,7 @@ export default function App() {
         });
         break;
       case 'tool_start':
+        setReconnecting(false);
         setThinking(false);
         // Note app-file writes this turn → gate the entrypoint highlight on
         // turn_done (don't re-flash the page for pure Q&A turns).
@@ -779,16 +854,11 @@ export default function App() {
         setAppChip({ id: ev.appId, name: ev.name });
         turnAppRef.current = { id: ev.appId, name: ev.name };
         break;
-      case 'approval_request':
-        setItems((prev) => [...prev, { kind: 'approval', approvalId: ev.approvalId, detail: ev.detail, resolved: null }]);
-        break;
-      case 'approval_resolved':
-        setItems((prev) => prev.map((it) =>
-          it.kind === 'approval' && it.approvalId === ev.approvalId ? { ...it, resolved: ev.approved } : it,
-        ));
-        break;
       case 'turn_done': {
-        setItems((prev) => collapseTurn(prev));
+        // Clear any lingering "in queue" pill: a turn only ends once its queue
+        // is drained, and a stopped/aborted turn won't inject what's left.
+        setItems((prev) => collapseTurn(prev, ev.startedAt).map((it) =>
+          it.kind === 'user' && it.queued ? { ...it, queued: false } : it));
         // If this turn built/edited an app, ask the background to highlight its
         // entrypoint on a matching tab (or hint the user if none is open). Use
         // the turn's app, else the session's app (edits to an existing app emit
@@ -805,11 +875,39 @@ export default function App() {
         turnAppRef.current = null;
         setRunning(false);
         setThinking(false);
+        setReconnecting(false);
         setLiveOpen(false);
         break;
       }
+      case 'user_message':
+        // Our own follow-up coming back — already shown optimistically; skip.
+        if (ev.clientId && echoedFollowupIds.current.has(ev.clientId)) {
+          echoedFollowupIds.current.delete(ev.clientId);
+          break;
+        }
+        setThinking(false);
+        setItems((prev) => [...prev, {
+          kind: 'user',
+          text: ev.text,
+          // No bytes in transport — render attachments as placeholder chips.
+          images: ev.imageCount ? Array(ev.imageCount).fill(null) : undefined,
+          // A user_message is always a follow-up still waiting in the queue at
+          // emit time (other panels / resync replay) — show the pill until the
+          // matching followup_injected lands.
+          clientId: ev.clientId,
+          queued: true,
+        }]);
+        break;
+      case 'followup_injected':
+        setItems((prev) => prev.map((it) =>
+          it.kind === 'user' && it.queued && it.clientId && ev.clientIds.includes(it.clientId)
+            ? { ...it, queued: false }
+            : it,
+        ));
+        break;
       case 'error':
         setThinking(false);
+        setReconnecting(false);
         // A rejected session token: the background drops it → SignInOverlay
         // appears. Stash this turn and skip the error bubble — it auto-resends
         // once the user signs back in (see the AUTH_SESSION_KEY listener), so
@@ -832,14 +930,23 @@ export default function App() {
   function applyHistory(res: any): void {
     if (!res || !Array.isArray(res.messages)) return;
     if (typeof res.lastSeq === 'number') lastSeqRef.current = res.lastSeq;
+    // Restore the session's thumbnail store and re-sync the running image index
+    // with the transcript, so reconstruct re-attaches previews and the next send
+    // assigns the right index. (The daemon strips image bytes from transport.)
+    const thumbs = loadThumbs(sessionIdRef.current);
+    thumbsRef.current = thumbs;
     if (res.running) {
-      const base = reconstructItems(res.messages, null, res.times);
-      const turnUser = res.turnUserMessage ? reconstructItems([res.turnUserMessage], null).items : [];
+      const completedImgs = countAttachedImages(res.messages);
+      const base = reconstructItems(res.messages, null, res.times, thumbs, 0);
+      const turnUserMsgs = res.turnUserMessage ? [res.turnUserMessage] : [];
+      const turnUser = turnUserMsgs.length ? reconstructItems(turnUserMsgs, null, undefined, thumbs, completedImgs).items : [];
       const baseItems = [...base.items, ...turnUser];
+      imageCountRef.current = completedImgs + countAttachedImages(turnUserMsgs);
       setItems(baseItems);
       setPlan(base.plan);
       setTask(base.task);
       setThinking(false);
+      setReconnecting(false);
       setRunning(true);
       turnStartRef.current = {
         index: baseItems.length,
@@ -855,12 +962,14 @@ export default function App() {
         applyEvent(e.event as AgentEvent);
       }
     } else {
-      const rec = reconstructItems(res.messages, res.meta, res.times);
+      imageCountRef.current = countAttachedImages(res.messages);
+      const rec = reconstructItems(res.messages, res.meta, res.times, thumbs, 0);
       setItems(rec.items);
       setPlan(rec.plan);
       setTask(rec.task);
       setRunning(false);
       setThinking(false);
+      setReconnecting(false);
       turnStartRef.current = null;
       turnAppRef.current = null;
       setAppChip(res.meta?.appId ? { id: res.meta.appId, name: res.meta.appName || res.meta.appId } : null);
@@ -1115,8 +1224,21 @@ export default function App() {
   // screen, so it re-runs without duplicating it.
   function submitTurn(text: string, images: PendingImage[], opts?: { echo?: boolean }): void {
     if (hostConnected === false) return; // host required to run anything
-    if ((!text && images.length === 0) || running) return;
+    // runningRef (not the `running` state) so a send() that just reconciled a
+    // stale-running turn to idle can start fresh without waiting for the re-render.
+    if ((!text && images.length === 0) || runningRef.current) return;
     lastTurnRef.current = { text, images };
+    // Record this send's thumbnails by running image index so a history rebuild
+    // can re-attach them. Skip the auth-retry re-send (echo:false) — its images
+    // were already recorded on the first attempt; re-recording would misalign
+    // the index against the transcript.
+    if (opts?.echo !== false) {
+      for (const im of images) {
+        if (im.thumb) thumbsRef.current[imageCountRef.current] = im.thumb;
+        imageCountRef.current++;
+      }
+      saveThumbs(sessionIdRef.current, thumbsRef.current);
+    }
     if (opts?.echo === false) {
       setItems((prev) => { turnStartRef.current = { index: prev.length, startedAt: Date.now() }; return prev; });
     } else {
@@ -1142,13 +1264,61 @@ export default function App() {
     });
   }
 
-  function send(): void {
+  // Send a follow-up into the turn that's already running. The daemon weaves it
+  // into the live conversation (the agent picks it up at its next step) and
+  // echoes it back as a user_message event; we render it optimistically now and
+  // dedupe that echo by clientId.
+  function submitFollowup(text: string, images: PendingImage[]): void {
+    const sid = sessionIdRef.current;
+    if (!sid) return;
+    const clientId = `f${nextReqId.current++}`;
+    echoedFollowupIds.current.add(clientId);
+    // Optimistic bubble starts "in queue" — cleared when the daemon reports the
+    // message was folded into the turn (followup_injected) or the turn ends.
+    setItems((prev) => [...prev, { kind: 'user', text, images: images.length ? images.map((im) => im.dataUrl) : undefined, clientId, queued: true }]);
+    // Record thumbnails by running image index so a finished-session reload
+    // re-attaches them (history strips image bytes), same as submitTurn.
+    for (const im of images) {
+      if (im.thumb) thumbsRef.current[imageCountRef.current] = im.thumb;
+      imageCountRef.current++;
+    }
+    saveThumbs(sid, thumbsRef.current);
+    post({
+      type: 'agent:followup',
+      sessionId: sid,
+      clientId,
+      text,
+      windowId: windowIdRef.current,
+      images: images.map((im) => ({ media_type: im.mediaType, data: im.dataUrl.split(',')[1] ?? '' })),
+    });
+  }
+
+  async function send(): Promise<void> {
     const text = input.trim();
-    if ((!text && pendingImages.length === 0) || running || hostConnected === false) return;
+    if ((!text && pendingImages.length === 0) || hostConnected === false) return;
+    // First turn still spinning up (no session id yet) — wait, don't drop input.
+    if (running && !sessionIdRef.current) return;
     const images = pendingImages;
     setInput('');
     setPendingImages([]);
-    submitTurn(text, images, { echo: true });
+    if (!running) { submitTurn(text, images, { echo: true }); return; }
+    // We think a turn is running — but `running` can be stale: if turn_done was
+    // dropped (the daemon→panel relay has no buffer), the turn already ended on
+    // the backend. Routing this as a follow-up then welds it onto a dead turn —
+    // the daemon reruns it as a *fresh* turn while the panel keeps the old turn's
+    // boundary, desyncing the layout (duplicated answer, detached "Working"
+    // header). Confirm the true state with the daemon (source of truth) first.
+    // Cheap: it only rebuilds when the turn actually ended; a live turn just
+    // routes the follow-up as before.
+    const sid = sessionIdRef.current;
+    const res = sid ? await request({ type: 'agent:history', sessionId: sid }) : null;
+    if (res && !res.running) {
+      runningRef.current = false; // authoritative — let submitTurn start fresh now
+      applyHistory(res);          // recover the finished transcript (the missed answer)
+      submitTurn(text, images, { echo: true });
+    } else {
+      submitFollowup(text, images); // genuinely live (or daemon unreachable) → weave in
+    }
   }
   // Latest submitTurn closure, for the storage listener (mounted with [] deps).
   submitTurnRef.current = submitTurn;
@@ -1163,11 +1333,11 @@ export default function App() {
     e.preventDefault();
     for (const f of files) {
       const reader = new FileReader();
-      reader.onload = () => {
-        if (typeof reader.result === 'string') {
-          const dataUrl = reader.result;
-          setPendingImages((prev) => (prev.length >= 4 ? prev : [...prev, { mediaType: f.type, dataUrl }]));
-        }
+      reader.onload = async () => {
+        if (typeof reader.result !== 'string') return;
+        const dataUrl = reader.result;
+        const thumb = await makeThumb(dataUrl);
+        setPendingImages((prev) => (prev.length >= 4 ? prev : [...prev, { mediaType: f.type, dataUrl, thumb }]));
       };
       reader.readAsDataURL(f);
     }
@@ -1179,9 +1349,11 @@ export default function App() {
     // daemon restart left a stale spinner), it never arrives and the button
     // looks dead. Fold the live turn and clear the spinner now; a genuine stop
     // confirms the same via turn_done (idempotent).
-    setItems((prev) => collapseTurn(prev));
+    setItems((prev) => collapseTurn(prev).map((it) =>
+      it.kind === 'user' && it.queued ? { ...it, queued: false } : it));
     setRunning(false);
     setThinking(false);
+    setReconnecting(false);
     turnStartRef.current = null;
     turnAppRef.current = null;
   }
@@ -1193,11 +1365,15 @@ export default function App() {
     setPlan(null);
     setTask(null);
     setThinking(false);
+    setReconnecting(false);
     setAppChip(null);
     setRunning(false);
     setSessionsOpen(false);
     turnStartRef.current = null;
     lastSeqRef.current = 0;
+    thumbsRef.current = {};
+    imageCountRef.current = 0;
+    echoedFollowupIds.current.clear();
     inputRef.current?.focus();
   }
 
@@ -1237,7 +1413,7 @@ export default function App() {
   }
   const hiddenActivity: ChatItem[] = [];
   const keptItems = turnItems.filter((it, i) => {
-    if (it.kind !== 'tool' && it.kind !== 'text') return true; // errors, approvals, cards
+    if (it.kind !== 'tool' && it.kind !== 'text') return true; // errors, cards
     if (i === lastTurnTextIdx) return true;                    // latest narration / answer
     hiddenActivity.push(it);
     return false;
@@ -1246,7 +1422,8 @@ export default function App() {
   // while narration itself is streaming (the text is the status then).
   let status: string | null = null;
   if (running) {
-    if (thinking || !lastItem || lastItem.kind === 'user') status = 'Thinking';
+    if (reconnecting) status = 'Connection dropped — reconnecting…';
+    else if (thinking || !lastItem || lastItem.kind === 'user') status = 'Thinking';
     else if (lastItem.kind === 'tool') status = toolPresentation(lastItem.name, lastItem.input, lastItem.summary, daemonOrigin, true).label;
   }
   // Elapsed time of the running turn, for the "Working for Xs" header.
@@ -1482,8 +1659,28 @@ export default function App() {
       {/* Message stream */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto thin-scroll px-3 py-3">
         {items.length === 0 && hostConnected !== false && (
-          <div className="h-full flex items-end justify-center pb-2">
-            <div className="w-full max-w-[320px]">
+          // min-h-full + mt-auto bottom-aligns the empty state on a tall panel
+          // but lets it grow and scroll on a short one — flex `items-end` would
+          // push the top (the banner) above the scroll origin where it can't be
+          // reached, hiding it behind the header.
+          <div className="min-h-full flex flex-col items-center pb-2">
+            <div className="w-full max-w-[320px] mt-auto">
+              <div
+                className="mb-16 p-3.5 rounded-[8px] border text-left"
+                style={{
+                  background: 'color-mix(in srgb, var(--sky) 8%, var(--bg-white))',
+                  borderColor: 'color-mix(in srgb, var(--sky) 30%, var(--border-tertiary))',
+                }}
+              >
+                <div className="text-base font-semibold" style={{ color: 'var(--fg-primary)' }}>Prefer your own coding agent?</div>
+                <div className="mt-2.5 text-sm leading-relaxed" style={{ color: 'var(--fg-secondary)' }}>
+                  Run{' '}
+                  <code className="px-1 py-0.5 rounded font-mono text-[0.8em]" style={{ background: 'color-mix(in srgb, var(--sky) 18%, var(--bg-white))', color: 'var(--fg-primary)' }}>codex/claude</code>{' '}
+                  in{' '}
+                  <code className="px-1 py-0.5 rounded font-mono text-[0.8em]" style={{ background: 'color-mix(in srgb, var(--sky) 18%, var(--bg-white))', color: 'var(--fg-primary)' }}>~/.airglow</code>{' '}
+                  and ask it to build your app.
+                </div>
+              </div>
               <div className="text-2xl font-bold tracking-tight mb-7 text-center" style={{ color: 'var(--fg-primary)' }}>Ask Airglow to improve this page</div>
               <div className="flex flex-col gap-2">
                 {([
@@ -1518,9 +1715,23 @@ export default function App() {
             return (
               <div key={i} className="mt-7 mb-3 flex justify-end">
                 <div
-                  className="max-w-[85%] px-3.5 py-2.5 rounded-2xl border text-[15px] leading-relaxed whitespace-pre-wrap break-words"
-                  style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', color: 'var(--fg-primary)' }}
+                  className="relative max-w-[85%] px-3.5 py-2.5 rounded-2xl border text-[15px] leading-relaxed whitespace-pre-wrap break-words"
+                  style={{
+                    background: 'var(--bg-white)',
+                    borderColor: item.queued ? 'color-mix(in srgb, var(--clay) 35%, var(--border-tertiary))' : 'var(--border-tertiary)',
+                    color: 'var(--fg-primary)',
+                  }}
                 >
+                  {/* Follow-up sent mid-turn, not yet folded into the conversation */}
+                  {item.queued && (
+                    <span
+                      className="absolute -top-2.5 right-3 inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10.5px] font-medium border whitespace-nowrap"
+                      style={{ background: 'var(--bg-white)', borderColor: 'color-mix(in srgb, var(--clay) 35%, var(--border-tertiary))', color: 'var(--clay-interactive)' }}
+                      data-testid="followup-queued-pill"
+                    >
+                      <Hourglass size={9} /> In queue
+                    </span>
+                  )}
                   {item.images && item.images.length > 0 && (
                     <div className="flex flex-wrap gap-1.5 mb-1.5">
                       {item.images.map((src, j) => src ? (
@@ -1547,15 +1758,6 @@ export default function App() {
           if (item.kind === 'tool') return <ToolRow key={item.toolId} item={item} daemonOrigin={daemonOrigin} />;
           if (item.kind === 'work') return <WorkGroup key={i} item={item} daemonOrigin={daemonOrigin} />;
           if (item.kind === 'appcard') return <AppCard key={i} appId={item.appId} name={item.name} />;
-          if (item.kind === 'approval') {
-            return (
-              <ApprovalCard
-                key={item.approvalId}
-                item={item}
-                onResolve={(ok) => post({ type: 'agent:approval', approvalId: item.approvalId, approved: ok })}
-              />
-            );
-          }
           if (item.kind === 'error' && item.code === 'AGENT_BUDGET_EXCEEDED') {
             return (
               <div key={i} className="my-2 p-3 rounded-xl border flex items-start gap-2" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-secondary)' }}>
@@ -1618,7 +1820,18 @@ export default function App() {
           );
         })()}
         {status && (
-          <div className="my-2 text-[13px] thinking-shimmer truncate" data-testid="live-status">{status}</div>
+          reconnecting ? (
+            <div
+              className="my-2 text-[13px] flex items-center gap-1.5 truncate"
+              style={{ color: 'var(--clay-interactive)' }}
+              data-testid="live-status"
+            >
+              <CircleAlert size={13} className="shrink-0" />
+              <span className="truncate">{status}</span>
+            </div>
+          ) : (
+            <div className="my-2 text-[13px] thinking-shimmer truncate" data-testid="live-status">{status}</div>
+          )
         )}
       </div>
 
@@ -1689,16 +1902,22 @@ export default function App() {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 send();
+              } else if (e.key === 'Escape' && running) {
+                e.preventDefault();
+                stop();
               }
             }}
             disabled={hostConnected === false}
-            placeholder={hostConnected === false ? 'Install the Airglow host to start chatting' : 'Describe what to change on website'}
-            rows={Math.min(5, Math.max(1, input.split('\n').length))}
-            className="flex-1 resize-none outline-none text-[14.5px] bg-transparent self-center disabled:cursor-not-allowed"
-            style={{ color: 'var(--fg-primary)', border: 0, lineHeight: '21px' }}
+            placeholder={hostConnected === false ? 'Install the Airglow host to start chatting' : running ? 'Add a follow-up…' : 'Describe what to change on website'}
+            rows={1}
+            className="flex-1 resize-none outline-none text-[14.5px] bg-transparent self-center disabled:cursor-not-allowed thin-scroll"
+            style={{ color: 'var(--fg-primary)', border: 0, lineHeight: '21px', maxHeight: 105, overflowY: 'auto', fieldSizing: 'content' } as React.CSSProperties}
             data-testid="composer-input"
           />
-          {running ? (
+          {/* Stop is present whenever a turn runs; Send joins it as soon as
+              there's something to send — so a follow-up can go out mid-turn
+              while Stop stays one tap away. Idle, only Send shows (as before). */}
+          {running && (
             <button
               onClick={stop}
               title="Stop"
@@ -1708,22 +1927,29 @@ export default function App() {
             >
               <Square size={12} fill="currentColor" />
             </button>
-          ) : (
-            <button
-              onClick={send}
-              disabled={(!input.trim() && pendingImages.length === 0) || hostConnected === false}
-              className="inline-flex items-center justify-center w-9 h-9 rounded-full shrink-0 border"
-              style={{
-                background: (!input.trim() && pendingImages.length === 0) || hostConnected === false ? 'var(--bg-tertiary)' : 'var(--clay)',
-                borderColor: (!input.trim() && pendingImages.length === 0) || hostConnected === false ? 'var(--border-secondary)' : 'var(--clay)',
-                color: (!input.trim() && pendingImages.length === 0) || hostConnected === false ? 'var(--fg-tertiary)' : 'var(--bg-white)',
-                cursor: (!input.trim() && pendingImages.length === 0) || hostConnected === false ? 'not-allowed' : 'pointer',
-              }}
-              data-testid="composer-send"
-            >
-              <ArrowUp size={17} strokeWidth={2.4} />
-            </button>
           )}
+          {(() => {
+            const hasContent = input.trim().length > 0 || pendingImages.length > 0;
+            if (running && !hasContent) return null;
+            const enabled = hasContent && hostConnected !== false;
+            return (
+              <button
+                onClick={send}
+                disabled={!enabled}
+                title={running ? 'Send follow-up' : 'Send'}
+                className="inline-flex items-center justify-center w-9 h-9 rounded-full shrink-0 border"
+                style={{
+                  background: enabled ? 'var(--clay)' : 'var(--bg-tertiary)',
+                  borderColor: enabled ? 'var(--clay)' : 'var(--border-secondary)',
+                  color: enabled ? 'var(--bg-white)' : 'var(--fg-tertiary)',
+                  cursor: enabled ? 'pointer' : 'not-allowed',
+                }}
+                data-testid="composer-send"
+              >
+                <ArrowUp size={17} strokeWidth={2.4} />
+              </button>
+            );
+          })()}
           </div>
         </div>
         {/* Composer footer — escape-hatch hint, repo link, feedback. */}
@@ -1733,21 +1959,20 @@ export default function App() {
             label="Agent"
             tooltip={
               <>
-                <div>You can use <strong style={{ fontWeight: 600 }}>your own coding agent</strong> instead of a sidepanel.</div>
-                <div style={{ marginTop: '0.65em' }}>Start it locally at <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)' }}>~/.airglow</code> folder</div>
+                <div><strong style={{ fontWeight: 600, color: 'var(--fg-primary)' }}>Prefer your own coding agent?</strong></div>
+                <div style={{ marginTop: '0.4em' }}>Run <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)' }}>codex/claude</code> in <code style={{ fontFamily: 'var(--font-mono, ui-monospace, monospace)', fontSize: '0.92em', padding: '1px 5px', borderRadius: '5px', background: 'var(--bg-tertiary)' }}>~/.airglow</code> and ask it to build your app.</div>
               </>
             }
           />
           <ComposerTool
             Icon={GithubIcon}
             label="Github"
-            tooltip="Improve Airglow by submitting an Issue or PR!"
+            tooltip="Submit an issue or PR"
             href={GITHUB_REPO_URL}
           />
           <ComposerTool
             Icon={MessageSquare}
             label="Feedback"
-            tooltip="Send feedback"
             onClick={() => setFeedbackOpen(true)}
           />
           {/* Version + self-update, bottom-right. The Update button only shows
@@ -1804,7 +2029,7 @@ function GithubIcon({ size = 16 }: { size?: number; strokeWidth?: number }) {
   );
 }
 
-function ComposerTool({ Icon, label, tooltip, onClick, href }: { Icon: ComponentType<{ size?: number; strokeWidth?: number }>; label: string; tooltip: ReactNode; onClick?: () => void; href?: string }) {
+function ComposerTool({ Icon, label, tooltip, onClick, href }: { Icon: ComponentType<{ size?: number; strokeWidth?: number }>; label: string; tooltip?: ReactNode; onClick?: () => void; href?: string }) {
   const [hover, setHover] = useState(false);
   const clickable = !!href || !!onClick;
   // Tooltip is purely informational and not interactive: close it the instant
@@ -1850,10 +2075,10 @@ function ComposerTool({ Icon, label, tooltip, onClick, href }: { Icon: Component
           {inner}
         </button>
       )}
-      {hover && (
+      {hover && tooltip && (
         <span
-          className="absolute bottom-full left-0 mb-1.5 z-40 w-max max-w-[300px] px-3.5 py-2.5 rounded-xl text-[15px] font-normal leading-relaxed border pointer-events-none"
-          style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'var(--border-primary)', boxShadow: '0 8px 28px rgba(17, 17, 16, 0.18)' }}
+          className="absolute bottom-full left-0 mb-1.5 z-40 w-max max-w-[260px] px-3 py-2 rounded-lg text-[12.5px] font-normal leading-relaxed border pointer-events-none"
+          style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'var(--border-primary)', boxShadow: '0 6px 22px rgba(17, 17, 16, 0.16)' }}
         >
           {tooltip}
         </span>
@@ -1907,10 +2132,13 @@ function IconButton({ label, Icon, onClick, align = 'left', showLabel = false }:
 // pinned plan. Image data is stripped in transport (1MB native-messaging cap)
 // — user images arrive as {source:{type:'stripped'}} and render as
 // placeholder chips.
-function reconstructItems(messages: any[], meta: any, times?: number[]): { items: ChatItem[]; plan: PlanItem[] | null; task: string | null } {
+function reconstructItems(messages: any[], meta: any, times?: number[], thumbs?: Record<number, string>, imgOffset = 0): { items: ChatItem[]; plan: PlanItem[] | null; task: string | null } {
   const items: ChatItem[] = [];
   let plan: PlanItem[] | null = null;
   let task: string | null = null;
+  // Running index of attached user images across this transcript — matches the
+  // key thumbnails were stored under, so a stripped block re-attaches its preview.
+  let imgIdx = imgOffset;
   const resultById = new Map<string, { ok: boolean; summary: string }>();
   for (const msg of messages) {
     if (msg.role !== 'user' || !Array.isArray(msg.content)) continue;
@@ -1962,7 +2190,11 @@ function reconstructItems(messages: any[], meta: any, times?: number[]): { items
       let images: (string | null)[] = [];
       for (const block of blocks) {
         if (block.type === 'image') {
-          images.push(block.source?.type === 'base64' ? `data:${block.source.media_type};base64,${block.source.data}` : null);
+          // Full bytes when present (live turn); else the stored thumbnail
+          // (history reload strips bytes); else a placeholder chip (null).
+          const full = block.source?.type === 'base64' ? `data:${block.source.media_type};base64,${block.source.data}` : null;
+          images.push(full ?? thumbs?.[imgIdx] ?? null);
+          imgIdx++;
         } else if (block.type === 'text' && block.text) {
           // Daemon-injected tab snapshot (session.ts formatTabContext) — context
           // for the agent, not a user-authored message; keep it out of the bubble.

@@ -6,6 +6,36 @@ const WARN_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"
 // pointing at the extension's bundled Inter so width is consistent across sites.
 const AIRGLOW_FONT = '"Airglow Inter", sans-serif';
 
+// The edge button already sits at the max z-index (2147483647). That's not
+// enough: a userscript overlay at the *same* max z-index that lands later in
+// the DOM wins the stacking tie and buries the button (e.g. focus-hider's
+// Instagram overlay). The browser top layer paints above ALL normal-DOM
+// content regardless of z-index or DOM order, so promoting the button into it
+// via the Popover API makes it unconditionally clickable. Falls back to plain
+// z-index on older Chrome that lacks popover support.
+const POPOVER_SUPPORTED =
+  typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype;
+
+// Move an element into the top layer. Sets popover=manual (no light-dismiss)
+// and neutralizes the UA [popover] border/margin so the element's own styling
+// wins. The caller must also undo the rest of the UA [popover] defaults in its
+// own style block: `inset: 'auto'` (UA sets inset:0), and a `background` +
+// `padding` (UA sets background:Canvas — a white box — and padding:0.25em).
+// Returns true on success; on failure it strips the attribute so the element
+// reverts to a z-index layer.
+function promoteToTopLayer(el: HTMLElement): boolean {
+  if (!POPOVER_SUPPORTED) return false;
+  el.popover = 'manual';
+  Object.assign(el.style, { margin: '0', border: 'none' });
+  try {
+    el.showPopover();
+    return true;
+  } catch {
+    el.removeAttribute('popover');
+    return false;
+  }
+}
+
 function ensureAirglowFont() {
   if (document.getElementById('__airglow_font')) return;
   const style = document.createElement('style');
@@ -39,6 +69,7 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   popup.setAttribute('data-testid', 'airglow-edge-popup');
   Object.assign(popup.style, {
     position: 'fixed',
+    inset: 'auto', // undo UA [popover] inset:0 before applying our own edges
     right: '48px',
     top: pos.top ?? '',
     bottom: pos.bottom ?? '',
@@ -47,17 +78,24 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
     borderRadius: '12px',
     boxShadow: '0 4px 24px rgba(0,0,0,0.12), 0 0 0 1px rgba(0,0,0,0.06)',
     padding: '12px 14px',
+    overflow: 'visible', // override UA [popover] overflow:auto
     zIndex: '2147483647',
     fontFamily: AIRGLOW_FONT,
     fontSize: '14px',
     color: '#1a1a1a',
     minWidth: '180px',
-    display: 'none',
     opacity: '0',
     transition: 'opacity 0.12s ease-out',
   });
 
   document.body.appendChild(popup);
+
+  // Top layer keeps the menu above same-z-index userscript overlays. When in
+  // the top layer the popover's UA `:not(:popover-open)` rule handles hiding;
+  // otherwise we fall back to toggling display directly.
+  const popupInTopLayer = promoteToTopLayer(popup);
+  if (popupInTopLayer) popup.hidePopover();
+  else popup.style.display = 'none';
 
   let needsRefresh = false;
   const result: ReturnType<typeof createPopup> = { el: popup, show, hide };
@@ -228,7 +266,11 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
   }
 
   function show() {
-    popup.style.display = 'block';
+    if (popupInTopLayer) {
+      if (!popup.matches(':popover-open')) popup.showPopover();
+    } else {
+      popup.style.display = 'block';
+    }
     requestAnimationFrame(() => { popup.style.opacity = '1'; });
     // Fetch apps for current page (by appId for an embedded app view, by URL otherwise)
     const msg: any = { type: 'airglow:get-page-apps', url: location.href };
@@ -243,7 +285,13 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
 
   function hide() {
     popup.style.opacity = '0';
-    setTimeout(() => { popup.style.display = 'none'; }, 120);
+    setTimeout(() => {
+      if (popupInTopLayer) {
+        if (popup.matches(':popover-open')) popup.hidePopover();
+      } else {
+        popup.style.display = 'none';
+      }
+    }, 120);
   }
 
   return result;
@@ -344,12 +392,15 @@ export function createEdgeButton(opts?: { initialPos?: number }): { destroy: () 
   const clip = document.createElement('div');
   Object.assign(clip.style, {
     position: 'fixed',
+    inset: 'auto', // undo UA [popover] inset:0 before applying our own edges
     right: '0px',
     top: '50%',
     transform: 'translateY(-50%)',
     width: `${W + PAD}px`,
     height: `${H + PAD * 2}px`,
     overflow: 'hidden',
+    background: 'transparent', // undo UA [popover] background:Canvas (white box)
+    padding: '0', // undo UA [popover] padding:0.25em
     zIndex: '2147483647',
     pointerEvents: 'none',
   });
@@ -363,6 +414,9 @@ export function createEdgeButton(opts?: { initialPos?: number }): { destroy: () 
 
   clip.appendChild(btn);
   document.body.appendChild(clip);
+  // Promote into the top layer so no userscript overlay can bury the button.
+  // The button is always present (no light-dismiss), so keep the popover open.
+  promoteToTopLayer(clip);
 
   // Popup
   const iconEl = btn.querySelector('[data-airglow-icon]') as HTMLElement;

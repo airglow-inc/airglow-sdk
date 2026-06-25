@@ -141,10 +141,11 @@ export async function performUpdate(workspace?: string): Promise<{ updatingTo: s
 // `airglow update` from a terminal: route through the running daemon when
 // there is one (so the respawn handoff happens), otherwise swap in place.
 export async function runUpdateCli(): Promise<void> {
-  const { probeDaemon } = await import('./index');
+  const { probeDaemonStatus } = await import('./index');
   try {
-    const daemon = await probeDaemon();
-    if (daemon) {
+    const daemonStatus = await probeDaemonStatus();
+    if (daemonStatus.ok) {
+      const daemon = daemonStatus.record;
       const res = await fetch(`http://127.0.0.1:${daemon.port}/api/daemon/update`, { method: 'POST' });
       const body: any = await res.json().catch(() => ({}));
       if (body?.ok) {
@@ -152,6 +153,9 @@ export async function runUpdateCli(): Promise<void> {
         return;
       }
       throw new Error(String(body?.error ?? `daemon responded ${res.status}`));
+    }
+    if (daemonStatus.record && daemonStatus.pidAlive) {
+      throw new Error(`daemon pid ${daemonStatus.record.pid} is alive on http://127.0.0.1:${daemonStatus.record.port}, but its local API is unreachable${daemonStatus.message ? `: ${daemonStatus.message}` : ''}`);
     }
     const { updatingTo } = await performUpdate();
     console.log(`updated v${HOST_VERSION} → v${updatingTo}`);

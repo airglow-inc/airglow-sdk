@@ -35,7 +35,28 @@ const DEFAULT_GATEWAY_URL = 'https://api.airglow.dev';
 // balances quality and cost for the builder agent.
 const DEFAULT_MODEL = 'claude-opus-4-8';
 export const AGENT_EFFORT = 'high';
-const MAX_RETRIES = 3;
+// Total attempts per request (1 initial + 1 retry). One retry recovers the
+// common transient death (sleep/wake, a brief blip); beyond that a stream is
+// usually genuinely dead, so we surface the error fast rather than make the user
+// wait out more rounds. Worst-case dead-stream error ≈ MAX_RETRIES × idle window
+// (~40s in gateway mode) instead of dragging to a minute-plus.
+const MAX_RETRIES = 2;
+// Inactivity ceiling for the SSE read: total silence this long means the socket
+// is half-open (see consumeStream). Sized to the mode's guaranteed cadence:
+//   - Gateway mode injects a 15s SSE heartbeat (agent-gateway withIdleHeartbeat),
+//     so a healthy stream is NEVER silent >~15s. 20s catches a dead connection
+//     fast (the user isn't left staring at a frozen turn) without false-tripping.
+//   - Direct-Anthropic dev has no heartbeat, so a long quiet gap (first token on
+//     a big context, a pause between blocks) is legitimate — allow more slack.
+// Read at call time so the env override applies regardless of import order (tests
+// drive it to ms; ops can tune without a rebuild).
+const GATEWAY_IDLE_TIMEOUT_MS = 20_000;
+const DIRECT_IDLE_TIMEOUT_MS = 60_000;
+function streamIdleTimeoutMs(): number {
+  const override = Number(process.env.AIRGLOW_STREAM_IDLE_MS);
+  if (override > 0) return override;
+  return process.env.ANTHROPIC_API_KEY ? DIRECT_IDLE_TIMEOUT_MS : GATEWAY_IDLE_TIMEOUT_MS;
+}
 
 export function agentModel(): string {
   return DEFAULT_MODEL;
@@ -69,6 +90,12 @@ export async function streamMessage(
   // re-authed) or null. A non-null result swaps the Bearer and retries the
   // request, so a stale token self-heals without surfacing an error.
   refreshAuth?: () => Promise<string | null>,
+  // Called when a transient failure (network drop, upstream 5xx/429, or a
+  // mid-stream socket stall) forces a re-issue of the request, with the 1-based
+  // retry index. Lets the caller surface a "reconnecting" indicator instead of
+  // a silent multi-second gap that reads like the model is still thinking. Not
+  // fired for the silent auth-refresh retry (that path doesn't consume an attempt).
+  onRetry?: (attempt: number) => void,
 ): Promise<CompletedMessage> {
   const { url, headers } = endpoint();
   // Gateway auth is the Bearer session token only — legacy user-id/-email
@@ -90,7 +117,7 @@ export async function streamMessage(
   // also rejected (wrong account, server still can't verify).
   let authRefreshed = false;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
-    if (attempt > 0) await Bun.sleep(1000 * 2 ** attempt);
+    if (attempt > 0) { onRetry?.(attempt); await Bun.sleep(1000 * 2 ** attempt); }
     signal?.throwIfAborted();
     let res: Response;
     try {
@@ -155,11 +182,30 @@ export async function streamMessage(
       if (code) err.code = code;
       throw err;
     }
-    return await consumeStream(res.body, handlers, signal);
+    try {
+      return await consumeStream(res.body, handlers, signal);
+    } catch (e: any) {
+      if (signal?.aborted) throw e;
+      // The socket dropped (or the upstream truncated) mid-stream. If nothing
+      // has streamed to the UI yet, the request is idempotent and safe to
+      // re-issue — the user sees only a slightly longer "thinking". Once text is
+      // on screen a silent retry would duplicate it, so surface the error.
+      if (e?.streamCut && !e.producedOutput) {
+        lastStatus = 0;
+        lastError = `stream cut: ${e.cause?.message ?? e.message}`;
+        continue;
+      }
+      throw e;
+    }
   }
-  const err: any = new Error(`model API unreachable after ${MAX_RETRIES} attempts (${lastError})`);
+  const cut = lastError.startsWith('stream cut');
+  const err: any = new Error(
+    cut
+      ? `The connection to the model kept dropping after ${MAX_RETRIES} attempts. Send your message again to continue.`
+      : `model API unreachable after ${MAX_RETRIES} attempts (${lastError})`,
+  );
   err.status = lastStatus;
-  err.code = lastStatus === 0 ? 'network' : `upstream_${lastStatus}`;
+  err.code = cut ? 'stream_cut' : lastStatus === 0 ? 'network' : `upstream_${lastStatus}`;
   throw err;
 }
 
@@ -171,6 +217,12 @@ async function consumeStream(
   const content: any[] = [];
   let stopReason = 'end_turn';
   let model: string | null = null;
+  // Whether anything user-visible has streamed yet (live text, or a server-tool
+  // call/result the UI surfaces). Reasoning ("thinking") shows only as a generic
+  // indicator, so it doesn't count. Drives whether a mid-stream drop can be
+  // retried invisibly: with no visible output yet, re-issuing the (idempotent)
+  // request is seamless; once text is on screen a silent retry would duplicate it.
+  let producedOutput = false;
   // index → accumulated partial-JSON string for tool_use inputs
   const partialInputs = new Map<number, string>();
 
@@ -184,8 +236,27 @@ async function consumeStream(
   const onAbort = () => { void reader.cancel().catch(() => {}); };
   signal?.addEventListener('abort', onAbort, { once: true });
   if (signal?.aborted) { void reader.cancel().catch(() => {}); signal.throwIfAborted(); }
+  // Inactivity guard: a silently half-open socket (laptop network change, a
+  // proxy/LB dropping the connection without a FIN) leaves reader.read() pending
+  // forever — the turn then hangs with no tokens, no error, and chat UIs stuck on
+  // "Thinking". If no bytes arrive for the idle window, cancel the reader and
+  // reject; the catch below tags it streamCut so streamMessage retries
+  // (seamlessly when nothing has streamed yet) or surfaces a legible error.
+  const idleMs = streamIdleTimeoutMs();
+  const readChunk = (): ReturnType<typeof reader.read> =>
+    new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        void reader.cancel().catch(() => {});
+        reject(new Error(`model stream idle for ${idleMs / 1000}s`));
+      }, idleMs);
+      reader.read().then(
+        (r) => { clearTimeout(timer); resolve(r); },
+        (e) => { clearTimeout(timer); reject(e); },
+      );
+    });
+  try {
   while (true) {
-    const { done, value } = await reader.read();
+    const { done, value } = await readChunk();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let nl: number;
@@ -237,6 +308,7 @@ async function consumeStream(
           const delta = evt.delta;
           if (delta.type === 'text_delta') {
             content[evt.index].text += delta.text;
+            producedOutput = true;
             handlers.onTextDelta(delta.text);
           } else if (delta.type === 'thinking_delta') {
             content[evt.index].thinking += delta.thinking;
@@ -257,8 +329,8 @@ async function consumeStream(
             partialInputs.delete(evt.index);
           }
           const closed = content[evt.index];
-          if (closed?.type === 'server_tool_use') handlers.onServerToolUse?.(closed.id, closed.name, closed.input);
-          else if (closed?.type === 'web_search_tool_result') handlers.onServerToolResult?.(closed.tool_use_id, closed.content);
+          if (closed?.type === 'server_tool_use') { producedOutput = true; handlers.onServerToolUse?.(closed.id, closed.name, closed.input); }
+          else if (closed?.type === 'web_search_tool_result') { producedOutput = true; handlers.onServerToolResult?.(closed.tool_use_id, closed.content); }
           break;
         }
         case 'message_delta':
@@ -269,9 +341,29 @@ async function consumeStream(
       }
     }
   }
-  signal?.removeEventListener('abort', onAbort);
   // Stream ended — if that was an abort (reader cancelled), surface it as a
   // stop rather than returning a truncated message.
   signal?.throwIfAborted();
   return { content: content.filter(Boolean), stopReason, model };
+  } catch (e: any) {
+    // User abort wins: surface as a stop, never a retryable failure.
+    if (signal?.aborted) signal.throwIfAborted();
+    // A mid-stream socket drop (Bun: "The socket connection was closed
+    // unexpectedly…") or an `error` event the gateway/Anthropic injected when
+    // the upstream cut mid-message. Both are transient. Re-tag with a tracked,
+    // user-legible message and let streamMessage decide: retry seamlessly when
+    // nothing has streamed yet, otherwise surface this.
+    const err: any = new Error(
+      producedOutput
+        ? 'The connection to the model dropped mid-response. Send your message again to continue.'
+        : 'the connection to the model dropped before it responded',
+    );
+    err.streamCut = true;
+    err.producedOutput = producedOutput;
+    err.code = 'stream_cut';
+    err.cause = e;
+    throw err;
+  } finally {
+    signal?.removeEventListener('abort', onAbort);
+  }
 }

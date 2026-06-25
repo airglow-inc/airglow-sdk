@@ -15,6 +15,9 @@ const APP_MANIFESTS_KEY = '__app_manifests';
 const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
 const LLM_TIMEOUT_MS = 60000;
+// web_search calls run several search round-trips before the model answers, so
+// they need a longer client timeout than a plain completion.
+const LLM_WEB_SEARCH_TIMEOUT_MS = 120000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
 
 async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string; authToken?: string }> {
@@ -342,6 +345,52 @@ export type OnAppLog = (appId: string, level: 'info' | 'warn' | 'error', sender:
 let _onAppLog: OnAppLog | undefined;
 export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
 
+// Open an app inside the dashboard. The background owns the extension id
+// (chrome.runtime.getURL), so apps/userscripts/the edge button never hardcode
+// it — the single id-agnostic way to open the single-shell app view or a
+// focused app popup (e.g. an app's chat window). Exported so background.ts can
+// serve the edge-button popup's plain `airglow:open-app` message, which carries
+// no `_airglow` flag and so never reaches dispatchAirglowMessage.
+export function openAppInDashboard(
+  msg: { appId?: unknown; page?: unknown; window?: unknown; width?: number; height?: number },
+  sendResponse: (response: any) => void,
+): boolean {
+  const appId = typeof msg.appId === 'string' ? msg.appId : '';
+  if (!appId) { sendResponse({ ok: false, error: 'missing appId' }); return true; }
+  const page = typeof msg.page === 'string' && msg.page ? msg.page : '';
+  let url = chrome.runtime.getURL(`dashboard.html?app=${encodeURIComponent(appId)}`);
+  if (page) url += `&appPage=${encodeURIComponent(page)}`;
+  if (msg.window === true) {
+    // Focused popup: render just the app frame (chromeless), centered.
+    url += '&chromeless=1';
+    const w = msg.width || DEFAULT_POPUP_WIDTH, h = msg.height || DEFAULT_POPUP_HEIGHT;
+    chrome.windows.getCurrent((parent) => {
+      const left = (parent.left ?? 0) + Math.round(((parent.width ?? 1200) - w) / 2);
+      const top = (parent.top ?? 0) + Math.round(((parent.height ?? 800) - h) / 2);
+      chrome.windows.create({ url, type: 'popup', width: w, height: h, left, top }, () => {
+        sendResponse(chrome.runtime.lastError
+          ? { ok: false, error: chrome.runtime.lastError.message }
+          : { ok: true });
+      });
+    });
+    return true;
+  }
+  // Default: reuse the single dashboard tab (navigate + focus) so it feels
+  // like one SaaS site; otherwise open a fresh one.
+  const dashPrefix = chrome.runtime.getURL('dashboard.html');
+  chrome.tabs.query({}, (tabs) => {
+    const existing = tabs.find((t) => t.url && t.url.startsWith(dashPrefix));
+    if (existing?.id != null) {
+      chrome.tabs.update(existing.id, { url, active: true });
+      if (existing.windowId != null) chrome.windows.update(existing.windowId, { focused: true });
+    } else {
+      chrome.tabs.create({ url });
+    }
+    sendResponse({ ok: true });
+  });
+  return true;
+}
+
 function normalizeHttpMethod(value: unknown): string {
   return (typeof value === 'string' && value.trim() ? value.trim() : 'GET').toUpperCase().slice(0, 20);
 }
@@ -357,9 +406,15 @@ export function handleAirglowMessage(
   // onMessage branches; return false so bridged calls from app UIs fall
   // through to them instead of dying here with UNKNOWN_MESSAGE_TYPE. They
   // need no per-app validation — they don't touch app-scoped state.
+  // NB: 'airglow:open-app' is NOT here. SDK-bridge calls carry `_airglow` and
+  // must be served by the `case 'airglow:open-app'` in dispatchAirglowMessage
+  // below (reached for both the userscript and app_ui paths) — listing it here
+  // would return false and let it fall to background.ts, skipping the per-app
+  // appId validation. (background.ts has a separate plain-message branch that
+  // shares openAppInDashboard, for the edge-button popup which sends no
+  // `_airglow` flag.)
   const BRIDGE_PASSTHROUGH_TYPES = new Set([
     'airglow:get-dashboard-manifests',
-    'airglow:open-app',
     'airglow:open-dashboard',
   ]);
   if (BRIDGE_PASSTHROUGH_TYPES.has(msg?.type)) return false;
@@ -541,6 +596,9 @@ function dispatchAirglowMessage(
       }
       const baseUrl = source.url.replace(/\/+$/, '');
       const url = `${baseUrl}/api/llm/anthropic/messages`;
+      const llmTimeoutMs = (msg.payload as { web_search?: unknown } | undefined)?.web_search
+        ? LLM_WEB_SEARCH_TIMEOUT_MS
+        : LLM_TIMEOUT_MS;
       (async () => {
         const identity = await getAirglowRpcIdentity();
         const requestInit: RequestInit = {
@@ -556,7 +614,7 @@ function dispatchAirglowMessage(
         let lastError: unknown;
         for (let attempt = 0; attempt <= LLM_RETRY_DELAYS_MS.length; attempt++) {
           try {
-            const res = await fetchWithTimeout(url, requestInit, LLM_TIMEOUT_MS);
+            const res = await fetchWithTimeout(url, requestInit, llmTimeoutMs);
             const text = await res.text();
             let result;
             try { result = JSON.parse(text); } catch { result = text; }
@@ -701,46 +759,8 @@ function dispatchAirglowMessage(
       return true;
     }
 
-    case 'airglow:open-app': {
-      // Open an app inside the dashboard. The background owns the extension id
-      // (chrome.runtime.getURL), so apps/userscripts never hardcode it — the
-      // single id-agnostic way to open the single-shell app view or a focused
-      // app popup (e.g. an app's chat window).
-      const appId = typeof msg.appId === 'string' ? msg.appId : '';
-      if (!appId) { sendResponse({ ok: false, error: 'missing appId' }); return true; }
-      const page = typeof msg.page === 'string' && msg.page ? msg.page : '';
-      let url = chrome.runtime.getURL(`dashboard.html?app=${encodeURIComponent(appId)}`);
-      if (page) url += `&appPage=${encodeURIComponent(page)}`;
-      if (msg.window === true) {
-        // Focused popup: render just the app frame (chromeless), centered.
-        url += '&chromeless=1';
-        const w = msg.width || DEFAULT_POPUP_WIDTH, h = msg.height || DEFAULT_POPUP_HEIGHT;
-        chrome.windows.getCurrent((parent) => {
-          const left = (parent.left ?? 0) + Math.round(((parent.width ?? 1200) - w) / 2);
-          const top = (parent.top ?? 0) + Math.round(((parent.height ?? 800) - h) / 2);
-          chrome.windows.create({ url, type: 'popup', width: w, height: h, left, top }, () => {
-            sendResponse(chrome.runtime.lastError
-              ? { ok: false, error: chrome.runtime.lastError.message }
-              : { ok: true });
-          });
-        });
-        return true;
-      }
-      // Default: reuse the single dashboard tab (navigate + focus) so it feels
-      // like one SaaS site; otherwise open a fresh one.
-      const dashPrefix = chrome.runtime.getURL('dashboard.html');
-      chrome.tabs.query({}, (tabs) => {
-        const existing = tabs.find((t) => t.url && t.url.startsWith(dashPrefix));
-        if (existing?.id != null) {
-          chrome.tabs.update(existing.id, { url, active: true });
-          if (existing.windowId != null) chrome.windows.update(existing.windowId, { focused: true });
-        } else {
-          chrome.tabs.create({ url });
-        }
-        sendResponse({ ok: true });
-      });
-      return true;
-    }
+    case 'airglow:open-app':
+      return openAppInDashboard(msg, sendResponse);
 
     case 'airglow:captureTab': {
       const tabId = _sender.tab?.id;

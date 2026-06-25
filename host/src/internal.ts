@@ -104,10 +104,17 @@ function installServerSdk(): void {
   const origin = process.env.AIRGLOW_DAEMON_ORIGIN;
   const appId = process.env.AIRGLOW_APP_ID;
   if (!origin || !appId) return;
+  // Opaque nonce tying these loopbacks to the browser that invoked the RPC. The
+  // daemon maps it back to that user's identity (no token here on purpose).
+  const connectorSession = process.env.AIRGLOW_CONNECTOR_SESSION;
   const call = async (path: string, payload: Record<string, unknown>, errorLabel: string): Promise<any> => {
     const res = await fetch(`${origin}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Airglow-App-Id': appId },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Airglow-App-Id': appId,
+        ...(connectorSession ? { 'X-Airglow-Connector-Session': connectorSession } : {}),
+      },
       body: JSON.stringify(payload),
     });
     const data: any = await res.json().catch(() => ({}));

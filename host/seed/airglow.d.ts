@@ -99,8 +99,24 @@ interface AirglowLlm {
      * Anthropic Messages API. `payload` is the request body, passed through
      * unchanged. Allowed models: `claude-haiku-4-5`, `claude-sonnet-4-6`
      * (default), `claude-opus-4-8`.
+     *
+     * Set `web_search` to give the model live web search (Anthropic's hosted
+     * web_search tool) — it researches before answering and cites sources.
+     * The response `content` then includes `server_tool_use` /
+     * `web_search_tool_result` blocks alongside the usual `text` blocks. Pass
+     * `true` for defaults, or `{ max_uses?, allowed_domains?, blocked_domains? }`
+     * to tune it (max_uses 1-10, default 5). Web-search calls get a higher
+     * max_tokens ceiling and longer timeout; each search bills to the weekly
+     * budget. Arbitrary `tools` are not accepted — web_search is the only one.
+     *
+     *   await airglow.llm.anthropic.messages({
+     *     model: 'claude-opus-4-8', max_tokens: 4000, web_search: true,
+     *     messages: [{ role: 'user', content: 'Research Jane Doe, CEO of Acme.' }],
+     *   });
      */
-    messages(payload: Record<string, any>): Promise<AirglowLlmMessage>;
+    messages(payload: Record<string, any> & {
+      web_search?: boolean | { max_uses?: number; allowed_domains?: string[]; blocked_domains?: string[] };
+    }): Promise<AirglowLlmMessage>;
   };
 }
 

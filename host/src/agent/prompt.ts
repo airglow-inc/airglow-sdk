@@ -43,12 +43,12 @@ export function promptRuntimeContext(opts: {
   const newAppHint = opts.apps.length
     ? `Create new apps as siblings of the existing ones (same parent directory pattern).`
     : `Create new apps under apps/<id>/.`;
-  // The dashboard (and its embedded, fully-wired app UIs) lives at a
-  // chrome-extension:// URL the connected Chrome's id determines. `browser open`
-  // accepts it — opening it reaches the *real* in-extension app (full SDK,
-  // chrome.storage), unlike the bare ${opts.daemonOrigin}/api/apps/<id>/ui bundle.
+  // To test an app UI, run `airglow browser open --app <id>`: it opens the UI
+  // fully wired (airglow.* live) as a top-level tab, so eval/html/shot read it
+  // directly — no --frame. (The bare ${opts.daemonOrigin}/api/apps/<id>/ui URL is
+  // unwired; the dashboard's chrome-extension:// page can't be scripted into.)
   const dashboardLine = opts.extensionId
-    ? `\n- Dashboard (real in-extension app UIs): chrome-extension://${opts.extensionId}/dashboard.html`
+    ? `\n- Dashboard (what the user sees): chrome-extension://${opts.extensionId}/dashboard.html — to test an app UI run \`airglow browser open --app <id>\` (wired + scriptable)`
     : '';
   return `
 # Environment
@@ -56,6 +56,7 @@ export function promptRuntimeContext(opts: {
 - Workspace root (your cwd): ${opts.workspace}
 - Local app server (the Airglow daemon): ${opts.daemonOrigin}${dashboardLine}
 - Daemon log (bundle errors, RPC failures): ${opts.daemonLogPath}
+- Localhost note: if a sandboxed shell's \`curl\` to the daemon exits 7 / \`CURLE_COULDNT_CONNECT\`, it may be blocked before reaching the socket. Use the environment's network-permission mechanism or verify RPCs through \`airglow browser eval --app <id>\` before concluding the daemon is down.
 - Current date: ${new Date().toISOString().slice(0, 10)}
 - Existing apps (id → directory):
 ${appsList}

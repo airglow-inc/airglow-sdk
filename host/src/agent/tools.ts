@@ -105,7 +105,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'task',
-    description: 'State, in one short plain-language line, the task you are doing for the user (e.g. "Blocking all of Instagram behind a focus banner"). Call this ONCE near the start of a turn, right after you understand the request and before other tools. It pins at the top of the chat so the user always sees the goal — set it even for simple one-step work, where you would not publish a plan. Update it only if the goal materially changes mid-turn.',
+    description: 'State, in one short plain-language line, what you are currently doing for the user (e.g. "Blocking all of Instagram behind a focus banner"). It pins at the top of the chat so the user always sees the goal, so this is your FIRST action every turn — call it before you read, search, or edit anything. Don\'t wait until you fully understand the request; a rough title is fine and you can refine it later if the goal sharpens. Set it even for a trivial change or a one-line answer; update it only if the goal materially changes mid-turn.',
     input_schema: {
       type: 'object',
       properties: {

@@ -11,6 +11,11 @@
     "noEmit": true,
     "esModuleInterop": true,
     "isolatedModules": true,
+    // Treat every app file as its own module scope. Userscripts carry no
+    // import/export, so without this tsc lumps them into one global scope and
+    // reports phantom cross-file/cross-app collisions (init, observer, …) that
+    // can never happen at runtime (each userscript runs in an isolated world).
+    "moduleDetection": "force",
     "skipLibCheck": true
   },
   "include": [

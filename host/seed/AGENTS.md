@@ -4,30 +4,38 @@ You build Airglow apps in this workspace. Each directory under `apps/` with a `m
 
 ## Bootstrap (each session)
 
-1. Put the CLI on PATH: `export PATH="$HOME/.airglow/bin:$PATH"`.
+1. Confirm the `airglow` CLI is on PATH — `command -v airglow`. The installer adds it; if that comes back empty (an agent that doesn't load your shell profile), put it on PATH for this session: `export PATH="$HOME/.airglow/bin:$PATH"`.
 2. Confirm the daemon is up:
    ```bash
    port=$(sed -n 's/.*"port": *\([0-9]*\).*/\1/p' ~/.airglow/state/daemon.json)
    curl -sf "http://127.0.0.1:$port/api/healthz"
    ```
-   If it fails, ask the user to open Chrome with the Airglow extension enabled — never launch a browser process yourself.
+   In Codex, sandboxed shells may block even loopback networking. If `curl` exits 7 / `CURLE_COULDNT_CONNECT` but the same URL works outside Codex, request/enable network access for the command and retry; do **not** infer that the daemon is down from a sandbox-blocked socket. If it still fails with network access, ask the user to open Chrome with the Airglow extension enabled — never launch a browser process yourself.
 
 ## Always read logs after editing an app
 
-The daemon runs silently — bundle failures, missing files, RPC errors, and uncaught userscript errors do **not** appear in your tool output. After every edit, check the logs before moving on:
+The daemon runs silently — bundle failures, missing files, RPC errors, uncaught userscript errors, and **type errors** do **not** appear in your tool output (the daemon transpiles without type-checking). After every edit, check both before moving on:
 
+- `npx tsc --noEmit 2>&1 | grep apps/<id>/` — type-check your app (the check spans the whole workspace; scope it to your app). Don't silence it with `declare const airglow: any` — the SDK global is already typed via `airglow.d.ts`. See `docs/browser-debugging.md`.
 - `airglow browser logs --level error -n 50` — merges both streams (browser: userscript/UI/startup runtime errors; daemon: bundle/RPC/startup errors), newest last. Drop `--level error` for info/warn; `--source <app-id>` filters to one app, `--source daemon` to the daemon log.
 
-Clean output is not proof the change worked. Fix errors before claiming success.
+Clean logs are not proof the change works — they only mean nothing crashed. Before claiming success, exercise what you changed end-to-end, **both layers**:
+
+- **Server / RPC** — call the affected function for real and check its actual return: `curl … /rpc/<fn>` (see `docs/browser-debugging.md`) or `airglow browser eval --app <id> 'await airglow.rpc("<fn>", {…})'`. If localhost `curl` is blocked by the shell sandbox, prefer the `airglow browser eval --app` path instead of skipping the RPC check.
+- **UI / userscript** — drive it in the real browser, then `airglow browser shot` and **read** the screenshot — confirm the new behavior, not just that the page loads. Test an app **UI** with `airglow browser open --app <id>` — it opens the UI fully wired (`airglow.*` live, via the `app-ui-bridge` content script) as a top-level tab, so `eval`/`html`/`shot` read it directly (no `--frame`). Don't `curl` that URL (unwired outside the extension — render-gated UIs hang) or test via the dashboard `chrome-extension://` page (its app iframe is cross-origin; `eval --frame` can't reach it). See `docs/browser-debugging.md`.
+
+Reading logs is not testing. A change you didn't exercise is not done — if you genuinely can't test something, say so explicitly at the end.
 
 ## Interaction behavior (hard rules)
 
 The browser belongs to the user; their open tabs are their workspace, not yours.
 
-- Pure reads on the user's tabs are fine: `airglow browser tabs`, `html`, `logs`.
-- **Every non-read operation happens in your own tabs.** Open the page yourself (`airglow browser open <url>` → separate agent window) and do all navigation, closing, and state-changing `eval` (click, type, scroll, submit) there — even if the right page is already open in a user tab.
-- `shot` brings a window to the front — screenshot your own tabs; only a user tab when the task requires it.
-- Never close tabs you didn't open. You cannot launch browsers; use the existing one. There is no reload command — the platform reloads matching tabs when you change app source.
+- Pure reads on any tab are fine: `airglow browser tabs`, `html`, `eval` to inspect, `shot`, `logs`.
+- **Every non-read operation happens in your own tabs.** Open the page yourself (`airglow browser open <url>`) and do all navigation, closing, and state-changing `eval` (click, type, scroll, submit) there — even if the right page is already open in a user tab.
+- **Your tabs live in your own window.** Your first `open` creates a dedicated, unfocused window (a colored "Airglow" tab group); every later `open` reuses it. In `tabs`, that window is `role: agent` — `agent-other` is another agent's window (off-limits) and `user` is the user's. Never open into a window you don't own.
+- A tab runs un-throttled only while it's the active tab in its window; the tools activate your own tab before acting on it (without bringing the window to the front), so you don't need to manage focus — just work one tab at a time.
+- `shot` captures in place (no focus change). Screenshot your own tabs; a user tab only when the task requires it.
+- **Close your test tabs** (`close --tab N`) when you're done. Never close tabs you didn't open. You cannot launch browsers; use the existing one. There is no reload command — the platform reloads matching tabs when you change app source.
 
 ## Docs
 
@@ -81,7 +89,7 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 
 ## Verify before handoff
 
-- App appears in `curl -sf "http://127.0.0.1:$port/api/apps/manifests"`. If not, it's a failure — check `daemon.log`.
+- App appears in `curl -sf "http://127.0.0.1:$port/api/apps/manifests"`. If Codex blocks localhost, retry with network access before treating this as a failure. If the endpoint is reachable but the app is missing, check `daemon.log`.
 - `manifest.json` valid; `id` == directory; every referenced file exists.
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No keys/tokens hardcoded in `userscripts/` or `ui/`.

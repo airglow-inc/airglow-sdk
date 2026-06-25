@@ -44,8 +44,6 @@ interface NetCaptureEntry {
 
 const CAPTURE_BUFFER_LIMIT = 2000;
 
-const APPROVAL_TIMEOUT_MS = 120_000;
-
 export class BrowserBridge {
   private connectors = new Map<number, Connector>();
   private nextConnectorId = 1;
@@ -54,16 +52,11 @@ export class BrowserBridge {
   private captures: NetCaptureEntry[] = [];
   private lastReadResult: NetCaptureEntry[] | null = null;
 
-  // ── Debug-window approval (agent sessions only) ──
-  // Commands carrying a sessionId (set by the harness via AIRGLOW_SESSION)
-  // need a one-time per-session user grant before the first `open`. Commands
-  // without a sessionId (a human, or a third-party agent whose own harness
-  // already prompted for the bash call) pass through.
-  private sessionGrants = new Set<string>();
-  private pendingApprovals = new Map<string, { sessionId: string; resolve: (approved: boolean) => void }>();
-  private nextApprovalId = 1;
-  // Wired by the daemon to surface the request in the session's chat stream.
-  onApprovalRequest: ((sessionId: string, approvalId: string) => void) | null = null;
+  // The per-session "Airglow" window+group lives in the EXTENSION
+  // (chrome.storage), not here: window ids are per-browser and the daemon's
+  // memory is wiped on restart, which would orphan a session's window. The
+  // daemon just forwards `sessionId` on each command; the extension owns reuse,
+  // role-labeling, and own-tab activation. See openAgentTab in background.ts.
 
   // sessionId → Chrome window hosting the sidepanel chat that drives the
   // session. Runtime-only (window ids don't survive a browser restart);
@@ -103,31 +96,6 @@ export class BrowserBridge {
     const connectorId = this.sessionConnectors.get(sessionId);
     if (connectorId == null) return null;
     return this.connectorExtensionIds.get(connectorId) ?? null;
-  }
-
-  // Returns the sessionId the approval belonged to (for the resolved event),
-  // or null if the id is unknown/expired.
-  resolveApproval(approvalId: string, approved: boolean): string | null {
-    const pending = this.pendingApprovals.get(approvalId);
-    if (!pending) return null;
-    this.pendingApprovals.delete(approvalId);
-    pending.resolve(approved);
-    return pending.sessionId;
-  }
-
-  private async requireDebugWindowGrant(sessionId: string): Promise<boolean> {
-    if (this.sessionGrants.has(sessionId)) return true;
-    if (!this.onApprovalRequest) return false; // no chat client to ask
-    const approvalId = `appr-${this.nextApprovalId++}`;
-    const approved = await new Promise<boolean>((resolve) => {
-      this.pendingApprovals.set(approvalId, { sessionId, resolve });
-      this.onApprovalRequest!(sessionId, approvalId);
-      setTimeout(() => {
-        if (this.pendingApprovals.delete(approvalId)) resolve(false);
-      }, APPROVAL_TIMEOUT_MS);
-    });
-    if (approved) this.sessionGrants.add(sessionId);
-    return approved;
   }
 
   // ── Connector lifecycle (called from the WS handlers) ──
@@ -194,6 +162,9 @@ export class BrowserBridge {
       return match;
     }
     if (sessionId) {
+      // Route to the Chrome whose sidepanel drives the session, so the agent's
+      // tabs/evals/shots land in the same browser as the chat (not whichever
+      // connected most recently). External agents have no binding → most recent.
       const id = this.sessionConnectors.get(sessionId);
       if (id != null) {
         const bound = this.connectors.get(id);
@@ -208,10 +179,18 @@ export class BrowserBridge {
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         this.pendingReplies.delete(reqId);
-        resolve({ error: 'timeout waiting for the browser' });
+        const type = typeof payload.type === 'string' ? payload.type : 'command';
+        const profile = connector.userDataDir ? ` profile=${connector.userDataDir}` : '';
+        resolve({ error: `${type} timed out after ${timeoutMs}ms waiting for browser connector ${connector.id}${profile}` });
       }, timeoutMs);
       this.pendingReplies.set(reqId, { resolve, timer });
-      connector.ws.send(JSON.stringify({ t: 'ext', msg: { ...payload, reqId } }));
+      try {
+        connector.ws.send(JSON.stringify({ t: 'ext', msg: { ...payload, reqId, timeoutMs } }));
+      } catch (e: any) {
+        clearTimeout(timer);
+        this.pendingReplies.delete(reqId);
+        resolve({ error: `failed to send browser ${String(payload.type ?? 'command')}: ${String(e?.message || e)}` });
+      }
     });
   }
 
@@ -232,25 +211,30 @@ export class BrowserBridge {
         return { targets: this.listTargets() };
 
       case 'tabs': {
-        const sidepanelWindowId =
-          typeof args.sessionId === 'string' ? this.sessionWindows.get(args.sessionId) ?? null : null;
-        return this.sendToExtension(c, { type: 'tabs', sidepanelWindowId }, 5000);
+        const sessionId = typeof args.sessionId === 'string' ? args.sessionId : null;
+        const sidepanelWindowId = sessionId ? this.sessionWindows.get(sessionId) ?? null : null;
+        // The extension resolves this session's own window (and every other
+        // agent session's) from its own storage to tag windows agent /
+        // agent-other / user — the agent reads any tab but only acts in its own.
+        return this.sendToExtension(c, { type: 'tabs', sidepanelWindowId, sessionId }, 5000);
       }
 
       case 'open': {
         if (!args.url) return { error: 'url required' };
-        if (typeof args.sessionId === 'string' && args.sessionId) {
-          const granted = await this.requireDebugWindowGrant(args.sessionId);
-          if (!granted) {
-            return { error: 'the user declined to let the agent open a browser window — continue without browser testing' };
-          }
-        }
-        return this.sendToExtension(c, { type: 'newTab', url: args.url, active: args.active !== false }, 10000);
+        const sessionId = typeof args.sessionId === 'string' && args.sessionId ? args.sessionId : null;
+        const active = args.active !== false;
+        // The extension keys the agent's window+group off sessionId (its own
+        // chrome.storage, durable across daemon restarts); no sessionId →
+        // anonymous shared window. windowId/groupId are internal bookkeeping —
+        // the agent only targets a tab by `id`, so don't surface them.
+        const reply = await this.sendToExtension(c, { type: 'newTab', url: args.url, active, sessionId }, 10000);
+        return reply?.error ? reply : { id: reply?.id, url: reply?.url };
       }
 
       case 'nav': {
         if (!args.tabId || !args.url) return { error: 'tabId and url required' };
-        return this.sendToExtension(c, { type: 'navigate', tabId: args.tabId, url: args.url }, 10000);
+        const reply = await this.sendToExtension(c, { type: 'navigate', tabId: args.tabId, url: args.url, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null }, 10000);
+        return reply;
       }
 
       case 'close': {
@@ -262,7 +246,7 @@ export class BrowserBridge {
         if (!args.tabId || !args.code) return { error: 'tabId and code required' };
         return this.sendToExtension(
           c,
-          { type: 'eval', tabId: args.tabId, code: args.code, frame: args.frame ?? null, main: !!args.main, app: args.app ?? null },
+          { type: 'eval', tabId: args.tabId, code: args.code, frame: args.frame ?? null, main: !!args.main, app: args.app ?? null, timeout: args.timeout, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null },
           15000,
         );
       }
@@ -271,14 +255,14 @@ export class BrowserBridge {
         if (!args.tabId) return { error: 'tabId required' };
         return this.sendToExtension(
           c,
-          { type: 'getHtml', tabId: args.tabId, selector: args.selector ?? null, frame: args.frame ?? null },
+          { type: 'getHtml', tabId: args.tabId, selector: args.selector ?? null, frame: args.frame ?? null, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null },
           10000,
         );
       }
 
       case 'shot': {
         if (!args.tabId) return { error: 'tabId required' };
-        const reply = await this.sendToExtension(c, { type: 'capture', tabId: args.tabId }, 15000);
+        const reply = await this.sendToExtension(c, { type: 'capture', tabId: args.tabId, timeout: args.timeout, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null }, 15000);
         if (reply?.error) return reply;
         const dataUrl: string = reply?.dataUrl || '';
         const m = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/s);

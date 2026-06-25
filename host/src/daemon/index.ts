@@ -25,9 +25,10 @@ import type { AgentEvent } from '../agent/types';
 import type { AgentIdentity } from '../agent/api';
 import { AppServer } from './apps';
 import { CatalogService } from './catalog';
-import { reportInstalls } from './telemetry';
+import { reportApps, reportInstalls, type AppMeta } from './telemetry';
 import { dedupeWorkspaceApps } from './dedupe-deps';
 import { BrowserBridge } from './bridge';
+import { createKeepAwake } from './keep-awake';
 import { ConnectorService, DEFAULT_ACCOUNT, connectorGatewayUrl } from './connectors';
 import { handleLlmAnthropicMessages } from './llm';
 import { checkForUpdate, performUpdate } from './update';
@@ -47,19 +48,60 @@ function readDaemonRecord(): DaemonRecord | null {
   }
 }
 
-export async function probeDaemon(): Promise<DaemonRecord | null> {
+export type DaemonProbeStatus =
+  | { ok: true; record: DaemonRecord }
+  | {
+      ok: false;
+      reason: 'no-record' | 'http-error' | 'wrong-service' | 'unreachable';
+      record: DaemonRecord | null;
+      message?: string;
+      pidAlive?: boolean;
+    };
+
+function errorMessage(e: unknown): string {
+  if (e && typeof e === 'object') {
+    const code = 'code' in e ? String((e as any).code) : '';
+    const message = 'message' in e ? String((e as any).message) : '';
+    return [code, message].filter(Boolean).join(': ') || String(e);
+  }
+  return String(e);
+}
+
+export async function probeDaemonStatus(): Promise<DaemonProbeStatus> {
   const record = readDaemonRecord();
-  if (!record) return null;
+  if (!record) return { ok: false, reason: 'no-record', record: null };
   try {
     const res = await fetch(`http://127.0.0.1:${record.port}/api/healthz`, {
       signal: AbortSignal.timeout(800),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: 'http-error',
+        record,
+        message: `/api/healthz returned HTTP ${res.status}`,
+        pidAlive: pidAlive(record.pid),
+      };
+    }
     const data: any = await res.json();
-    if (data?.service !== 'airglow-daemon') return null;
-    return { ...record, workspace: data.workspace ?? record.workspace };
-  } catch {
-    return null;
+    if (data?.service !== 'airglow-daemon') {
+      return {
+        ok: false,
+        reason: 'wrong-service',
+        record,
+        message: `unexpected service ${JSON.stringify(data?.service)}`,
+        pidAlive: pidAlive(record.pid),
+      };
+    }
+    return { ok: true, record: { ...record, workspace: data.workspace ?? record.workspace } };
+  } catch (e) {
+    return {
+      ok: false,
+      reason: 'unreachable',
+      record,
+      message: errorMessage(e),
+      pidAlive: pidAlive(record.pid),
+    };
   }
 }
 
@@ -70,6 +112,11 @@ function pidAlive(pid: number): boolean {
   } catch (e: any) {
     return e?.code === 'EPERM';
   }
+}
+
+export async function probeDaemon(): Promise<DaemonRecord | null> {
+  const status = await probeDaemonStatus();
+  return status.ok ? status.record : null;
 }
 
 // Mirror console output to state/daemon.log (truncated each run) so agents
@@ -252,14 +299,42 @@ export async function runDaemon(argv: string[]): Promise<void> {
     return seq;
   }
   const connectorIdentities = new WeakMap<object, AgentIdentity>();
-  // Last identity any connector announced — fallback for requests that loop
-  // back into the daemon without identity headers (server-function airglow.llm
-  // calls; the user's auth token never enters the app subprocess).
+  // Last identity any connector announced — last-resort fallback for loopbacks
+  // that carry neither an Authorization header nor an RPC session nonce. This
+  // is GLOBAL, so it picks the wrong user when several browsers are connected;
+  // rpcConnectorIdentities below is what makes server-function loopbacks resolve
+  // the right one.
   let lastConnectorIdentity: AgentIdentity | null = null;
+
+  // Per-RPC connector/LLM identity: an opaque nonce → the identity of the
+  // browser that invoked the RPC. Handed to the server-function subprocess as
+  // AIRGLOW_CONNECTOR_SESSION and echoed back (X-Airglow-Connector-Session) on
+  // its airglow.connectors / airglow.llm loopbacks, so the daemon attaches that
+  // user's token even with multiple browsers connected. The token itself never
+  // enters the subprocess. Entries live only for the duration of one RPC.
+  const rpcConnectorIdentities = new Map<string, AgentIdentity>();
+  let rpcConnectorSessionSeq = 0;
 
   // Report the user's current installed catalog apps to the cloud (install,
   // uninstall, identity announce). reportInstalls dedupes + is fire-and-forget.
   const syncInstallTelemetry = () => reportInstalls(lastConnectorIdentity, Object.keys(catalog.provenance()));
+
+  // Report the apps the user is building (id + name + description from each
+  // workspace manifest). Fed the freshly-scanned manifests where we already
+  // have them (the manifests route) to avoid a second scan; reportApps dedupes
+  // so it only hits the cloud when an app appears or its name/description edits.
+  const syncAppTelemetry = (manifests: { id?: unknown; name?: unknown; description?: unknown }[]) => {
+    const apps: AppMeta[] = [];
+    for (const m of manifests) {
+      if (typeof m?.id !== 'string' || !m.id) continue;
+      apps.push({
+        id: m.id,
+        name: typeof m.name === 'string' ? m.name : undefined,
+        description: typeof m.description === 'string' ? m.description : undefined,
+      });
+    }
+    reportApps(lastConnectorIdentity, apps);
+  };
 
   function sendExt(ws: Bun.ServerWebSocket<unknown>, m: Record<string, unknown>): void {
     try { ws.send(JSON.stringify({ t: 'ext', msg: m })); } catch {}
@@ -271,6 +346,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
     if (ws) sendExt(ws, { type: 'agent:event', sessionId, event, seq });
   };
 
+  const keepAwake = createKeepAwake();
   const agents = new SessionManager(
     {
       workspace,
@@ -278,6 +354,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
       daemonLogPath: DAEMON_LOG_PATH,
       extensionId: (sessionId: string) => bridge.extensionIdForSession(sessionId),
       airglowBinDir: ensureAirglowOnPath(),
+      keepAwake,
       listApps: async () => {
         const manifests = await apps.scanManifests();
         const result: { id: string; dir: string }[] = [];
@@ -336,15 +413,6 @@ export async function runDaemon(argv: string[]): Promise<void> {
     sink,
   );
 
-  bridge.onApprovalRequest = (sessionId, approvalId) => {
-    sink(sessionId, {
-      type: 'approval_request',
-      approvalId,
-      action: 'open-browser-window',
-      detail: 'The agent wants to open a browser window to test the app.',
-    });
-  };
-
   // The gateway URL the daemon booted with (agent.env or unset). A non-empty
   // override from the extension Settings wins; clearing it restores this.
   const bootGatewayUrl = process.env.AIRGLOW_GATEWAY_URL;
@@ -374,6 +442,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
         if (typeof m.extensionId === 'string' && m.extensionId) bridge.setConnectorExtensionId(ws, m.extensionId);
         if ('gatewayUrl' in m) applyGatewayOverride(m.gatewayUrl);
         syncInstallTelemetry(); // now we know who to attribute installs to
+        apps.scanManifests().then(syncAppTelemetry).catch(() => {});
         return true;
       case 'agent:start': {
         const identity = connectorIdentities.get(ws) ?? { userId: null, email: null, authToken: null };
@@ -408,10 +477,40 @@ export async function runDaemon(argv: string[]): Promise<void> {
         }
         return true;
       }
-      case 'agent:approval': {
-        const sessionId = bridge.resolveApproval(String(m.approvalId ?? ''), !!m.approved);
-        if (sessionId) {
-          sink(sessionId, { type: 'approval_resolved', approvalId: String(m.approvalId), approved: !!m.approved });
+      case 'agent:followup': {
+        // A message the user sent while the turn was (apparently) still running.
+        const session = typeof m.sessionId === 'string' ? agents.get(m.sessionId) : null;
+        if (!session) return true;
+        // Keep this panel as the session's event route (same binding as a turn).
+        sessionConnectors.set(session.id, ws);
+        bridge.setSessionConnector(session.id, ws);
+        if (typeof m.windowId === 'number') bridge.setSessionWindow(session.id, m.windowId);
+        const images: UserImage[] = Array.isArray(m.images)
+          ? m.images
+              .filter((im: any) => typeof im?.media_type === 'string' && typeof im?.data === 'string')
+              .slice(0, 4)
+          : [];
+        const text = String(m.text ?? '');
+        if (session.running) {
+          // Surface the bubble to every panel + the resync buffer now; the loop
+          // weaves the message into history at its next boundary.
+          sink(session.id, {
+            type: 'user_message',
+            text,
+            imageCount: images.length || undefined,
+            clientId: typeof m.clientId === 'string' ? m.clientId : undefined,
+          });
+          session.enqueueFollowup(text, images.length ? images : undefined, typeof m.clientId === 'string' ? m.clientId : undefined);
+        } else {
+          // The turn ended in the gap before this arrived (the panel hadn't seen
+          // turn_done yet) — run it as a fresh turn. The optimistic echo stays;
+          // history reconstruction covers a later reload, like a normal send.
+          const prevLog = eventLog.get(session.id);
+          if (prevLog) prevLog.events = [];
+          // It runs immediately as the turn's opening message, not queued —
+          // clear the panel's optimistic "in queue" pill right away.
+          if (typeof m.clientId === 'string' && m.clientId) sink(session.id, { type: 'followup_injected', clientIds: [m.clientId] });
+          agents.run(session, text, images.length ? images : undefined);
         }
         return true;
       }
@@ -494,6 +593,13 @@ export async function runDaemon(argv: string[]): Promise<void> {
       new Response(body, { status, headers: { 'Content-Type': contentType, ...cors } });
     const respondJson = (status: number, body: unknown) => jsonResponse(status, body, cors);
 
+    // A server-function loopback (airglow.connectors / airglow.llm) carries no
+    // Authorization but tags itself with the RPC session nonce, so we resolve
+    // the identity of the browser that actually invoked the RPC — not the global
+    // lastConnectorIdentity, which is wrong when several browsers are connected.
+    const connectorSessionId = req.headers.get('x-airglow-connector-session');
+    const sessionIdentity = connectorSessionId ? rpcConnectorIdentities.get(connectorSessionId) ?? null : null;
+
     try {
       if (pathname === '/api/healthz' && req.method === 'GET') {
         return respondJson(200, { ok: true, service: 'airglow-daemon', version: HOST_VERSION, workspace });
@@ -529,8 +635,12 @@ export async function runDaemon(argv: string[]): Promise<void> {
       }
 
       if (pathname === '/api/apps/manifests' && req.method === 'GET') {
-        const [status, data] = await apps.handleManifests();
-        return respondJson(status, data);
+        const manifests = await apps.scanManifests();
+        // The extension refetches manifests whenever the workspace app set
+        // changes (new app, edited manifest), so this is the natural "app data
+        // changed" hook for build telemetry. Reuses the scan we just did.
+        syncAppTelemetry(manifests);
+        return respondJson(200, manifests);
       }
 
       // Install a catalog app into the workspace (apps/<id>) + record provenance.
@@ -559,7 +669,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
       // airglow.llm from locally-served apps — proxied to the LLM gateway
       // (or straight to Anthropic in dev). See daemon/llm.ts.
       if (pathname === '/api/llm/anthropic/messages' && req.method === 'POST') {
-        const [status, data] = await handleLlmAnthropicMessages(req, lastConnectorIdentity);
+        const [status, data] = await handleLlmAnthropicMessages(req, sessionIdentity ?? lastConnectorIdentity);
         return respondJson(status, data);
       }
 
@@ -639,7 +749,11 @@ export async function runDaemon(argv: string[]): Promise<void> {
           const gwBase = connectorGatewayUrl();
           const headers: Record<string, string> = {};
           const auth = req.headers.get('authorization');
+          // Precedence: a real Authorization header (extension-originated call)
+          // wins; then the RPC session's identity (server-function loopback);
+          // then the global last-announced identity as a last resort.
           if (auth) headers['authorization'] = auth;
+          else if (sessionIdentity?.authToken) headers['authorization'] = `Bearer ${sessionIdentity.authToken}`;
           else if (lastConnectorIdentity?.authToken) headers['authorization'] = `Bearer ${lastConnectorIdentity.authToken}`;
           const accountDelete = action.match(/^accounts\/([A-Za-z0-9_-]+)$/);
           let target = `${gwBase}/api/connectors/${action}${url.search}`;
@@ -752,12 +866,29 @@ export async function runDaemon(argv: string[]): Promise<void> {
         const rpcMatch = rest.match(/^rpc\/(.+)$/);
         if (rpcMatch && req.method === 'POST') {
           const body = await req.json().catch(() => ({}));
+          // Pin this RPC's server-function loopbacks (airglow.connectors /
+          // airglow.llm) to the identity of the browser that invoked it. The
+          // token stays in the daemon; only the opaque nonce reaches the app
+          // subprocess.
+          let sessionNonce: string | undefined;
+          const rpcAuth = req.headers.get('authorization');
+          const rpcUserId = req.headers.get('x-airglow-user-id');
+          if (rpcAuth || rpcUserId) {
+            sessionNonce = `rpc-${++rpcConnectorSessionSeq}`;
+            rpcConnectorIdentities.set(sessionNonce, {
+              userId: rpcUserId,
+              email: req.headers.get('x-airglow-user-email'),
+              authToken: rpcAuth ? rpcAuth.replace(/^Bearer\s+/i, '') : null,
+            });
+          }
           try {
-            const [status, data] = await apps.handleRpc(appId, rpcMatch[1], body);
+            const [status, data] = await apps.handleRpc(appId, rpcMatch[1], body, sessionNonce);
             return respondJson(status, data);
           } catch (e: any) {
             console.error(`[airglow/${appId}] rpc ${rpcMatch[1]} failed: ${e?.message || e}`);
             return respondJson(500, { error: String(e?.message || e) });
+          } finally {
+            if (sessionNonce) rpcConnectorIdentities.delete(sessionNonce);
           }
         }
       }

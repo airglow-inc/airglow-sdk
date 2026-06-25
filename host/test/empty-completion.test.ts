@@ -115,11 +115,27 @@ test('a persistent truncation surfaces an error, never a silent end_turn', async
   expect(done?.stopReason).toBe('error');
 });
 
-test('the gateway error-on-truncation event makes the host surface an error', async () => {
-  const { events } = await runTurn({ truncations: 1, finalText: '', emitErrorEvent: true });
+// The gateway appends an `upstream_truncated` error event when a stream cuts.
+// That is the SAME failure as a bare mid-stream close, just with a cleaner
+// signal — so the host treats it identically: retry in place when nothing has
+// streamed to the UI yet (transient cuts self-heal), and surface an error only
+// when it persists. This unifies the two truncation signals (cf. the bare-close
+// cases above), instead of the old split where an error event surfaced
+// immediately while a bare close was retried.
+test('a transient gateway truncation-error event is retried and recovered', async () => {
+  const { events, calls } = await runTurn({ truncations: 1, finalText: 'Recovered answer.', emitErrorEvent: true });
+  const text = events.filter((e) => e.type === 'text_delta').map((e) => e.text).join('');
+  const done = events.find((e) => e.type === 'turn_done');
+  expect(calls).toBe(2); // one truncation-error event, then the real answer
+  expect(text).toBe('Recovered answer.');
+  expect(done?.stopReason).toBe('end_turn');
+  expect(events.some((e) => e.type === 'error')).toBe(false);
+}, 10_000);
+
+test('a persistent gateway truncation-error event surfaces an error, never a silent end_turn', async () => {
+  const { events } = await runTurn({ truncations: 99, finalText: '', emitErrorEvent: true });
   const err = events.find((e) => e.type === 'error');
   const done = events.find((e) => e.type === 'turn_done');
   expect(err).toBeTruthy();
-  expect(String(err?.message)).toContain('cut off');
   expect(done?.stopReason).toBe('error');
-});
+}, 15_000);

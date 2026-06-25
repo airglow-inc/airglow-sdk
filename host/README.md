@@ -38,4 +38,4 @@ After `install`, fully restart Chrome so it picks up the native messaging manife
 
 ## State
 
-`~/.airglow/state/`: `daemon.json` (listen address), `daemon.lock`, `daemon.log` (truncated each run), `shots/` (screenshots), `sessions/` (agent sessions). The extension stores the daemon origin from the connector handshake (`__daemon_origin`) and uses it as the app source, so the port never needs configuring — `3222` preferred, random free port as fallback.
+`~/.airglow/state/`: `daemon.json` (listen address), `daemon.lock`, `daemon.log` (truncated each run), `shots/` (screenshots), `sessions/` (sidepanel agent conversations — terminal agents keep their own history). The extension stores the daemon origin from the connector handshake (`__daemon_origin`) and uses it as the app source, so the port never needs configuring — `3222` preferred, random free port as fallback.

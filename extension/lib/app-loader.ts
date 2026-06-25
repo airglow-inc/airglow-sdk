@@ -289,7 +289,13 @@ export async function registerAllUserscripts(manifests: SourcedManifest[], chang
     for (const worldId of worldIds) {
       await chrome.userScripts.configureWorld({
         worldId,
-        csp: "script-src 'self'",
+        // 'unsafe-eval' lets the app's own isolated world run new Function/eval.
+        // Required for `eval --app <id>` (background's evalBody wraps code in
+        // `new Function`): the world is locked at instantiation, so widening its
+        // CSP later (evalInAppWorld) is ignored once the userscript has run on a
+        // tab. Scope is the app's own USER_SCRIPT world — isolated from the page
+        // and from other apps — so this does not relax the host page's CSP.
+        csp: "script-src 'self' 'unsafe-eval'",
         messaging: true,
       });
     }

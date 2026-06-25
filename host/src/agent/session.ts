@@ -46,6 +46,10 @@ export interface AgentEnv {
   // Resolves to the fresh token, or null when no client/Google session can
   // refresh it. Optional: direct-Anthropic dev mode has no gateway auth.
   refreshAuth?: (sessionId: string) => Promise<string | null>;
+  // Hold an OS power assertion while a turn runs so idle sleep can't sever the
+  // model stream mid-turn (see daemon/keep-awake.ts). Refcounted across
+  // sessions; acquire/release are balanced per turn. Optional (no-op off-daemon).
+  keepAwake?: { acquire(): void; release(): void };
 }
 
 export class Session {
@@ -70,6 +74,13 @@ export class Session {
   // Last tab snapshot injected into a user message; re-sent only when the tab
   // (id/title/url) changes, so unchanged turns don't repeat it.
   private lastTabContext: string | null = null;
+  // Follow-up messages the user sent while this turn was running. Each entry is
+  // its content blocks plus the panel's optimistic-send id; the loop drains them
+  // into the conversation at the next boundary (after the current tool batch, or
+  // instead of ending the turn) so the agent reacts to them mid-task. Draining
+  // emits followup_injected with the entries' clientIds so chat clients drop the
+  // "in queue" pill. See enqueueFollowup / drainPending.
+  private pendingInput: { blocks: ContentBlock[]; clientId?: string }[] = [];
 
   constructor(id: string, private env: AgentEnv, private sink: EventSink) {
     this.id = id;
@@ -82,6 +93,12 @@ export class Session {
 
   private emit(event: AgentEvent): void {
     this.sink(this.id, event);
+  }
+
+  // Always stamps turn_done with the turn's start time so the client can show
+  // an accurate "Worked for X" even when it lost its own start ref mid-turn.
+  private emitTurnDone(extra: Omit<Extract<AgentEvent, { type: 'turn_done' }>, 'type' | 'startedAt'>): void {
+    this.emit({ type: 'turn_done', startedAt: this.turnStartedAt, ...extra });
   }
 
   private persist(line: Record<string, unknown>): void {
@@ -173,6 +190,26 @@ export class Session {
     this.abort?.abort();
   }
 
+  // Queue a follow-up the user sent while the turn is running. The loop weaves
+  // it into the conversation at the next boundary (drainPending), so the agent
+  // adjusts mid-task instead of the user waiting for the turn to end. Caller
+  // routes here only while running; an idle session takes a fresh sendMessage.
+  enqueueFollowup(text: string, images?: UserImage[], clientId?: string): void {
+    this.pendingInput.push({ blocks: followupBlocks(text, images), clientId });
+  }
+
+  // Pull every queued follow-up into one content-block array (clears the queue).
+  // Emits followup_injected for the drained entries so the panel's "in queue"
+  // pill clears the moment the message actually lands in history.
+  private drainPending(): ContentBlock[] {
+    if (this.pendingInput.length === 0) return [];
+    const out = this.pendingInput.flatMap((p) => p.blocks);
+    const clientIds = this.pendingInput.map((p) => p.clientId).filter((c): c is string => !!c);
+    this.pendingInput = [];
+    if (clientIds.length > 0) this.emit({ type: 'followup_injected', clientIds });
+    return out;
+  }
+
   async sendMessage(text: string, images?: UserImage[]): Promise<void> {
     if (this.running) {
       this.emit({ type: 'error', message: 'agent is still working — wait for the turn to finish' });
@@ -186,6 +223,11 @@ export class Session {
     // reopened panel trims completed turns at this index. Set before the first
     // await so a resync mid-setup sees a stable boundary.
     this.turnStartIndex = this.messages.length;
+    // Keep the machine awake for the duration of the turn (released in finally),
+    // so an idle laptop on battery doesn't sleep mid-stream and drop the model
+    // connection. Acquired after the running guard above, so it pairs 1:1 with
+    // the release below.
+    this.env.keepAwake?.acquire();
     try {
       if (!this.meta.title) {
         this.meta.title = text.slice(0, 60);
@@ -226,11 +268,10 @@ export class Session {
       await this.runLoop();
     } catch (e: any) {
       if (this.abort?.signal.aborted) {
-        this.emit({ type: 'turn_done', stopReason: 'stopped' });
+        this.emitTurnDone({ stopReason: 'stopped' });
       } else {
         this.emit({ type: 'error', message: String(e?.message ?? e), ...(e?.code ? { code: e.code } : {}), ...(e?.resetHours ? { resetHours: e.resetHours } : {}) });
-        this.emit({
-          type: 'turn_done',
+        this.emitTurnDone({
           stopReason: 'error',
           ...(typeof e?.status === 'number' ? { errorStatus: e.status } : {}),
           ...(e?.code ? { errorCode: String(e.code) } : {}),
@@ -239,6 +280,13 @@ export class Session {
     } finally {
       this.running = false;
       this.abort = null;
+      // Release the power assertion taken at turn start (refcounted, so the
+      // machine can idle-sleep again only once every session's turn is done).
+      this.env.keepAwake?.release();
+      // Drop any follow-up that raced in during an aborted/errored turn — the
+      // loop already drains pending input before any clean turn end, so this
+      // only clears a message the user can no longer expect to be processed.
+      this.pendingInput = [];
       this.persistMeta();
     }
   }
@@ -307,6 +355,10 @@ export class Session {
               return token;
             }
           : undefined,
+        // A transient drop (network, upstream 5xx, or a stalled stream) is being
+        // re-issued — tell chat clients so they show "reconnecting" instead of a
+        // silent gap that looks like the model is still working.
+        (attempt) => this.emit({ type: 'reconnecting', attempt }),
       );
 
       if (i === 0) console.log(`[agent ${this.id}] model: ${completed.model ?? '(unknown)'}`);
@@ -329,7 +381,7 @@ export class Session {
           continue;
         }
         this.emit({ type: 'error', message: 'The model returned an empty response — this can happen on a long turn. Send your message again to continue.' });
-        this.emit({ type: 'turn_done', stopReason: 'error' });
+        this.emitTurnDone({ stopReason: 'error' });
         return;
       }
       emptyCompletions = 0;
@@ -343,7 +395,14 @@ export class Session {
 
       const toolUses = completed.content.filter((b): b is Extract<ContentBlock, { type: 'tool_use' }> => b.type === 'tool_use');
       if (completed.stopReason !== 'tool_use' || toolUses.length === 0) {
-        this.emit({ type: 'turn_done', stopReason: completed.stopReason });
+        // The model is done — but if the user sent a follow-up while it was
+        // finishing, fold it in and keep going instead of ending the turn.
+        const followup = this.drainPending();
+        if (followup.length > 0) {
+          this.pushMessage({ role: 'user', content: followup });
+          continue;
+        }
+        this.emitTurnDone({ stopReason: completed.stopReason });
         return;
       }
 
@@ -387,13 +446,33 @@ export class Session {
         };
         results.push(resultContent);
       }
-      const resultMessage: ApiMessage = { role: 'user', content: results };
+      // Fold any follow-up the user sent during this batch into the same user
+      // message as the tool results (the API requires results to immediately
+      // follow their tool_use), so the next model step sees the new instruction.
+      const resultMessage: ApiMessage = { role: 'user', content: [...results, ...this.drainPending()] };
       this.pushMessage(resultMessage);
       signal.throwIfAborted();
     }
     this.emit({ type: 'error', message: `stopped after ${MAX_LOOP_ITERATIONS} tool iterations` });
-    this.emit({ type: 'turn_done', stopReason: 'max_iterations' });
+    this.emitTurnDone({ stopReason: 'max_iterations' });
   }
+}
+
+// Content blocks for a follow-up message injected mid-turn. A leading
+// <airglow-context> marker (same wrapper chat UIs strip from the bubble, like
+// the tab snapshot) tells the model this arrived while it was working and is a
+// new instruction, not tool output. Image bytes ride along as base64 blocks.
+function followupBlocks(text: string, images?: UserImage[]): ContentBlock[] {
+  const blocks: ContentBlock[] = (images ?? []).map((im): ContentBlock => ({
+    type: 'image',
+    source: { type: 'base64', media_type: im.media_type, data: im.data },
+  }));
+  if (text.trim()) blocks.push({ type: 'text', text });
+  blocks.unshift({
+    type: 'text',
+    text: '<airglow-context>The user sent a new message while you were working. Treat it as additional instructions and adjust the current task accordingly.</airglow-context>',
+  });
+  return blocks;
 }
 
 // One-line snapshot of the tab the user is viewing, prepended to each user

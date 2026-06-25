@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check } from 'lucide-react';
+import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download } from 'lucide-react';
 import logoUrl from '../../lib/branding/icon.svg';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
@@ -41,6 +41,9 @@ interface CatalogApp {
   name: string;
   version: string;
   description: string;
+  // Userscript match patterns, so the catalog card can show the same site list
+  // as the installed gallery. Absent on older feeds → no site row.
+  matches?: string[];
 }
 
 // Catalog install provenance from the daemon (GET /api/catalog/installed).
@@ -186,17 +189,157 @@ function appSites(manifest: any): { anyWebsite: boolean; hosts: string[] } | nul
   return hosts.length ? { anyWebsite: false, hosts } : null;
 }
 
+// Single source of truth for status-pill colors across the gallery (AppCard),
+// the app page header (AppView), and the catalog (CatalogView), so the three
+// surfaces never drift. Change a pill's color here once.
+const PILL = {
+  error: 'var(--error)',          // disabled, missing secrets, server down
+  catalog: '#2f6fb3',             // installed-from-catalog provenance + version
+  local: '#1d4ed8',               // local-only provenance
+  green: '#5f7344',               // installed, modified
+  update: 'var(--clay)',          // update available
+  neutral: 'var(--fg-tertiary)',  // installed locally
+} as const;
+
+const ACTION_TONE = {
+  green: 'var(--success)',
+  clay: 'var(--clay)',
+  danger: 'var(--error)',
+  neutral: 'var(--fg-secondary)',
+} as const;
+
+// One button for every app action — Enable/Disable/Install render solid,
+// Uninstall/Secrets render outline. Same height, shape, and typography across
+// the gallery, app page, and catalog; callers vary only tone, icon, and label.
+function ActionButton({
+  onClick, disabled, tone, variant = 'solid', icon: Icon, children, testid,
+}: {
+  onClick?: () => void;
+  disabled?: boolean;
+  tone: keyof typeof ACTION_TONE;
+  variant?: 'solid' | 'outline';
+  icon?: React.ComponentType<{ size?: number }>;
+  children: React.ReactNode;
+  testid?: string;
+}) {
+  const c = ACTION_TONE[tone];
+  const solid = variant === 'solid';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      data-testid={testid}
+      className="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-md text-base font-medium border transition-all"
+      style={{
+        color: solid ? 'var(--bg-white)' : c,
+        background: solid ? c : 'var(--bg-white)',
+        borderColor: solid ? c : 'var(--border-secondary)',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.5 : 1,
+      }}
+      onMouseEnter={(e) => {
+        if (disabled) return;
+        if (solid) e.currentTarget.style.opacity = '0.85';
+        else e.currentTarget.style.background = `color-mix(in srgb, ${c} 8%, var(--bg-white))`;
+      }}
+      onMouseLeave={(e) => {
+        e.currentTarget.style.opacity = disabled ? '0.5' : '1';
+        if (!solid) e.currentTarget.style.background = 'var(--bg-white)';
+      }}
+    >
+      {Icon && <Icon size={15} />}
+      {children}
+    </button>
+  );
+}
+
+// The globe + interpunct-separated host list under an app's description.
+function SiteList({ sites, testid }: { sites: NonNullable<ReturnType<typeof appSites>>; testid?: string }) {
+  return (
+    <div className="mt-2 flex items-center gap-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }} data-testid={testid}>
+      <Globe size={15} />
+      {sites.anyWebsite ? <span>Any website</span> : (
+        <span className="truncate">
+          {sites.hosts.map((h, i) => (<Fragment key={h}>{i > 0 && <span style={{ opacity: 0.45 }}>{' · '}</span>}{h}</Fragment>))}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// The card for every app in a list — the installed gallery AND the catalog.
+// Title, version/status pills, description, and the site list all render here,
+// so the two surfaces are identical by construction; callers vary only the
+// `pills` and `actions` slots. `onOpen`/`href` make the title + description a
+// link (gallery); the catalog passes neither. `drag` carries the gallery DnD.
+function AppListCard({
+  name, description, sites, sitesTestid, pills, actions, note, onOpen, href, draggable, drag, testid,
+}: {
+  name: string;
+  description?: string;
+  sites: ReturnType<typeof appSites>;
+  sitesTestid?: string;
+  pills?: React.ReactNode;
+  actions?: React.ReactNode;
+  note?: React.ReactNode;
+  onOpen?: () => void;
+  href?: string;
+  draggable?: boolean;
+  drag?: React.HTMLAttributes<HTMLDivElement>;
+  testid?: string;
+}) {
+  const open = onOpen ? (e: React.MouseEvent) => { e.preventDefault(); onOpen(); } : undefined;
+  return (
+    <div
+      {...drag}
+      draggable={draggable}
+      data-testid={testid}
+      className="rounded-[var(--radius-md)] p-5 transition-all border"
+      style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', boxShadow: 'var(--shadow-card)', cursor: draggable ? 'grab' : undefined }}
+    >
+      <div className="text-xl font-semibold mb-3 flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-primary)' }}>
+        {open
+          ? <a href={href ?? '#'} onClick={open} className="no-underline cursor-pointer" style={{ color: 'inherit' }}>{name}</a>
+          : name}
+        {pills}
+      </div>
+      {description && (open
+        ? <a href={href ?? '#'} onClick={open} className="block text-base leading-relaxed no-underline cursor-pointer" style={{ color: 'var(--fg-secondary)' }}>{description}</a>
+        : <div className="text-base leading-relaxed" style={{ color: 'var(--fg-secondary)' }}>{description}</div>)}
+      {sites && <SiteList sites={sites} testid={sitesTestid} />}
+      {note}
+      {actions && <div className="flex items-center gap-2 mt-4">{actions}</div>}
+    </div>
+  );
+}
+
 // Hosts an app's own UI as a sandboxed iframe and bridges its SDK postMessages
 // to the background — the single-shell replacement for the old app-shell.html
 // page. The shell stamps the appId it loaded, so the iframe can't spoof another.
-function AppFrame({ appId, origin, page }: { appId: string; origin: string; page?: string | null }) {
+// `autoHeight` makes the iframe grow to its content height (it reports height
+// via postMessage) so the app scrolls with the dashboard page instead of inside
+// a fixed-viewport iframe. It uses flex-grow + shrink:0 so short apps still fill
+// the viewport and tall apps overflow into the page scroll.
+function AppFrame({ appId, origin, page, autoHeight }: { appId: string; origin: string; page?: string | null; autoHeight?: boolean }) {
   const ref = useRef<HTMLIFrameElement>(null);
+  const [height, setHeight] = useState<number | null>(null);
   useEffect(() => {
+    setHeight(null);
     const iframe = ref.current;
     if (!iframe) return;
     const onMsg = (e: MessageEvent) => {
       if (e.source !== iframe.contentWindow) return;
       const data: any = e.data;
+      if (autoHeight && typeof data?._airglow_height === 'number') { setHeight(data._airglow_height); return; }
+      // Auto-height apps forward wheel here (the content-sized iframe can't chain
+      // it to the page itself); scroll the dashboard, matching the header's scroll.
+      if (autoHeight && data?._airglow_wheel) {
+        const w = data._airglow_wheel;
+        const unit = w.mode === 1 ? 16 : w.mode === 2 ? window.innerHeight : 1;
+        window.scrollBy({ left: (w.x || 0) * unit, top: (w.y || 0) * unit });
+        return;
+      }
       if (!data?._airglow) return;
       chrome.runtime.sendMessage({ ...data, _appId: appId }, (response: any) => {
         const payload = chrome.runtime.lastError
@@ -207,8 +350,8 @@ function AppFrame({ appId, origin, page }: { appId: string; origin: string; page
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
-  }, [appId]);
-  const src = `${origin.replace(/\/+$/, '')}/api/apps/${appId}/ui?app=${encodeURIComponent(appId)}&embed=1${page ? `&page=${encodeURIComponent(page)}` : ''}`;
+  }, [appId, autoHeight]);
+  const src = `${origin.replace(/\/+$/, '')}/api/apps/${appId}/ui?app=${encodeURIComponent(appId)}${page ? `&page=${encodeURIComponent(page)}` : ''}${autoHeight ? '&_embed=fit' : ''}`;
   return (
     <iframe
       ref={ref}
@@ -216,7 +359,9 @@ function AppFrame({ appId, origin, page }: { appId: string; origin: string; page
       src={src}
       sandbox="allow-scripts allow-same-origin allow-forms"
       allow="clipboard-read; clipboard-write"
-      style={{ width: '100%', height: '100%', border: 'none', display: 'block' }}
+      style={autoHeight
+        ? { width: '100%', flex: '1 0 auto', height: height != null ? `${height}px` : undefined, border: 'none', display: 'block' }
+        : { width: '100%', height: '100%', border: 'none', display: 'block' }}
       data-testid="app-frame"
     />
   );
@@ -886,36 +1031,26 @@ export default function App() {
     const updateAvailable = !!(prov && catalogEntry && app.version && isNewerVersion(catalogEntry.version, app.version));
     const isDraggable = section !== undefined && index !== undefined && list !== undefined;
     return (
-      <div
+      <AppListCard
+        name={app.name}
+        description={app.description}
+        sites={sites}
+        sitesTestid={`app-sites-${app.id}`}
+        onOpen={() => openApp(app.id)}
+        href={appUrl(app.id)}
         draggable={isDraggable}
-        onDragStart={isDraggable ? () => handleDragStart(section, index) : undefined}
-        onDragEnter={isDraggable ? () => handleDragEnter(section, index) : undefined}
-        onDragEnd={isDraggable ? () => handleDragEnd(list, section) : undefined}
-        onDragOver={isDraggable ? (e) => e.preventDefault() : undefined}
-        className="rounded-[var(--radius-md)] p-5 transition-all border"
-        style={{
-          background: 'var(--bg-white)',
-          borderColor: 'var(--border-tertiary)',
-          boxShadow: 'var(--shadow-card)',
-          cursor: isDraggable ? 'grab' : undefined,
-        }}
-      >
-        <div className="text-lg font-semibold mb-1 flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-primary)' }}>
-          <a
-            href={appUrl(app.id)}
-            onClick={(e) => { e.preventDefault(); openApp(app.id); }}
-            className="no-underline cursor-pointer"
-            style={{ color: 'inherit' }}
-          >
-            {app.name}
-          </a>
-          {disabled && (
-            <Badge color="var(--error)">Disabled</Badge>
-          )}
+        drag={isDraggable ? {
+          onDragStart: () => handleDragStart(section, index),
+          onDragEnter: () => handleDragEnter(section, index),
+          onDragEnd: () => handleDragEnd(list, section),
+          onDragOver: (e) => e.preventDefault(),
+        } : undefined}
+        pills={<>
+          {disabled && <Badge color={PILL.error}>Disabled</Badge>}
           {!disabled && missing.length > 0 && (
             <span onClick={() => openSecrets(app.id)} className="cursor-pointer" data-testid={`app-missing-secrets-${app.id}`}>
               <Tooltip content={<span><strong>Missing secrets — click to set:</strong><br/>{missing.map(m => <span key={m}>&nbsp;&bull; {m}<br/></span>)}</span>}>
-                <Badge color="var(--error)" hoverable>
+                <Badge color={PILL.error} hoverable>
                   {missing.length} secret{missing.length > 1 ? 's' : ''} missing
                 </Badge>
               </Tooltip>
@@ -923,97 +1058,43 @@ export default function App() {
           )}
           {!disabled && localOnline === false && (app._serverFunctions?.length ?? 0) > 0 && (
             <Tooltip content={<span>This app may break when Dev server is down.</span>}>
-              <Badge color="var(--error)" hoverable>
-                Server down
-              </Badge>
+              <Badge color={PILL.error} hoverable>Server down</Badge>
             </Tooltip>
           )}
           {prov ? (
             <Tooltip content={<span>Installed from the catalog{app.version ? ` (v${app.version})` : ''}.</span>}>
-              <Badge color="#2f6fb3" hoverable>Catalog{app.version ? ` · v${app.version}` : ''}</Badge>
+              <Badge color={PILL.catalog} hoverable>Catalog{app.version ? ` · v${app.version}` : ''}</Badge>
             </Tooltip>
           ) : (
             <Tooltip content={<span>Lives only in your local workspace — not installed from the catalog.</span>}>
-              <Badge color="#1d4ed8" hoverable>Local</Badge>
+              <Badge color={PILL.local} hoverable>Local</Badge>
             </Tooltip>
           )}
           {updateAvailable && (
             <Tooltip content={<span>A newer version (v{catalogEntry!.version}) is in the catalog. Reinstall from the Catalog tab to update.</span>}>
-              <Badge color="var(--clay)" hoverable>Update → v{catalogEntry!.version}</Badge>
+              <Badge color={PILL.update} hoverable>Update → v{catalogEntry!.version}</Badge>
             </Tooltip>
           )}
           {prov?.modified && (
             <Tooltip content={<span>This catalog app has local edits since it was installed.</span>}>
-              <Badge color="var(--olive)" hoverable>Modified</Badge>
+              <Badge color={PILL.green} hoverable>Modified</Badge>
             </Tooltip>
           )}
-        </div>
-        <a
-          href={appUrl(app.id)}
-          onClick={(e) => { e.preventDefault(); openApp(app.id); }}
-          className="block text-base leading-relaxed no-underline cursor-pointer"
-          style={{ color: 'var(--fg-secondary)' }}
-        >
-          {app.description}
-        </a>
-        {sites && (
-          <div className="mt-2 flex items-center gap-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }} data-testid={`app-sites-${app.id}`}>
-            <Globe size={15} />
-            {sites.anyWebsite ? <span>Any website</span> : (
-              <span className="truncate">{sites.hosts.map((h, i) => (<Fragment key={h}>{i > 0 && <span style={{ opacity: 0.45 }}>{' · '}</span>}{h}</Fragment>))}</span>
-            )}
-          </div>
-        )}
-        <div className="flex items-center gap-2 mt-4">
-          <button
-            onClick={() => toggleApp(app.id)}
-            className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-            style={{
-              color: 'var(--bg-white)',
-              borderColor: disabled ? 'var(--success)' : 'var(--clay)',
-              background: disabled ? 'var(--success)' : 'var(--clay)',
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.opacity = '0.85'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.opacity = '1'; }}
-          >
-            <Power size={15} />
+        </>}
+        actions={<>
+          <ActionButton tone={disabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(app.id)}>
             {disabled ? 'Enable' : 'Disable'}
-          </button>
-          <button
-            onClick={() => setConfirmUninstall(app)}
-            disabled={uninstalling === app.id}
-            className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-            style={{
-              color: 'var(--error)',
-              borderColor: 'var(--border-secondary)',
-              background: 'var(--bg-white)',
-              opacity: uninstalling === app.id ? 0.6 : 1,
-            }}
-            onMouseEnter={(e) => { if (uninstalling !== app.id) e.currentTarget.style.background = 'color-mix(in srgb, var(--error) 8%, var(--bg-white))'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; }}
-          >
-            <Trash2 size={15} />
+          </ActionButton>
+          <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={uninstalling === app.id} onClick={() => setConfirmUninstall(app)}>
             {uninstalling === app.id ? 'Removing…' : 'Uninstall'}
-          </button>
+          </ActionButton>
           {hasSecrets && (
-            <button
-              onClick={() => openSecrets(app.id)}
-              className="inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border"
-              style={{
-                color: missing.length > 0 ? 'var(--error)' : 'var(--fg-secondary)',
-                borderColor: missing.length > 0 ? 'color-mix(in srgb, var(--error) 45%, var(--border-secondary))' : 'var(--border-secondary)',
-                background: 'var(--bg-white)',
-              }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; }}
-              data-testid={`app-secrets-${app.id}`}
-            >
-              <KeyRound size={15} />
+            <ActionButton tone={missing.length > 0 ? 'danger' : 'neutral'} variant="outline" icon={KeyRound} onClick={() => openSecrets(app.id)} testid={`app-secrets-${app.id}`}>
               Secrets
-            </button>
+            </ActionButton>
           )}
-        </div>
-      </div>
+        </>}
+      />
     );
   }
 
@@ -1037,42 +1118,39 @@ export default function App() {
           const fromCatalog = !!provenance[c.id];
           const updatable = installed && !!installedApp?.version && isNewerVersion(c.version, installedApp.version);
           const busy = installing === c.id;
-          const disabledBtn = busy || (installed && fromCatalog && !updatable);
+          const installedDone = installed && fromCatalog && !updatable;
+          const disabledBtn = busy || installedDone;
+          const sites = c.matches?.length ? appSites({ userscripts: [{ matches: c.matches }] }) : null;
           return (
-            <div key={c.id} className="rounded-[var(--radius-md)] p-5 border" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', boxShadow: 'var(--shadow-card)' }}>
-              <div className="flex items-start justify-between gap-3">
-                <div className="flex-1">
-                  <div className="text-lg font-semibold mb-1 flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-primary)' }}>
-                    {c.name}
-                    <span className="text-sm font-normal" style={{ color: 'var(--fg-tertiary)' }}>v{c.version}</span>
-                    {installed && fromCatalog && !updatable && <Badge color="var(--success)">Installed</Badge>}
-                    {installed && !fromCatalog && <Badge color="var(--fg-tertiary)">Installed locally</Badge>}
-                    {updatable && <Badge color="var(--clay)">Update available</Badge>}
-                  </div>
-                  <div className="text-base leading-relaxed" style={{ color: 'var(--fg-secondary)' }}>{c.description}</div>
-                  {installed && !fromCatalog && (
-                    <div className="text-sm mt-2" style={{ color: 'var(--fg-tertiary)' }}>
-                      A local app with this id exists — installing replaces it with the catalog version.
-                    </div>
-                  )}
+            <AppListCard
+              key={c.id}
+              name={c.name}
+              description={c.description}
+              sites={sites}
+              sitesTestid={`catalog-sites-${c.id}`}
+              note={installed && !fromCatalog ? (
+                <div className="text-sm mt-2" style={{ color: 'var(--fg-tertiary)' }}>
+                  A local app with this id exists — installing replaces it with the catalog version.
                 </div>
-                <button
-                  onClick={() => installCatalogApp(c.id)}
+              ) : undefined}
+              pills={<>
+                <Badge color={PILL.catalog}>v{c.version}</Badge>
+                {installedDone && <Badge color={PILL.green}>Installed</Badge>}
+                {installed && !fromCatalog && <Badge color={PILL.neutral}>Installed locally</Badge>}
+                {updatable && <Badge color={PILL.update}>Update available</Badge>}
+              </>}
+              actions={
+                <ActionButton
+                  tone="green"
+                  icon={installedDone ? Check : Download}
                   disabled={disabledBtn}
-                  className="shrink-0 inline-flex items-center justify-center gap-1.5 h-9 px-4 rounded-md text-base font-medium border transition-all"
-                  style={{
-                    color: 'var(--bg-white)',
-                    borderColor: 'var(--clay)',
-                    background: 'var(--clay)',
-                    opacity: disabledBtn ? 0.5 : 1,
-                    cursor: disabledBtn ? 'default' : 'pointer',
-                  }}
-                  data-testid={`install-${c.id}`}
+                  onClick={() => installCatalogApp(c.id)}
+                  testid={`install-${c.id}`}
                 >
                   {busy ? 'Installing…' : updatable ? 'Update' : installed ? (fromCatalog ? 'Installed' : 'Replace') : 'Install'}
-                </button>
-              </div>
-            </div>
+                </ActionButton>
+              }
+            />
           );
         })}
       </div>
@@ -1092,9 +1170,8 @@ export default function App() {
     const hasSecrets = (envApps.find((a) => a.appId === appId)?.keys.length ?? 0) > 0;
     const sites = appSites(app);
     const name = app?.name ?? appId;
-    const btn = 'inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-md text-base font-medium cursor-pointer transition-all border';
     return (
-      <div className="-m-8 flex flex-col overflow-hidden" style={{ height: '100vh' }}>
+      <div className="-m-8 flex flex-col" style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }} data-testid="app-view-header">
           <nav className="inline-flex items-center gap-1.5 mb-5 text-base" style={{ color: 'var(--fg-tertiary)' }} data-testid="app-breadcrumb">
             <button type="button" onClick={() => openApp(null)} className="bg-transparent border-0 p-0 text-xl font-medium cursor-pointer" style={{ color: 'var(--fg-tertiary)' }}>Apps</button>
@@ -1103,42 +1180,31 @@ export default function App() {
           </nav>
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-2xl font-semibold tracking-tight" style={{ color: 'var(--fg-primary)' }} data-testid="app-page-title">{name}</h1>
-            {disabled && <Badge color="var(--error)">Disabled</Badge>}
+            {disabled && <Badge color={PILL.error}>Disabled</Badge>}
             {prov
-              ? <Badge color="var(--sky)">Catalog{app?.version ? ` · v${app.version}` : ''}</Badge>
-              : <Badge color="#1d4ed8">Local</Badge>}
-            {prov?.modified && <Badge color="var(--olive)">Modified</Badge>}
+              ? <Badge color={PILL.catalog}>Catalog{app?.version ? ` · v${app.version}` : ''}</Badge>
+              : <Badge color={PILL.local}>Local</Badge>}
+            {prov?.modified && <Badge color={PILL.green}>Modified</Badge>}
           </div>
           {app?.description && <p className="mt-1.5 text-[15px] leading-relaxed max-w-2xl" style={{ color: 'var(--fg-secondary)' }}>{app.description}</p>}
-          {sites && (
-            <div className="mt-2 flex items-center gap-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }} data-testid="app-sites">
-              <Globe size={15} />
-              {sites.anyWebsite ? <span>Any website</span> : (
-                <span className="truncate">
-                  {sites.hosts.map((h, i) => (<Fragment key={h}>{i > 0 && <span style={{ opacity: 0.45 }}>{' · '}</span>}{h}</Fragment>))}
-                </span>
-              )}
-            </div>
-          )}
+          {sites && <SiteList sites={sites} testid="app-sites" />}
           <div className="flex items-center gap-2 mt-4">
-            <button onClick={() => toggleApp(appId)} className={btn} style={{ color: 'var(--bg-white)', borderColor: disabled ? 'var(--success)' : 'var(--clay)', background: disabled ? 'var(--success)' : 'var(--clay)' }} data-testid="app-toggle">
-              <Power size={15} />{disabled ? 'Enable' : 'Disable'}
-            </button>
-            <button onClick={() => app && setConfirmUninstall(app)} className={btn} style={{ color: 'var(--error)', borderColor: 'var(--border-secondary)', background: 'var(--bg-white)' }} data-testid="app-uninstall">
-              <Trash2 size={15} />Uninstall
-            </button>
+            <ActionButton tone={disabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(appId)} testid="app-toggle">
+              {disabled ? 'Enable' : 'Disable'}
+            </ActionButton>
+            <ActionButton tone="danger" variant="outline" icon={Trash2} onClick={() => app && setConfirmUninstall(app)} testid="app-uninstall">
+              Uninstall
+            </ActionButton>
             {hasSecrets && (
-              <button onClick={() => openSecrets(appId)} className={btn} style={{ color: missing.length > 0 ? 'var(--error)' : 'var(--fg-secondary)', borderColor: missing.length > 0 ? 'color-mix(in srgb, var(--error) 45%, var(--border-secondary))' : 'var(--border-secondary)', background: 'var(--bg-white)' }} data-testid="app-secrets">
-                <KeyRound size={15} />Secrets
-              </button>
+              <ActionButton tone={missing.length > 0 ? 'danger' : 'neutral'} variant="outline" icon={KeyRound} onClick={() => openSecrets(appId)} testid="app-secrets">
+                Secrets
+              </ActionButton>
             )}
           </div>
         </header>
-        <div className="flex-1 min-h-0" style={{ background: 'var(--bg-primary)' }}>
-          {daemonOriginUrl
-            ? <AppFrame appId={appId} origin={daemonOriginUrl} page={appPage} />
-            : <div className="p-8 text-base" style={{ color: 'var(--fg-tertiary)' }}>Loading…</div>}
-        </div>
+        {daemonOriginUrl
+          ? <AppFrame appId={appId} origin={daemonOriginUrl} page={appPage} autoHeight />
+          : <div className="flex-1 p-8 text-base" style={{ color: 'var(--fg-tertiary)' }}>Loading…</div>}
       </div>
     );
   }
@@ -1354,12 +1420,18 @@ export default function App() {
         ) : page === 'logs' ? (
           <LogsPage />
         ) : openAppId ? (
-          <AppView appId={openAppId} />
+          // Invoke AppView as a function rather than <AppView/>. AppView is
+          // defined inside App, so as a JSX element its type changes every
+          // render — React would unmount/remount the whole subtree (incl. the
+          // app's <iframe>) on each App re-render, reloading the app UI (the
+          // "double refresh" when async data from loadAll lands). Called as a
+          // function its tree reconciles in place and the iframe is preserved.
+          AppView({ appId: openAppId })
         ) : (
         <div className="-m-8 flex flex-col" style={{ minHeight: '100vh' }}>
           <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }}>
             <div className="flex items-center gap-1.5 text-base" data-testid="dashboard-breadcrumb">
-              <span className="text-xl font-medium" style={{ color: 'var(--fg-secondary)' }}>{activeTab === 'catalog' ? 'Catalog' : 'Apps'}</span>
+              <span className="text-xl font-medium" style={{ color: 'var(--fg-primary)' }}>{activeTab === 'catalog' ? 'Catalog' : 'Installed Apps'}</span>
               {activeTab === 'catalog' && catalogApps && (
                 <span className="text-lg" style={{ color: 'var(--fg-tertiary)' }}>{catalogApps.length}</span>
               )}
