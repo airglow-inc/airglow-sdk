@@ -75,6 +75,33 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 
 **Declare the page entrypoint.** When the app injects a clickable entrypoint (button/pill) into the page, set `manifest.entrypoint` to `{ "selector": "<css-selector>" }` — the exact selector your userscript creates for that element (e.g. `"#airglow-cinema-button"`). Airglow briefly highlights it on the page after a build so the user can find what changed. Give the entrypoint a stable, unique `id` (prefix with `airglow-`) and use that as the selector. Omit `entrypoint` for apps with no clickable entrypoint (pure-CSS, shortcut-only).
 
+## Design: decide, don't default
+
+AI UI drifts to the median — generic purple pill, system-font card, centered hero. An Airglow app has two design surfaces, each with a constraint median design ignores. Make an explicit call for each; if you can't name why a choice fits, it's a default, not a decision.
+
+**Injected on-page UI** (buttons, pills, overlays your userscript adds to a host site) — the host's design *is* your design system:
+
+- **Harmonize or contrast on purpose.** Read the host's own controls — accent color, pill radius, font, spacing (`getComputedStyle` an adjacent element) — then either match them so your element looks native, or contrast deliberately so it reads as "an Airglow tool." A purple pill dropped onto a site that uses none of those is neither — it's the default. (If X's search box is 44px tall with a given radius, a button beside it reasons from *that*, not a blank canvas.)
+- **Minimal footprint.** You're a guest in someone's layout: one injected control, one accent, the host's spacing. Don't redecorate the room.
+- **Don't fight the host.** Stacking/z-index, reflow, and not breaking the page come first; the visual follows what's safe. Re-assert your inline styles across the host's re-renders (it's usually a SPA) rather than styling once.
+- **Respect `prefers-reduced-motion`.** Gate every transition/animation you add — `@media (prefers-reduced-motion: reduce)` removes it. Interaction motion <200ms, `ease-out` for entrances.
+
+**The app page** (`ui/App.tsx`) — the opposite constraint: it lives in the shared dashboard, so consistency beats identity.
+
+- Build on `@shared` `AppPage` + theme tokens (`var(--fg-primary)`, …). Don't invent a per-app palette or display font — that fragments the catalog. (Tailwind utility classes can fail to generate in an app bundle, rendering as zero padding; inline styles + theme tokens are the reliable path.)
+- Within those tokens still hold the line: a real type scale, named color *roles* (background / surface / text / accent / muted), one accent used with restraint, a consistent radius set.
+- **Real copy.** Name what the app actually does; no "unlock / elevate / seamless / supercharge," no "Your feature here."
+
+**Airglow kill list** — revise the choice if you hit one:
+
+- [ ] Generic SaaS purple/blue pill that ignores the host site's design language
+- [ ] Animation with no `prefers-reduced-motion` fallback
+- [ ] Injected control styled once, then wiped by the host's re-render
+- [ ] App page that abandons `@shared` tokens for a one-off look
+- [ ] Copy with "unlock / elevate / seamless / cutting-edge"
+
+The screenshot scan under **Verify before handoff** is where you judge the result — read it as an image, against the decision you made, not just for crashes.
+
 ## Best practices
 
 - **Test end-to-end against a real browser** — untested code is not done. Drive it with `airglow browser` (see `docs/browser-debugging.md`). If you can't test something, say so at the end.
