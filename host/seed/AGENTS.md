@@ -102,6 +102,16 @@ AI UI drifts to the median — generic purple pill, system-font card, centered h
 
 The screenshot scan under **Verify before handoff** is where you judge the result — read it as an image, against the decision you made, not just for crashes.
 
+## Craft: parity, real data, alignment
+
+Beyond the aesthetic call, these are the execution defects that reach users:
+
+- **Preserve what exists.** Changing an app is re-style + re-structure, not rebuild from memory. Inventory the current surface first (every setting, control, injected element, piece of copy), mark each keep / merge / drop — a drop is a stated decision, never silent attrition — and re-check before handoff. A "keep" that vanished is a bug, not a detail.
+- **Build for the real data range, not the happy path.** Enumerate the variance up front (null fields, 0 / 1 / many items, long strings, missing media) and hold the layout at both the sparse and the maximal extreme. The host page varies too — logged-out, narrow windows, mid-render. Every remote asset needs a fallback, every list an empty state; a console 404 is an unhandled case, not noise.
+- **Alignment is correctness, not taste.** Share axes on purpose (a column's left edge; paired blocks' top/bottom), no unexplained dead space, labels on their subject's axis. Prefer CSS (grid tracks, `align-items`) over JS measurement; if you must measure, re-run on resize and after images load. Confirm by measuring bounding rects (~2px), not by eye — across states and a narrow + wide width.
+- **Style every state**: hover, active/selected, focus, disabled, loading, empty, error.
+- **Clarify scope once before large work.** Past a small tweak, confirm in one round — which screens, keep-vs-rebuild, how many variations. "Redesign" without "keep everything" reads as ambiguous, not "rebuild."
+
 ## Best practices
 
 - **Test end-to-end against a real browser** — untested code is not done. Drive it with `airglow browser` (see `docs/browser-debugging.md`). If you can't test something, say so at the end.
