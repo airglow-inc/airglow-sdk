@@ -73,8 +73,6 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 
 `ui/globals.css` must import `tailwindcss` and `@shared/theme/tailwind-theme.css`. Use the shared theme (`shared/theme/tokens.css`).
 
-**Declare the page entrypoint.** When the app injects a clickable entrypoint (button/pill) into the page, set `manifest.entrypoint` to `{ "selector": "<css-selector>" }` — the exact selector your userscript creates for that element (e.g. `"#airglow-cinema-button"`). Airglow briefly highlights it on the page after a build so the user can find what changed. Give the entrypoint a stable, unique `id` (prefix with `airglow-`) and use that as the selector. Omit `entrypoint` for apps with no clickable entrypoint (pure-CSS, shortcut-only).
-
 ## Best practices
 
 - **Test end-to-end against a real browser** — untested code is not done. Drive it with `airglow browser` (see `docs/browser-debugging.md`). If you can't test something, say so at the end.

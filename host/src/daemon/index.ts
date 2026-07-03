@@ -299,12 +299,20 @@ export async function runDaemon(argv: string[]): Promise<void> {
     return seq;
   }
   const connectorIdentities = new WeakMap<object, AgentIdentity>();
+  // Iterable companion to connectorIdentities (a WeakMap): connector sockets by
+  // id + the identity each announced. Lets a loopback 401 find the socket that
+  // owns the token it used and ask THAT browser to silently re-mint. Cleaned on
+  // socket close.
+  const connectorSocketsById = new Map<number, { ws: Bun.ServerWebSocket<unknown>; identity: AgentIdentity }>();
   // Last identity any connector announced — last-resort fallback for loopbacks
   // that carry neither an Authorization header nor an RPC session nonce. This
   // is GLOBAL, so it picks the wrong user when several browsers are connected;
   // rpcConnectorIdentities below is what makes server-function loopbacks resolve
   // the right one.
   let lastConnectorIdentity: AgentIdentity | null = null;
+  // The socket behind lastConnectorIdentity — reauth target when a loopback
+  // can't be pinned to a specific browser (single-browser is the common case).
+  let lastConnectorWs: Bun.ServerWebSocket<unknown> | null = null;
 
   // Per-RPC connector/LLM identity: an opaque nonce → the identity of the
   // browser that invoked the RPC. Handed to the server-function subprocess as
@@ -313,6 +321,9 @@ export async function runDaemon(argv: string[]): Promise<void> {
   // user's token even with multiple browsers connected. The token itself never
   // enters the subprocess. Entries live only for the duration of one RPC.
   const rpcConnectorIdentities = new Map<string, AgentIdentity>();
+  // nonce → the socket that invoked the RPC, so a loopback 401 re-mints on the
+  // browser that actually owns the token (not just the most recent connector).
+  const rpcConnectorSockets = new Map<string, Bun.ServerWebSocket<unknown>>();
   let rpcConnectorSessionSeq = 0;
 
   // Report the user's current installed catalog apps to the cloud (install,
@@ -338,6 +349,27 @@ export async function runDaemon(argv: string[]): Promise<void> {
 
   function sendExt(ws: Bun.ServerWebSocket<unknown>, m: Record<string, unknown>): void {
     try { ws.send(JSON.stringify({ t: 'ext', msg: m })); } catch {}
+  }
+
+  // Ask a connector to silently re-mint its gateway session token (Google
+  // re-auth, no UI while signed in) and wait for the refreshed identity to land.
+  // Returns the new token, or null if there's no socket or the refresh didn't
+  // arrive (signed out of Google → the extension clears the token, ending the
+  // wait early). Shared by the agent stream and the LLM/connector loopback
+  // proxies so every gateway path self-heals on AUTH_SESSION_INVALID.
+  async function refreshConnectorAuth(ws: Bun.ServerWebSocket<unknown> | null | undefined): Promise<string | null> {
+    if (!ws) return null;
+    const before = connectorIdentities.get(ws)?.authToken ?? null;
+    sendExt(ws, { type: 'agent:auth_refresh' });
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      await Bun.sleep(200);
+      const now = connectorIdentities.get(ws)?.authToken ?? null;
+      // Any change ends the wait: a new token → retry with it; cleared to null →
+      // the extension gave up (no silent session), so surface the error promptly.
+      if (now !== before) return now;
+    }
+    return null;
   }
 
   const sink: EventSink = (sessionId, event) => {
@@ -393,22 +425,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
       // so the turn retries. Null when there's no connector or the refresh
       // didn't land in time (e.g. signed out of Google → falls through to the
       // surfaced error).
-      refreshAuth: async (sessionId) => {
-        const ws = sessionConnectors.get(sessionId);
-        if (!ws) return null;
-        const before = connectorIdentities.get(ws)?.authToken ?? null;
-        sendExt(ws, { type: 'agent:auth_refresh', sessionId });
-        const deadline = Date.now() + 10_000;
-        while (Date.now() < deadline) {
-          await Bun.sleep(200);
-          const now = connectorIdentities.get(ws)?.authToken ?? null;
-          // Any change ends the wait: a new token → retry with it; the token
-          // cleared to null → the extension gave up (no silent session), so
-          // surface the error promptly instead of stalling the full 10s.
-          if (now !== before) return now;
-        }
-        return null;
-      },
+      refreshAuth: (sessionId) => refreshConnectorAuth(sessionConnectors.get(sessionId)),
     },
     sink,
   );
@@ -432,18 +449,23 @@ export async function runDaemon(argv: string[]): Promise<void> {
   // Chat-client messages arriving from a connector (the extension side).
   function handleAgentMessage(ws: Bun.ServerWebSocket<unknown>, m: any): boolean {
     switch (m.type) {
-      case 'identity':
+      case 'identity': {
         connectorIdentities.set(ws, {
           userId: typeof m.userId === 'string' ? m.userId : null,
           email: typeof m.email === 'string' ? m.email : null,
           authToken: typeof m.authToken === 'string' && m.authToken ? m.authToken : null,
         });
-        lastConnectorIdentity = connectorIdentities.get(ws as object) ?? null;
+        const identity = connectorIdentities.get(ws as object) ?? null;
+        lastConnectorIdentity = identity;
+        lastConnectorWs = ws;
+        const connectorId = (ws.data as any)?.connectorId;
+        if (typeof connectorId === 'number' && identity) connectorSocketsById.set(connectorId, { ws, identity });
         if (typeof m.extensionId === 'string' && m.extensionId) bridge.setConnectorExtensionId(ws, m.extensionId);
         if ('gatewayUrl' in m) applyGatewayOverride(m.gatewayUrl);
         syncInstallTelemetry(); // now we know who to attribute installs to
         apps.scanManifests().then(syncAppTelemetry).catch(() => {});
         return true;
+      }
       case 'agent:start': {
         const identity = connectorIdentities.get(ws) ?? { userId: null, email: null, authToken: null };
         const session = agents.prepare(
@@ -599,6 +621,10 @@ export async function runDaemon(argv: string[]): Promise<void> {
     // lastConnectorIdentity, which is wrong when several browsers are connected.
     const connectorSessionId = req.headers.get('x-airglow-connector-session');
     const sessionIdentity = connectorSessionId ? rpcConnectorIdentities.get(connectorSessionId) ?? null : null;
+    // The socket to ask for a silent re-mint when a gateway loopback returns 401
+    // AUTH_SESSION_INVALID: the browser that owns this RPC's token, else the last
+    // connector as a single-browser fallback.
+    const reauthWs = (connectorSessionId ? rpcConnectorSockets.get(connectorSessionId) : null) ?? lastConnectorWs;
 
     try {
       if (pathname === '/api/healthz' && req.method === 'GET') {
@@ -669,7 +695,11 @@ export async function runDaemon(argv: string[]): Promise<void> {
       // airglow.llm from locally-served apps — proxied to the LLM gateway
       // (or straight to Anthropic in dev). See daemon/llm.ts.
       if (pathname === '/api/llm/anthropic/messages' && req.method === 'POST') {
-        const [status, data] = await handleLlmAnthropicMessages(req, sessionIdentity ?? lastConnectorIdentity);
+        const [status, data] = await handleLlmAnthropicMessages(
+          req,
+          sessionIdentity ?? lastConnectorIdentity,
+          () => refreshConnectorAuth(reauthWs),
+        );
         return respondJson(status, data);
       }
 
@@ -767,9 +797,26 @@ export async function runDaemon(argv: string[]): Promise<void> {
               body: await req.text(),
             };
           }
+          const send = () => fetch(target, { ...init, signal: AbortSignal.timeout(60_000) });
           try {
-            const res = await fetch(target, { ...init, signal: AbortSignal.timeout(60_000) });
-            const text = await res.text();
+            let res = await send();
+            let text = await res.text();
+            // Same self-heal as the LLM proxy: a stale session token 401s here
+            // too. Re-mint on the originating browser once and retry so connector
+            // calls don't fail after a token expiry/rotation.
+            if (res.status === 401) {
+              let code = '';
+              try { code = JSON.parse(text)?.error?.code ?? ''; } catch {}
+              if (code === 'AUTH_SESSION_INVALID') {
+                const fresh = await refreshConnectorAuth(reauthWs);
+                if (fresh) {
+                  headers['authorization'] = `Bearer ${fresh}`;
+                  init.headers = init.method === 'POST' ? { ...headers, 'Content-Type': 'application/json' } : headers;
+                  res = await send();
+                  text = await res.text();
+                }
+              }
+            }
             let data: any;
             try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 300), code: 'CONNECTOR_UPSTREAM_ERROR' }; }
             return respondJson(res.status, data);
@@ -875,11 +922,20 @@ export async function runDaemon(argv: string[]): Promise<void> {
           const rpcUserId = req.headers.get('x-airglow-user-id');
           if (rpcAuth || rpcUserId) {
             sessionNonce = `rpc-${++rpcConnectorSessionSeq}`;
+            const bearer = rpcAuth ? rpcAuth.replace(/^Bearer\s+/i, '') : null;
             rpcConnectorIdentities.set(sessionNonce, {
               userId: rpcUserId,
               email: req.headers.get('x-airglow-user-email'),
-              authToken: rpcAuth ? rpcAuth.replace(/^Bearer\s+/i, '') : null,
+              authToken: bearer,
             });
+            // Pin the originating socket too, so a loopback 401 re-mints on the
+            // browser that owns this token — match by token, else by user id.
+            for (const { ws: cws, identity } of connectorSocketsById.values()) {
+              if ((bearer && identity.authToken === bearer) || (!bearer && rpcUserId && identity.userId === rpcUserId)) {
+                rpcConnectorSockets.set(sessionNonce, cws);
+                break;
+              }
+            }
           }
           try {
             const [status, data] = await apps.handleRpc(appId, rpcMatch[1], body, sessionNonce);
@@ -888,7 +944,10 @@ export async function runDaemon(argv: string[]): Promise<void> {
             console.error(`[airglow/${appId}] rpc ${rpcMatch[1]} failed: ${e?.message || e}`);
             return respondJson(500, { error: String(e?.message || e) });
           } finally {
-            if (sessionNonce) rpcConnectorIdentities.delete(sessionNonce);
+            if (sessionNonce) {
+              rpcConnectorIdentities.delete(sessionNonce);
+              rpcConnectorSockets.delete(sessionNonce);
+            }
           }
         }
       }
@@ -919,6 +978,9 @@ export async function runDaemon(argv: string[]): Promise<void> {
         }
       },
       close(ws: Bun.ServerWebSocket<unknown>) {
+        const connectorId = (ws.data as any)?.connectorId;
+        if (typeof connectorId === 'number') connectorSocketsById.delete(connectorId);
+        if (lastConnectorWs === ws) lastConnectorWs = null;
         bridge.unregister(ws);
         for (const [sessionId, sessionWs] of sessionConnectors) {
           if (sessionWs === ws) sessionConnectors.delete(sessionId);

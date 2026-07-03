@@ -13,7 +13,7 @@ const WEB_SEARCH_DEFAULT_MAX_USES = 5;
 const WEB_SEARCH_DEV_DEFAULT_MAX_TOKENS = 4000;
 // Direct-Anthropic dev calls skip the gateway's normalization, so fill its
 // defaults here; everything else passes through for Anthropic to validate.
-const DEV_DEFAULT_MODEL = 'claude-sonnet-4-6';
+const DEV_DEFAULT_MODEL = 'claude-sonnet-5';
 const DEV_DEFAULT_MAX_TOKENS = 2000;
 // Above the gateway's own 20s upstream timeout so its error wins, below the
 // extension's 60s client timeout.
@@ -27,7 +27,16 @@ const WEB_SEARCH_TIMEOUT_MS = 90_000;
 // longer read server-side, so they aren't forwarded.
 const IDENTITY_HEADERS = ['x-airglow-app-id', 'authorization'];
 
-export async function handleLlmAnthropicMessages(req: Request, fallbackIdentity?: AgentIdentity | null): Promise<[number, unknown]> {
+export async function handleLlmAnthropicMessages(
+  req: Request,
+  fallbackIdentity?: AgentIdentity | null,
+  // Called once if the gateway rejects the session token (401
+  // AUTH_SESSION_INVALID). Resolves to a freshly-minted token (the originating
+  // browser silently re-authed) or null. A non-null result swaps the Bearer and
+  // retries, so a stale token self-heals instead of surfacing to the app —
+  // mirrors the agent stream path (agent/api.ts).
+  refreshAuth?: () => Promise<string | null>,
+): Promise<[number, unknown]> {
   const body = await req.json().catch(() => null);
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     return [400, { error: 'LLM request body must be a JSON object', code: 'LLM_INVALID_JSON' }];
@@ -69,14 +78,33 @@ export async function handleLlmAnthropicMessages(req: Request, fallbackIdentity?
     }
   }
 
+  const url = gw ? `${gw}/api/llm/anthropic/messages` : ANTHROPIC_MESSAGES_URL;
+  const send = () => fetch(url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(wantsWebSearch ? WEB_SEARCH_TIMEOUT_MS : TIMEOUT_MS),
+  });
+
   try {
-    const res = await fetch(gw ? `${gw}/api/llm/anthropic/messages` : ANTHROPIC_MESSAGES_URL, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(wantsWebSearch ? WEB_SEARCH_TIMEOUT_MS : TIMEOUT_MS),
-    });
-    const text = await res.text();
+    let res = await send();
+    let text = await res.text();
+    // Gateway rejected this session's token (expiry, secret rotation, or the dev
+    // switching gateway between prod and local). Ask the originating browser to
+    // silently re-mint and retry once — no user-visible error while Google is
+    // signed in. Only on the gateway path; direct-Anthropic dev has no session.
+    if (gw && res.status === 401 && refreshAuth) {
+      let code = '';
+      try { code = (JSON.parse(text) as any)?.error?.code ?? ''; } catch {}
+      if (code === 'AUTH_SESSION_INVALID') {
+        const fresh = await refreshAuth().catch(() => null);
+        if (fresh) {
+          headers['authorization'] = `Bearer ${fresh}`;
+          res = await send();
+          text = await res.text();
+        }
+      }
+    }
     let json: unknown;
     try { json = JSON.parse(text); } catch { json = { error: text.slice(0, 500), code: 'LLM_UPSTREAM_ERROR' }; }
     return [res.status, json];

@@ -202,7 +202,7 @@ export function createChatWindow(config: ChatWindowConfig) {
     chatBox.style.cssText = `
       display: none; position: fixed; z-index: 999999;
       width: 460px; max-height: 680px;
-      border: 1.5px solid #e5e3d9;
+      border: 2px solid #e8a050;
       border-radius: 10px; overflow: hidden;
       background: #ffffff;
       box-shadow: 0 8px 30px rgba(0,0,0,0.12);
@@ -229,10 +229,22 @@ export function createChatWindow(config: ChatWindowConfig) {
     const header = document.createElement('div');
     header.style.cssText = 'padding: 10px 14px; border-bottom: 1px solid #edece3; display: flex; justify-content: space-between; align-items: center;';
 
+    // Left side: airglow icon + title
+    const headerLeft = document.createElement('div');
+    headerLeft.style.cssText = 'display: flex; align-items: center; gap: 8px; min-width: 0;';
+
+    const headerIcon = document.createElement('div');
+    headerIcon.style.cssText = 'flex-shrink: 0; width: 20px; height: 20px; display: flex; align-items: center; justify-content: center;';
+    headerIcon.innerHTML = iconSvg.replace(/<svg /, '<svg width="20" height="20" style="border-radius: 4px;" ');
+    headerLeft.appendChild(headerIcon);
+
     const headerTitle = document.createElement('span');
-    headerTitle.style.cssText = 'font-size: 17px; font-weight: 600; color: #3a3a37;';
+    headerTitle.setAttribute('data-testid', `${p}-title`);
+    headerTitle.style.cssText = 'font-size: 17px; font-weight: 600; color: #3a3a37; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
     headerTitle.textContent = config.panelTitle;
-    header.appendChild(headerTitle);
+    headerLeft.appendChild(headerTitle);
+
+    header.appendChild(headerLeft);
 
     const headerBtns = document.createElement('div');
     headerBtns.style.cssText = 'display: flex; gap: 6px;';

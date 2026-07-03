@@ -85,14 +85,16 @@ Anthropic Messages API through the Airglow gateway — no `ANTHROPIC_API_KEY` ne
 llm.anthropic.messages(payload): Promise<AnthropicMessage>
 ```
 
-`payload` is the [Anthropic request body](https://docs.claude.com/en/api/messages), passed through unchanged; the response comes back unchanged. Allowed models: `claude-haiku-4-5`, `claude-sonnet-4-6` (default), `claude-opus-4-8` — others reject with `LLM_MODEL_NOT_ALLOWED`.
+`payload` is the [Anthropic request body](https://docs.claude.com/en/api/messages), passed through unchanged; the response comes back unchanged. Allowed models: `claude-haiku-4-5`, `claude-sonnet-5` (default), `claude-opus-4-8` — others reject with `LLM_MODEL_NOT_ALLOWED`.
 
 ```ts
 const res = await airglow.llm.anthropic.messages({
-  model: 'claude-sonnet-4-6', max_tokens: 1024,
+  model: 'claude-sonnet-5', max_tokens: 1024,
   messages: [{ role: 'user', content: 'Hello' }],
 });
 ```
+
+Client tools: pass `tools` (`{ name, description?, input_schema }`) and optional `tool_choice`; the model returns `tool_use` blocks, you run them and send `tool_result` blocks back on the next call. Hosted/server tools are rejected — use `web_search` for search.
 
 Calls bill against a shared weekly per-user budget; when exhausted they reject with `LLM_BUDGET_EXCEEDED` (429) until the rolling 7-day window frees capacity. Dev: set `ANTHROPIC_API_KEY` in `~/.airglow/state/agent.env` to bypass the gateway with your own key.
 

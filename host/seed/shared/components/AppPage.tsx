@@ -86,11 +86,12 @@ export function AppPage({
     <div className="p-8" style={{ background: 'var(--bg-primary)', minHeight: '100%' }}>
       <div className="max-w-6xl mx-auto">
         {/* Settings flow in the wide left column; the preview + secrets sit in a
-            sticky right rail so the page uses the full width. On narrow widths it
-            collapses to a single column (rail first). */}
-        <div className={hasRail ? 'grid grid-cols-1 lg:grid-cols-3 gap-x-8 items-start' : ''}>
+            sticky right rail so the page uses the full width. The two-column layout
+            holds down to `md` (768px) so it survives the side panel narrowing the
+            dashboard; below that it collapses to a single column (rail first). */}
+        <div className={hasRail ? 'grid grid-cols-1 md:grid-cols-3 gap-x-8 items-start' : ''}>
           {hasRail && (
-            <aside className="lg:col-span-1 lg:order-2 lg:sticky lg:top-0 mb-6 lg:mb-0">
+            <aside className="md:col-span-1 md:order-2 md:sticky md:top-0 mb-6 md:mb-0">
               {preview && (
                 <SettingsSection title="What it looks like">
                   {preview}
@@ -103,7 +104,7 @@ export function AppPage({
             </aside>
           )}
 
-          <div className={hasRail ? 'lg:col-span-2 lg:order-1 min-w-0' : ''}>
+          <div className={hasRail ? 'md:col-span-2 md:order-1 min-w-0' : ''}>
             {hasOwnContent ? children : <OverviewPlaceholder />}
           </div>
         </div>
