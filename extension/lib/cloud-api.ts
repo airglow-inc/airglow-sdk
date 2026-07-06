@@ -14,13 +14,7 @@ export const DEFAULT_CLOUD_API_URL = 'https://api.airglow.dev';
 // kept so existing profiles' settings survive.
 export const CLOUD_API_URL_OVERRIDE_KEY = '__agent_gateway_url';
 
-// WXT_CLOUD_APP_SOURCE_URL / WXT_OFFICIAL_APP_SOURCE_URL kept as backward-
-// compat aliases from when the cloud also served apps. New code should set
-// WXT_CLOUD_API_URL.
-const CLOUD_API_URL = import.meta.env.WXT_CLOUD_API_URL
-  || import.meta.env.WXT_CLOUD_APP_SOURCE_URL
-  || import.meta.env.WXT_OFFICIAL_APP_SOURCE_URL
-  || DEFAULT_CLOUD_API_URL;
+const CLOUD_API_URL = import.meta.env.WXT_CLOUD_API_URL || DEFAULT_CLOUD_API_URL;
 
 export function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
