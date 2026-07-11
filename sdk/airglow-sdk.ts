@@ -16,7 +16,7 @@
  * apps (__disabled_apps).
  */
 
-export const AIRGLOW_SDK_CONTRACT_VERSION = '0.1.0-beta.1';
+export const AIRGLOW_SDK_CONTRACT_VERSION = '0.1.0-beta.2';
 
 export type AirglowSdkContext = 'userscript' | 'app_ui' | 'startup';
 
@@ -264,9 +264,39 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     },
   };
 
+  // Streaming transport: sendMsg is one-shot request/response on every path
+  // (chrome.runtime.sendMessage and the dashboard postMessage bridge), so the
+  // background can't push events to us. Instead it buffers SSE events per
+  // stream and we poll. ~300ms polling is invisible next to multi-second
+  // model latency, and it reuses the existing bridge unchanged in all three
+  // contexts (userscript / app_ui iframe / startup).
+  const LLM_STREAM_POLL_MS = 300;
+  async function llmMessagesStreaming(payload, onEvent) {
+    const start = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload, stream: true });
+    const streamId = start?.streamId;
+    if (!streamId) throw makeAirglowError({ error: 'streaming start failed: no streamId', code: 'LLM_STREAM_ERROR' });
+    while (true) {
+      // sendMsg rejects on an error envelope — upstream failures (budget,
+      // auth, mid-stream cut) surface here as AirglowError.
+      const res = await sendMsg({ type: 'airglow:llm:stream:poll', streamId });
+      const events = Array.isArray(res?.events) ? res.events : [];
+      for (const e of events) {
+        try { onEvent(e); } catch (err) { logRuntimeError(runtimeErrorPayload('llm_onevent_error', err, {})); }
+      }
+      if (res?.done) return res.result;
+      // Drain a bursty buffer immediately; idle-wait otherwise.
+      if (events.length === 0) await new Promise((r) => setTimeout(r, LLM_STREAM_POLL_MS));
+    }
+  }
+
   const llm = {
     anthropic: {
-      async messages(payload) {
+      async messages(payload, opts) {
+        // Opt-in streaming: observe raw Anthropic SSE events while the call
+        // runs; resolves with the same complete message as the buffered path.
+        if (opts && typeof opts.onEvent === 'function') {
+          return llmMessagesStreaming(payload, opts.onEvent);
+        }
         const res = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload });
         // Surface gateway failures (budget exhausted, rate limit, validation)
         // as a throw rather than silently returning undefined — otherwise the

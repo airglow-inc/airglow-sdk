@@ -77,12 +77,12 @@ if (r.successful) render(r.data);
 
 ---
 
-## airglow.llm.anthropic.messages(payload)
+## airglow.llm.anthropic.messages(payload, opts?)
 
 Anthropic Messages API through the Airglow gateway — no `ANTHROPIC_API_KEY` needed. Available everywhere, including server functions.
 
 ```ts
-llm.anthropic.messages(payload): Promise<AnthropicMessage>
+llm.anthropic.messages(payload, opts?: { onEvent?: (event) => void }): Promise<AnthropicMessage>
 ```
 
 `payload` is the [Anthropic request body](https://docs.claude.com/en/api/messages), passed through unchanged; the response comes back unchanged. Allowed models: `claude-haiku-4-5`, `claude-sonnet-5` (default), `claude-opus-4-8` — others reject with `LLM_MODEL_NOT_ALLOWED`.
@@ -94,7 +94,18 @@ const res = await airglow.llm.anthropic.messages({
 });
 ```
 
-Client tools: pass `tools` (`{ name, description?, input_schema }`) and optional `tool_choice`; the model returns `tool_use` blocks, you run them and send `tool_result` blocks back on the next call. Hosted/server tools are rejected — use `web_search` for search.
+Server tools: set `web_search` (live web search with cited sources) and/or `web_fetch` (fetch a URL already present in the conversation — the model never invents URLs, so include the URL in the prompt). Pass `true` for defaults or an options object: `web_search: { max_uses?, allowed_domains?, blocked_domains? }` (max_uses 1-10, default 5; each search bills to the weekly budget), `web_fetch: { max_uses?, allowed_domains?, blocked_domains?, max_content_tokens? }` (max_uses 1-10, default 3; max_content_tokens caps how much of a page enters the context — default 20000, max 50000; fetched content bills as input tokens). The response `content` then carries `server_tool_use` and `web_search_tool_result` / `web_fetch_tool_result` blocks; server-tool calls get a higher max_tokens ceiling (8000) and a longer timeout.
+
+Client tools: pass `tools` (`{ name, description?, input_schema }`) and optional `tool_choice`; the model returns `tool_use` blocks, you run them and send `tool_result` blocks back on the next call. Hosted/server tools are rejected in `tools[]` — use the `web_search` / `web_fetch` params instead.
+
+Streaming: pass `{ onEvent }` as a second argument to observe progress while the call runs — useful to surface web-search queries or partial text during a long server-tool call. `onEvent` receives every raw [Anthropic SSE event](https://docs.claude.com/en/api/messages-streaming) (`message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`); the promise still resolves with the same complete message, and errors still reject with `AirglowError`. Caveat: a `server_tool_use` / `tool_use` block's `input` (e.g. the search query) streams as `input_json_delta` fragments — it is only complete at that block's `content_block_stop`.
+
+```ts
+const res = await airglow.llm.anthropic.messages(
+  { model: 'claude-sonnet-5', web_search: true, messages },
+  { onEvent: (e) => { if (e.type === 'content_block_stop') updateProgress(); } },
+);
+```
 
 Calls bill against a shared weekly per-user budget; when exhausted they reject with `LLM_BUDGET_EXCEEDED` (429) until the rolling 7-day window frees capacity. Dev: set `ANTHROPIC_API_KEY` in `~/.airglow/state/agent.env` to bypass the gateway with your own key.
 
@@ -132,4 +143,4 @@ captureTab(): Promise<{ base64: string; mediaType: 'image/jpeg' }>   // visible 
 
 ## airglow.sdkVersion
 
-SDK contract version (currently `0.1.0-beta.1`).
+SDK contract version (currently `0.1.0-beta.2`).

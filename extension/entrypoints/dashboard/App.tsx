@@ -17,6 +17,7 @@ import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, get
 const APP_ORDER_KEY = '__app_order';
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
 const SIDE_BUTTON_KEY = '__side_button_enabled';
+const SIDEPANEL_KEY = '__sidepanel_enabled';
 type AppVisibility = 'public' | 'hidden';
 
 interface AppManifest {
@@ -410,6 +411,7 @@ export default function App() {
   const extUpdate = useExtUpdateAvailable();
   const hostVersion = useHostVersion();
   const [sideButtonEnabled, setSideButtonEnabled] = useState(false);
+  const [sidepanelEnabled, setSidepanelEnabled] = useState(false);
   const [gatewayUrlInput, setGatewayUrlInput] = useState('');
   // Host self-update state (Settings modal). null = not yet checked.
   const [hostUpdate, setHostUpdate] = useState<{
@@ -664,12 +666,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, CLOUD_API_URL_OVERRIDE_KEY], (result) => {
+    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY], (result) => {
       const nh = result['__native_host_connected'];
       setNativeHostConnected(nh === undefined ? null : (nh as boolean));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
+      setSidepanelEnabled(!!result[SIDEPANEL_KEY]);
       setGatewayUrlInput(typeof result[CLOUD_API_URL_OVERRIDE_KEY] === 'string' ? result[CLOUD_API_URL_OVERRIDE_KEY] : '');
       getStoredSession().then((session) => {
         setAuthSession(session);
@@ -700,6 +703,9 @@ export default function App() {
       }
       if (SIDE_BUTTON_KEY in changes) {
         setSideButtonEnabled(!!changes[SIDE_BUTTON_KEY].newValue);
+      }
+      if (SIDEPANEL_KEY in changes) {
+        setSidepanelEnabled(!!changes[SIDEPANEL_KEY].newValue);
       }
     };
     chrome.storage.local.onChanged.addListener(onChange);
@@ -735,6 +741,11 @@ export default function App() {
   function setSideButton(next: boolean) {
     setSideButtonEnabled(next);
     chrome.storage.local.set({ [SIDE_BUTTON_KEY]: next });
+  }
+
+  function setSidepanel(next: boolean) {
+    setSidepanelEnabled(next);
+    chrome.storage.local.set({ [SIDEPANEL_KEY]: next });
   }
 
   function saveGatewayUrl() {
@@ -1745,6 +1756,41 @@ export default function App() {
                   style={{
                     width: 18, height: 18,
                     left: sideButtonEnabled ? 22 : 2,
+                    background: 'var(--bg-white)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </label>
+            <label
+              className="flex items-center justify-between gap-4 py-2 cursor-pointer"
+              data-testid="settings-sidepanel-row"
+            >
+              <div>
+                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Enable sidepanel</div>
+                <div className="text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                  Toolbar icon opens the agent sidepanel instead of this dashboard.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={sidepanelEnabled}
+                onClick={() => setSidepanel(!sidepanelEnabled)}
+                className="relative shrink-0 transition-colors cursor-pointer rounded-full border"
+                style={{
+                  boxSizing: 'border-box',
+                  width: 44, height: 24,
+                  background: sidepanelEnabled ? 'var(--olive)' : 'var(--bg-tertiary)',
+                  borderColor: sidepanelEnabled ? 'var(--olive)' : 'var(--border-secondary)',
+                }}
+                data-testid="settings-sidepanel-toggle"
+              >
+                <span
+                  className="absolute top-1/2 -translate-y-1/2 rounded-full transition-all"
+                  style={{
+                    width: 18, height: 18,
+                    left: sidepanelEnabled ? 22 : 2,
                     background: 'var(--bg-white)',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                   }}

@@ -1483,10 +1483,32 @@ ${code}
     });
   });
 
-  // Extension icon click → open the agent sidepanel (the chat is the primary
-  // surface; the dashboard is reachable from the panel header).
-  chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: true })
-    .catch((e: any) => logger.warn('airglow', `sidePanel behavior failed: ${e?.message ?? e}`));
+  // Extension icon click → dashboard by default; the agent sidepanel instead
+  // when the user enables it in Settings ("Enable sidepanel").
+  const SIDEPANEL_ENABLED_KEY = '__sidepanel_enabled';
+  const applyActionClickBehavior = (sidepanel: boolean) => {
+    chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: sidepanel })
+      .catch((e: any) => logger.warn('airglow', `sidePanel behavior failed: ${e?.message ?? e}`));
+  };
+  chrome.storage.local.get(SIDEPANEL_ENABLED_KEY, (r) => applyActionClickBehavior(!!r[SIDEPANEL_ENABLED_KEY]));
+  chrome.storage.local.onChanged.addListener((changes) => {
+    if (SIDEPANEL_ENABLED_KEY in changes) applyActionClickBehavior(!!changes[SIDEPANEL_ENABLED_KEY].newValue);
+  });
+  chrome.action.onClicked.addListener(() => {
+    chrome.storage.local.get(SIDEPANEL_ENABLED_KEY, (r) => {
+      if (r[SIDEPANEL_ENABLED_KEY]) return; // panel behavior handles the click
+      const dashboardUrl = chrome.runtime.getURL('dashboard.html');
+      chrome.tabs.query({ url: dashboardUrl + '*' }, (tabs) => {
+        const existing = tabs[0];
+        if (existing?.id !== undefined) {
+          chrome.tabs.update(existing.id, { active: true });
+          if (existing.windowId !== undefined) chrome.windows.update(existing.windowId, { focused: true });
+        } else {
+          chrome.tabs.create({ url: dashboardUrl });
+        }
+      });
+    });
+  });
 
   // Alt+G → reload the extension from disk (dev: pick up a fresh export).
   chrome.commands?.onCommand.addListener((command) => {

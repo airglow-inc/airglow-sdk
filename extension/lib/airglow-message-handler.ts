@@ -15,10 +15,19 @@ const APP_MANIFESTS_KEY = '__app_manifests';
 const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
 const LLM_TIMEOUT_MS = 60000;
-// web_search calls run several search round-trips before the model answers, so
-// they need a longer client timeout than a plain completion.
+// Server-tool (web_search / web_fetch) calls run several round-trips before
+// the model answers, so they need a longer client timeout than a plain
+// completion.
 const LLM_WEB_SEARCH_TIMEOUT_MS = 120000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
+// Streaming LLM calls: sendResponse is one-shot, so the SDK polls for buffered
+// SSE events instead. A stream nobody polls for LLM_STREAM_GC_MS is an app
+// context that died (tab closed, iframe unmounted) — abort upstream and drop
+// it. The byte cap bounds a between-polls burst (a whole message is well under
+// 1 MB; 4 MB means the consumer stopped draining).
+const LLM_STREAM_GC_MS = 30000;
+const LLM_STREAM_SWEEP_MS = 15000;
+const LLM_STREAM_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
 
 async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string; authToken?: string }> {
   const [identity, session] = await Promise.all([ensureIdentity(), getStoredSession()]);
@@ -395,6 +404,250 @@ function normalizeHttpMethod(value: unknown): string {
   return (typeof value === 'string' && value.trim() ? value.trim() : 'GET').toUpperCase().slice(0, 20);
 }
 
+// ── Streaming LLM calls (airglow.llm.anthropic.messages with onEvent) ──
+//
+// The background owns the upstream SSE connection; app contexts can't hold a
+// live channel to us (sendResponse is one-shot on every bridge), so events
+// accumulate here per streamId and the SDK drains them by polling. The final
+// resolve value is assembled here once — not in every app context.
+
+type LlmStreamError = { error: string; code?: string; status?: number; requestId?: string; details?: unknown };
+
+type LlmStreamRecord = {
+  appId: string;
+  events: unknown[];
+  bufferedBytes: number;
+  done: boolean;
+  result?: unknown;
+  error?: LlmStreamError;
+  lastPollAt: number;
+  abort: () => void;
+};
+
+const llmStreams = new Map<string, LlmStreamRecord>();
+let llmStreamSweeper: ReturnType<typeof setInterval> | null = null;
+
+function sweepLlmStreams(): void {
+  const now = Date.now();
+  for (const [id, record] of llmStreams) {
+    if (now - record.lastPollAt > LLM_STREAM_GC_MS) {
+      record.abort();
+      llmStreams.delete(id);
+    }
+  }
+  if (llmStreams.size === 0 && llmStreamSweeper) {
+    clearInterval(llmStreamSweeper);
+    llmStreamSweeper = null;
+  }
+}
+
+function ensureLlmStreamSweeper(): void {
+  if (!llmStreamSweeper) llmStreamSweeper = setInterval(sweepLlmStreams, LLM_STREAM_SWEEP_MS);
+}
+
+/**
+ * Rebuilds the complete Message object from Anthropic SSE events, so the
+ * streaming path resolves with the same shape as the buffered path.
+ * tool_use / server_tool_use inputs stream as input_json_delta fragments and
+ * only parse at content_block_stop.
+ */
+function createLlmMessageAssembler() {
+  let message: any = null;
+  const jsonAcc = new Map<number, string>();
+  return {
+    apply(evt: any): void {
+      if (!evt || typeof evt !== 'object') return;
+      switch (evt.type) {
+        case 'message_start':
+          message = { ...evt.message, content: [] };
+          break;
+        case 'content_block_start': {
+          if (!message) break;
+          const block = { ...evt.content_block };
+          message.content[evt.index] = block;
+          // Tool inputs arrive as partial_json fragments; start accumulating.
+          if (typeof block.type === 'string' && block.type.endsWith('tool_use')) {
+            jsonAcc.set(evt.index, '');
+          }
+          break;
+        }
+        case 'content_block_delta': {
+          const block = message?.content?.[evt.index];
+          const delta = evt.delta;
+          if (!block || !delta) break;
+          if (delta.type === 'text_delta') block.text = (block.text || '') + delta.text;
+          else if (delta.type === 'input_json_delta') jsonAcc.set(evt.index, (jsonAcc.get(evt.index) || '') + delta.partial_json);
+          else if (delta.type === 'thinking_delta') block.thinking = (block.thinking || '') + delta.thinking;
+          else if (delta.type === 'signature_delta') block.signature = delta.signature;
+          else if (delta.type === 'citations_delta') (block.citations = block.citations || []).push(delta.citation);
+          break;
+        }
+        case 'content_block_stop': {
+          const block = message?.content?.[evt.index];
+          if (block && jsonAcc.has(evt.index)) {
+            const acc = jsonAcc.get(evt.index)!;
+            try { block.input = acc ? JSON.parse(acc) : {}; } catch { block.input = {}; }
+            jsonAcc.delete(evt.index);
+          }
+          break;
+        }
+        case 'message_delta':
+          if (!message) break;
+          if (evt.delta && typeof evt.delta === 'object') {
+            if (evt.delta.stop_reason !== undefined) message.stop_reason = evt.delta.stop_reason;
+            if (evt.delta.stop_sequence !== undefined) message.stop_sequence = evt.delta.stop_sequence;
+          }
+          if (evt.usage) message.usage = { ...message.usage, ...evt.usage };
+          break;
+      }
+    },
+    message(): unknown {
+      return message;
+    },
+  };
+}
+
+function startLlmStream(
+  appId: string,
+  url: string,
+  payload: unknown,
+  idleTimeoutMs: number,
+  sendResponse: (response: any) => void,
+): void {
+  sweepLlmStreams();
+  ensureLlmStreamSweeper();
+  const streamId = crypto.randomUUID();
+  const record: LlmStreamRecord = {
+    appId,
+    events: [],
+    bufferedBytes: 0,
+    done: false,
+    lastPollAt: Date.now(),
+    abort: () => {},
+  };
+  llmStreams.set(streamId, record);
+  sendResponse({ streamId });
+
+  const fail = (e: unknown) => {
+    const err = e as RemoteRpcError;
+    record.error = {
+      error: err instanceof Error ? err.message : String(err),
+      code: err?.code || 'LLM_NETWORK_ERROR',
+      status: err?.status,
+      requestId: err?.requestId,
+      details: err?.details,
+    };
+  };
+
+  (async () => {
+    const identity = await getAirglowRpcIdentity();
+    const requestInit: RequestInit = {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Airglow-App-Id': appId,
+        ...buildIdentityHeaders(identity),
+      },
+      body: JSON.stringify({ ...(payload as Record<string, unknown>), stream: true }),
+    };
+
+    // Connect, retrying like the buffered path — safe because a non-ok
+    // response never streamed anything. Once the SSE body is open, never
+    // retry: events already reached the app.
+    let res: Response | null = null;
+    let lastError: unknown;
+    for (let attempt = 0; attempt <= LLM_RETRY_DELAYS_MS.length; attempt++) {
+      try {
+        const r = await fetchWithTimeout(url, requestInit, idleTimeoutMs);
+        if (!r.ok) {
+          const text = await r.text();
+          let result;
+          try { result = JSON.parse(text); } catch { result = text; }
+          const error = parseErrorEnvelope(r, result, `LLM request failed with HTTP ${r.status}`, 'LLM_HTTP_ERROR');
+          lastError = error;
+          if (error.code === 'LLM_BUDGET_EXCEEDED') break;
+          if (shouldRetryHttpStatus(r.status) && attempt < LLM_RETRY_DELAYS_MS.length) {
+            await sleep(LLM_RETRY_DELAYS_MS[attempt]);
+            continue;
+          }
+          break;
+        }
+        res = r;
+        break;
+      } catch (error) {
+        lastError = error;
+        if (attempt < LLM_RETRY_DELAYS_MS.length) {
+          await sleep(LLM_RETRY_DELAYS_MS[attempt]);
+          continue;
+        }
+      }
+    }
+    if (!res?.body) {
+      fail(lastError ?? new Error('LLM stream request failed'));
+      return;
+    }
+
+    // Read SSE. The whole-request deadline doesn't apply to a stream — an
+    // idle timeout does: no bytes for idleTimeoutMs means the upstream is
+    // half-open (see the daemon's stream-idle history), so cut it.
+    const reader = res.body.getReader();
+    record.abort = () => { void reader.cancel().catch(() => {}); };
+    let idleTimer: ReturnType<typeof setTimeout> | undefined;
+    const armIdle = () => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => record.abort(), idleTimeoutMs);
+    };
+    const assembler = createLlmMessageAssembler();
+    let sawMessageStop = false;
+    const decoder = new TextDecoder();
+    let buf = '';
+    try {
+      armIdle();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        armIdle();
+        buf += decoder.decode(value, { stream: true });
+        let nl: number;
+        while ((nl = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, nl).trim();
+          buf = buf.slice(nl + 1);
+          if (!line.startsWith('data:')) continue;
+          let evt: any;
+          try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
+          if (evt?.type === 'error') {
+            const streamError = new Error(evt.error?.message || 'LLM stream error') as RemoteRpcError;
+            streamError.code = 'LLM_STREAM_ERROR';
+            streamError.details = evt.error;
+            throw streamError;
+          }
+          assembler.apply(evt);
+          record.events.push(evt);
+          record.bufferedBytes += line.length;
+          if (record.bufferedBytes > LLM_STREAM_MAX_BUFFER_BYTES) {
+            const overflow = new Error('LLM stream buffer overflow (consumer stopped polling?)') as RemoteRpcError;
+            overflow.code = 'LLM_STREAM_OVERFLOW';
+            throw overflow;
+          }
+          if (evt?.type === 'message_stop') sawMessageStop = true;
+        }
+      }
+    } catch (e) {
+      fail(e);
+      record.abort();
+      return;
+    } finally {
+      clearTimeout(idleTimer);
+    }
+    if (!sawMessageStop) {
+      record.error = { error: 'the model stream ended before completing', code: 'LLM_STREAM_TRUNCATED' };
+      return;
+    }
+    record.result = assembler.message();
+    record.done = true;
+  })().catch(fail);
+}
+
 export function handleAirglowMessage(
   msg: any,
   _sender: chrome.runtime.MessageSender,
@@ -596,9 +849,14 @@ function dispatchAirglowMessage(
       }
       const baseUrl = source.url.replace(/\/+$/, '');
       const url = `${baseUrl}/api/llm/anthropic/messages`;
-      const llmTimeoutMs = (msg.payload as { web_search?: unknown } | undefined)?.web_search
+      const llmPayload = msg.payload as { web_search?: unknown; web_fetch?: unknown } | undefined;
+      const llmTimeoutMs = llmPayload?.web_search || llmPayload?.web_fetch
         ? LLM_WEB_SEARCH_TIMEOUT_MS
         : LLM_TIMEOUT_MS;
+      if (msg.stream === true) {
+        startLlmStream(appId, url, msg.payload, llmTimeoutMs, sendResponse);
+        return true;
+      }
       (async () => {
         const identity = await getAirglowRpcIdentity();
         const requestInit: RequestInit = {
@@ -653,6 +911,32 @@ function dispatchAirglowMessage(
       })().catch((e) => {
         sendResponse({ error: e?.message || String(e), code: 'LLM_NETWORK_ERROR' });
       });
+      return true;
+    }
+
+    case 'airglow:llm:stream:poll': {
+      const streamId = String(msg.streamId || '');
+      const record = llmStreams.get(streamId);
+      if (!record || record.appId !== appId) {
+        // Also hit after an MV3 SW restart wiped the map — the SDK rejects
+        // instead of polling a void forever.
+        sendResponse({ error: 'unknown or expired streamId', code: 'LLM_STREAM_NOT_FOUND' });
+        return true;
+      }
+      record.lastPollAt = Date.now();
+      const events = record.events;
+      record.events = [];
+      record.bufferedBytes = 0;
+      if (record.done) {
+        llmStreams.delete(streamId);
+        sendResponse({ events, done: true, result: record.result });
+      } else if (record.error && events.length === 0) {
+        // Deliver buffered events before surfacing the error (next poll).
+        llmStreams.delete(streamId);
+        sendResponse(record.error);
+      } else {
+        sendResponse({ events, done: false });
+      }
       return true;
     }
 

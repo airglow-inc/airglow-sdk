@@ -695,11 +695,18 @@ export async function runDaemon(argv: string[]): Promise<void> {
       // airglow.llm from locally-served apps — proxied to the LLM gateway
       // (or straight to Anthropic in dev). See daemon/llm.ts.
       if (pathname === '/api/llm/anthropic/messages' && req.method === 'POST') {
-        const [status, data] = await handleLlmAnthropicMessages(
+        const out = await handleLlmAnthropicMessages(
           req,
           sessionIdentity ?? lastConnectorIdentity,
           () => refreshConnectorAuth(reauthWs),
         );
+        // Streaming calls come back as a raw SSE Response — attach CORS and
+        // pass it through; everything else stays a [status, json] tuple.
+        if (out instanceof Response) {
+          for (const [k, v] of Object.entries(cors)) out.headers.set(k, v);
+          return out;
+        }
+        const [status, data] = out;
         return respondJson(status, data);
       }
 

@@ -1,5 +1,5 @@
 /** Airglow SDK - available globally in userscripts, UI, and startup code. */
-type AirglowSdkVersion = '0.1.0-beta.1';
+type AirglowSdkVersion = '0.1.0-beta.2';
 
 interface AirglowError extends Error {
   name: 'AirglowError';
@@ -109,18 +109,49 @@ interface AirglowLlm {
      * max_tokens ceiling and longer timeout; each search bills to the weekly
      * budget.
      *
+     * Set `web_fetch` to let the model fetch URLs already present in the
+     * conversation (Anthropic's hosted web_fetch tool — it never invents
+     * URLs, so include the URL in your prompt). The response then includes
+     * `server_tool_use` / `web_fetch_tool_result` blocks. Pass `true` for
+     * defaults, or `{ max_uses?, allowed_domains?, blocked_domains?,
+     * max_content_tokens? }` (max_uses 1-10, default 3; max_content_tokens
+     * caps how much of a page enters the context — default 20000, max
+     * 50000). Fetched content bills as ordinary input tokens; web-fetch
+     * calls get the same higher max_tokens ceiling and longer timeout as
+     * web search. Both params can be combined on one request.
+     *
      * Pass `tools` (client tools `{ name, description?, input_schema }`) and
      * optional `tool_choice` to let the model call your functions: it returns
      * `tool_use` blocks, you run them and send `tool_result` blocks back on the
-     * next call. Hosted/server tools are rejected — use `web_search` for search.
+     * next call. Hosted/server tools are rejected — use the `web_search` /
+     * `web_fetch` params instead.
      *
      *   await airglow.llm.anthropic.messages({
      *     model: 'claude-opus-4-8', max_tokens: 4000, web_search: true,
      *     messages: [{ role: 'user', content: 'Research Jane Doe, CEO of Acme.' }],
      *   });
+     *
+     * Streaming: pass `{ onEvent }` as a second argument to observe the call's
+     * progress while it runs (e.g. show each web-search query as the model
+     * issues it). `onEvent` receives every raw Anthropic SSE event
+     * (`message_start`, `content_block_start`, `content_block_delta`,
+     * `content_block_stop`, `message_delta`, `message_stop`); the promise still
+     * resolves with the same complete message as the non-streaming call.
+     * Caveat: a `server_tool_use` / `tool_use` block's `input` (e.g. the search
+     * query) streams as `input_json_delta` fragments — it is only complete at
+     * that block's `content_block_stop`; accumulate `partial_json` and parse
+     * there.
+     *
+     *   const res = await airglow.llm.anthropic.messages(payload, {
+     *     onEvent: (e) => { if (e.type === 'content_block_start') showProgress(e); },
+     *   });
      */
     messages(payload: Record<string, any> & {
       web_search?: boolean | { max_uses?: number; allowed_domains?: string[]; blocked_domains?: string[] };
+      web_fetch?: boolean | { max_uses?: number; allowed_domains?: string[]; blocked_domains?: string[]; max_content_tokens?: number };
+    }, opts?: {
+      /** Called with each raw Anthropic SSE event as the call streams. */
+      onEvent?: (event: Record<string, any>) => void;
     }): Promise<AirglowLlmMessage>;
   };
 }
