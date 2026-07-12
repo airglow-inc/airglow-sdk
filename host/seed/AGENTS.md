@@ -32,7 +32,7 @@ The browser belongs to the user; their open tabs are their workspace, not yours.
 
 - Pure reads on any tab are fine: `airglow browser tabs`, `html`, `eval` to inspect, `shot`, `logs`.
 - **Every non-read operation happens in your own tabs.** Open the page yourself (`airglow browser open <url>`) and do all navigation, closing, and state-changing `eval` (click, type, scroll, submit) there — even if the right page is already open in a user tab.
-- **Your tabs live in your own window.** Your first `open` creates a dedicated, unfocused window (a colored "Airglow" tab group); every later `open` reuses it. In `tabs`, that window is `role: agent` — `agent-other` is another agent's window (off-limits) and `user` is the user's. Never open into a window you don't own.
+- **Your tabs live in your own window.** Your first `open` creates a dedicated, unfocused window; every later `open` reuses it. In `tabs`, that window is `role: agent` — `agent-other` is another agent's window (off-limits) and `user` is the user's. Never open into a window you don't own.
 - A tab runs un-throttled only while it's the active tab in its window; the tools activate your own tab before acting on it (without bringing the window to the front), so you don't need to manage focus — just work one tab at a time.
 - `shot` captures in place (no focus change). Screenshot your own tabs; a user tab only when the task requires it.
 - **Close your test tabs** (`close --tab N`) when you're done. Never close tabs you didn't open. You cannot launch browsers; use the existing one. There is no reload command — the platform reloads matching tabs when you change app source.

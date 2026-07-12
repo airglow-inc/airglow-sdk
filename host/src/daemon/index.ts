@@ -30,7 +30,7 @@ import { dedupeWorkspaceApps } from './dedupe-deps';
 import { BrowserBridge } from './bridge';
 import { createKeepAwake } from './keep-awake';
 import { ConnectorService, DEFAULT_ACCOUNT, connectorGatewayUrl } from './connectors';
-import { handleLlmAnthropicMessages } from './llm';
+import { handleLlmChatCompletions } from './llm';
 import { checkForUpdate, performUpdate } from './update';
 
 function originAllowed(origin: string | null): boolean {
@@ -688,14 +688,21 @@ export async function runDaemon(argv: string[]): Promise<void> {
         const appId = body?.appId;
         if (typeof appId !== 'string') return respondJson(400, { error: 'expected { appId }' });
         const result = await catalog.uninstall(appId);
-        if (result.ok) syncInstallTelemetry();
+        if (result.ok) {
+          syncInstallTelemetry();
+          // Clear the app's chrome.storage keys in every connected browser.
+          // Fire-and-forget: a browser that isn't running keeps its orphaned
+          // keys (harmless — unreachable without the app id) until a future
+          // uninstall of the same id runs while it's connected.
+          bridge.broadcastToExtensions({ type: 'clearAppStorage', appId }, 5000).catch(() => {});
+        }
         return respondJson(result.ok ? 200 : 500, result);
       }
 
       // airglow.llm from locally-served apps — proxied to the LLM gateway
-      // (or straight to Anthropic in dev). See daemon/llm.ts.
-      if (pathname === '/api/llm/anthropic/messages' && req.method === 'POST') {
-        const out = await handleLlmAnthropicMessages(
+      // (or straight to OpenRouter with a BYOK key). See daemon/llm.ts.
+      if (pathname === '/api/llm/v1/chat/completions' && req.method === 'POST') {
+        const out = await handleLlmChatCompletions(
           req,
           sessionIdentity ?? lastConnectorIdentity,
           () => refreshConnectorAuth(reauthWs),

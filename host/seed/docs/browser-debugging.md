@@ -74,7 +74,7 @@ airglow browser close --tab N
 airglow browser targets                                # connected browsers (pick with --browser <substr>)
 ```
 
-Tab-targeted commands need `--tab N` (id from `tabs`). `open`ed tabs land in **your own agent window** — a dedicated, unfocused window (created on your first `open`) whose tabs sit in a colored "Airglow" tab group, kept out of the user's working set. Every later `open` reuses it; you never open into a window you don't own. No approval is needed.
+Tab-targeted commands need `--tab N` (id from `tabs`). `open`ed tabs land in **your own agent window** — a dedicated, unfocused window (created on your first `open`), kept out of the user's working set. Every later `open` reuses it; you never open into a window you don't own. No approval is needed.
 
 **Read anywhere, act only in your own window.** In `tabs`, `role: agent` is your window; `agent-other` is another agent's (off-limits); `user` is the user's. Reading any tab (`html`, `eval` to inspect, `shot`) is fine; only `open`/`nav`/`close` and state-changing `eval` (click/type/submit) in your own tabs. A tab only runs un-throttled while it's the active tab in its window — the tools activate your own tab before acting on it (so a backgrounded/discarded tab reloads), without bringing the window to the front. **Close your test tabs** (`close --tab N`) when you're done so your window doesn't pile up.
 

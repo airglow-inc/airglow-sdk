@@ -15,10 +15,10 @@ const APP_MANIFESTS_KEY = '__app_manifests';
 const REMOTE_RPC_TIMEOUT_MS = 30000;
 const REMOTE_RPC_RETRY_DELAYS_MS = [500, 1500];
 const LLM_TIMEOUT_MS = 60000;
-// Server-tool (web_search / web_fetch) calls run several round-trips before
-// the model answers, so they need a longer client timeout than a plain
+// Plugin-assisted calls (e.g. OpenRouter's web plugin) run search round-trips
+// before the model answers, so they need a longer client timeout than a plain
 // completion.
-const LLM_WEB_SEARCH_TIMEOUT_MS = 120000;
+const LLM_PLUGIN_TIMEOUT_MS = 120000;
 const LLM_RETRY_DELAYS_MS = [500, 1500];
 // Streaming LLM calls: sendResponse is one-shot, so the SDK polls for buffered
 // SSE events instead. A stream nobody polls for LLM_STREAM_GC_MS is an app
@@ -28,6 +28,17 @@ const LLM_RETRY_DELAYS_MS = [500, 1500];
 const LLM_STREAM_GC_MS = 30000;
 const LLM_STREAM_SWEEP_MS = 15000;
 const LLM_STREAM_MAX_BUFFER_BYTES = 4 * 1024 * 1024;
+
+// Remove every storage key under an app's namespace. Called on app uninstall
+// (daemon → background) so uninstalled apps leave no data behind; a later
+// reinstall of the same id starts clean.
+export async function clearAppStorage(appId: string): Promise<{ removed: number }> {
+  const prefix = `${STORAGE_PREFIX}${appId}:`;
+  const all = await chrome.storage.local.get(null);
+  const keys = Object.keys(all).filter((k) => k.startsWith(prefix));
+  if (keys.length) await chrome.storage.local.remove(keys);
+  return { removed: keys.length };
+}
 
 async function getAirglowRpcIdentity(): Promise<{ email?: string; userId: string; authToken?: string }> {
   const [identity, session] = await Promise.all([ensureIdentity(), getStoredSession()]);
@@ -268,6 +279,36 @@ function connectorErrorResponse(e: unknown): Record<string, unknown> {
   };
 }
 
+// Composio's hosted link flow (connect.composio.dev/link/…) builds the Google
+// OAuth request client-side and drops any login_hint, so multi-account users
+// land on Google's account chooser. When the popup reaches a Google OAuth URL
+// without a hint, re-issue the SAME authorization request (client_id, scope,
+// state, PKCE challenge unchanged — Composio's callback can't tell the
+// difference) with login_hint added; Google then skips the chooser for that
+// account. Any URL-shape mismatch returns null → no rewrite, chooser as today.
+const OAUTH_HINT_PARAMS = [
+  'access_type', 'client_id', 'code_challenge', 'code_challenge_method',
+  'prompt', 'redirect_uri', 'response_type', 'scope', 'state',
+];
+
+function hintedAuthUrl(rawUrl: string, email: string): string | null {
+  let url: URL;
+  try { url = new URL(rawUrl); } catch { return null; }
+  const q = url.searchParams;
+  // The auth request and the chooser it redirects to both carry the full
+  // OAuth param set; consent/sign-in pages don't — requiring these keeps the
+  // rewrite off every other Google page the popup passes through.
+  if (url.hostname !== 'accounts.google.com' || q.has('login_hint')) return null;
+  if (!q.get('client_id') || !q.get('state') || !q.get('redirect_uri') || !q.get('scope')) return null;
+  const params = new URLSearchParams();
+  for (const key of OAUTH_HINT_PARAMS) {
+    const value = q.get(key);
+    if (value != null) params.set(key, value);
+  }
+  params.set('login_hint', email);
+  return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+}
+
 // Full connect flow: ask the daemon for an OAuth URL, open it in a centered
 // popup, poll the daemon until the connection turns ACTIVE, close the popup.
 // Closing the popup early cancels (after one final status check — Composio's
@@ -288,6 +329,22 @@ async function runConnectFlow(appId: string, toolkit: string, account: unknown):
     if (removedId === winId) popupClosed = true;
   };
   chrome.windows.onRemoved.addListener(onRemoved);
+
+  // Email-shaped account label → preselect that account (see hintedAuthUrl).
+  // One rewrite per popup: the hinted URL carries login_hint, so the matcher
+  // can't re-fire, but the flag also guards against a user backing out to an
+  // unhinted URL and getting yanked forward again.
+  const popupTabId = win?.tabs?.[0]?.id;
+  const hintEmail = typeof account === 'string' && account.includes('@') ? account : null;
+  let hinted = false;
+  const onUpdated = (tabId: number, info: any) => {
+    if (hinted || tabId !== popupTabId || !info.url || !hintEmail) return;
+    const next = hintedAuthUrl(info.url, hintEmail);
+    if (!next) return;
+    hinted = true;
+    chrome.tabs.update(tabId, { url: next }, () => void chrome.runtime.lastError);
+  };
+  if (hintEmail && popupTabId != null) chrome.tabs.onUpdated.addListener(onUpdated);
 
   try {
     const deadline = Date.now() + CONNECT_FLOW_DEADLINE_MS;
@@ -312,6 +369,7 @@ async function runConnectFlow(appId: string, toolkit: string, account: unknown):
     e.code = 'CONNECTOR_AUTH_TIMEOUT';
     throw e;
   } finally {
+    chrome.tabs.onUpdated.removeListener(onUpdated);
     chrome.windows.onRemoved.removeListener(onRemoved);
     if (winId != null && !popupClosed) chrome.windows.remove(winId, () => void chrome.runtime.lastError);
   }
@@ -404,7 +462,7 @@ function normalizeHttpMethod(value: unknown): string {
   return (typeof value === 'string' && value.trim() ? value.trim() : 'GET').toUpperCase().slice(0, 20);
 }
 
-// ── Streaming LLM calls (airglow.llm.anthropic.messages with onEvent) ──
+// ── Streaming LLM calls (airglow.llm.chat with onEvent) ──
 //
 // The background owns the upstream SSE connection; app contexts can't hold a
 // live channel to us (sendResponse is one-shot on every bridge), so events
@@ -446,63 +504,54 @@ function ensureLlmStreamSweeper(): void {
 }
 
 /**
- * Rebuilds the complete Message object from Anthropic SSE events, so the
- * streaming path resolves with the same shape as the buffered path.
- * tool_use / server_tool_use inputs stream as input_json_delta fragments and
- * only parse at content_block_stop.
+ * Rebuilds the complete chat.completion object from OpenAI-style stream
+ * chunks, so the streaming path resolves with the same shape as the buffered
+ * path. tool_calls[].function.arguments stream as string fragments — they
+ * concatenate here and stay a JSON string, exactly as in a buffered response.
  */
 function createLlmMessageAssembler() {
-  let message: any = null;
-  const jsonAcc = new Map<number, string>();
+  let completion: any = null;
   return {
     apply(evt: any): void {
-      if (!evt || typeof evt !== 'object') return;
-      switch (evt.type) {
-        case 'message_start':
-          message = { ...evt.message, content: [] };
-          break;
-        case 'content_block_start': {
-          if (!message) break;
-          const block = { ...evt.content_block };
-          message.content[evt.index] = block;
-          // Tool inputs arrive as partial_json fragments; start accumulating.
-          if (typeof block.type === 'string' && block.type.endsWith('tool_use')) {
-            jsonAcc.set(evt.index, '');
-          }
-          break;
+      if (!evt || typeof evt !== 'object' || !Array.isArray(evt.choices)) return;
+      if (!completion) {
+        completion = { id: evt.id, object: 'chat.completion', created: evt.created, model: evt.model, choices: [] };
+      }
+      // Usage rides the final chunk (the gateway forces usage.include).
+      if (evt.usage) completion.usage = evt.usage;
+      for (const c of evt.choices) {
+        const idx = typeof c?.index === 'number' ? c.index : 0;
+        let choice = completion.choices[idx];
+        if (!choice) {
+          choice = completion.choices[idx] = { index: idx, message: { role: 'assistant', content: null }, finish_reason: null };
         }
-        case 'content_block_delta': {
-          const block = message?.content?.[evt.index];
-          const delta = evt.delta;
-          if (!block || !delta) break;
-          if (delta.type === 'text_delta') block.text = (block.text || '') + delta.text;
-          else if (delta.type === 'input_json_delta') jsonAcc.set(evt.index, (jsonAcc.get(evt.index) || '') + delta.partial_json);
-          else if (delta.type === 'thinking_delta') block.thinking = (block.thinking || '') + delta.thinking;
-          else if (delta.type === 'signature_delta') block.signature = delta.signature;
-          else if (delta.type === 'citations_delta') (block.citations = block.citations || []).push(delta.citation);
-          break;
+        if (c.finish_reason) choice.finish_reason = c.finish_reason;
+        const d = c.delta;
+        if (!d || typeof d !== 'object') continue;
+        if (typeof d.role === 'string' && d.role) choice.message.role = d.role;
+        if (typeof d.content === 'string') choice.message.content = (choice.message.content ?? '') + d.content;
+        if (typeof d.reasoning === 'string') choice.message.reasoning = (choice.message.reasoning ?? '') + d.reasoning;
+        // Web-plugin citations arrive as annotation deltas.
+        if (Array.isArray(d.annotations)) {
+          choice.message.annotations = (choice.message.annotations || []).concat(d.annotations);
         }
-        case 'content_block_stop': {
-          const block = message?.content?.[evt.index];
-          if (block && jsonAcc.has(evt.index)) {
-            const acc = jsonAcc.get(evt.index)!;
-            try { block.input = acc ? JSON.parse(acc) : {}; } catch { block.input = {}; }
-            jsonAcc.delete(evt.index);
+        if (Array.isArray(d.tool_calls)) {
+          const calls = (choice.message.tool_calls = choice.message.tool_calls || []);
+          for (const tc of d.tool_calls) {
+            if (!tc || typeof tc !== 'object') continue;
+            const ti = typeof tc.index === 'number' ? tc.index : 0;
+            let call = calls[ti];
+            if (!call) call = calls[ti] = { id: undefined, type: 'function', function: { name: '', arguments: '' } };
+            if (typeof tc.id === 'string' && tc.id) call.id = tc.id;
+            if (typeof tc.type === 'string' && tc.type) call.type = tc.type;
+            if (typeof tc.function?.name === 'string') call.function.name += tc.function.name;
+            if (typeof tc.function?.arguments === 'string') call.function.arguments += tc.function.arguments;
           }
-          break;
         }
-        case 'message_delta':
-          if (!message) break;
-          if (evt.delta && typeof evt.delta === 'object') {
-            if (evt.delta.stop_reason !== undefined) message.stop_reason = evt.delta.stop_reason;
-            if (evt.delta.stop_sequence !== undefined) message.stop_sequence = evt.delta.stop_sequence;
-          }
-          if (evt.usage) message.usage = { ...message.usage, ...evt.usage };
-          break;
       }
     },
     message(): unknown {
-      return message;
+      return completion;
     },
   };
 }
@@ -598,7 +647,7 @@ function startLlmStream(
       idleTimer = setTimeout(() => record.abort(), idleTimeoutMs);
     };
     const assembler = createLlmMessageAssembler();
-    let sawMessageStop = false;
+    let sawDone = false;
     const decoder = new TextDecoder();
     let buf = '';
     try {
@@ -613,9 +662,14 @@ function startLlmStream(
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
           if (!line.startsWith('data:')) continue;
+          const data = line.slice(5).trim();
+          // OpenAI SSE framing, not an event — the clean-end marker.
+          if (data === '[DONE]') { sawDone = true; continue; }
           let evt: any;
-          try { evt = JSON.parse(line.slice(5).trim()); } catch { continue; }
-          if (evt?.type === 'error') {
+          try { evt = JSON.parse(data); } catch { continue; }
+          // Mid-stream provider error (or the gateway's upstream_truncated
+          // marker) — standalone {error} objects, not chunks.
+          if (evt?.error && !Array.isArray(evt.choices)) {
             const streamError = new Error(evt.error?.message || 'LLM stream error') as RemoteRpcError;
             streamError.code = 'LLM_STREAM_ERROR';
             streamError.details = evt.error;
@@ -629,7 +683,6 @@ function startLlmStream(
             overflow.code = 'LLM_STREAM_OVERFLOW';
             throw overflow;
           }
-          if (evt?.type === 'message_stop') sawMessageStop = true;
         }
       }
     } catch (e) {
@@ -639,7 +692,7 @@ function startLlmStream(
     } finally {
       clearTimeout(idleTimer);
     }
-    if (!sawMessageStop) {
+    if (!sawDone) {
       record.error = { error: 'the model stream ended before completing', code: 'LLM_STREAM_TRUNCATED' };
       return;
     }
@@ -801,6 +854,29 @@ function dispatchAirglowMessage(
       return true;
     }
 
+    case 'airglow:cookie:get': {
+      const cookieUrl = String(msg.url || '');
+      const cookieName = String(msg.name || '');
+      try {
+        new URL(cookieUrl);
+      } catch {
+        sendResponse({ error: 'invalid cookie URL', code: 'INVALID_COOKIE_URL' });
+        return true;
+      }
+      if (!cookieName) {
+        sendResponse({ error: 'cookie name is required', code: 'INVALID_COOKIE_NAME' });
+        return true;
+      }
+      chrome.cookies.get({ url: cookieUrl, name: cookieName }, (cookie) => {
+        if (chrome.runtime.lastError) {
+          sendResponse({ error: chrome.runtime.lastError.message, code: 'COOKIE_READ_FAILED' });
+          return;
+        }
+        sendResponse({ value: cookie ? cookie.value : null });
+      });
+      return true;
+    }
+
     case 'airglow:log': {
       const level = msg.level === 'error' ? 'error' : msg.level === 'warn' ? 'warn' : 'info';
       const text = msg.data ? `${msg.message} ${typeof msg.data === 'string' ? msg.data : JSON.stringify(msg.data)}` : msg.message;
@@ -838,7 +914,7 @@ function dispatchAirglowMessage(
       return true;
     }
 
-    case 'airglow:llm:anthropic:messages': {
+    case 'airglow:llm:chat': {
       const source = appSourceMap.get(appId);
       if (!source) {
         sendResponse({
@@ -848,11 +924,15 @@ function dispatchAirglowMessage(
         return true;
       }
       const baseUrl = source.url.replace(/\/+$/, '');
-      const url = `${baseUrl}/api/llm/anthropic/messages`;
-      const llmPayload = msg.payload as { web_search?: unknown; web_fetch?: unknown } | undefined;
-      const llmTimeoutMs = llmPayload?.web_search || llmPayload?.web_fetch
-        ? LLM_WEB_SEARCH_TIMEOUT_MS
-        : LLM_TIMEOUT_MS;
+      const url = `${baseUrl}/api/llm/v1/chat/completions`;
+      const llmPayload = msg.payload as { plugins?: unknown; tools?: unknown } | undefined;
+      // Web tooling (web plugin or openrouter:web_search / web_fetch server
+      // tools) runs search round-trips inside the request — longer deadline.
+      const usesWebTooling = (Array.isArray(llmPayload?.plugins) && llmPayload.plugins.length > 0)
+        || (Array.isArray(llmPayload?.tools) && llmPayload.tools.some((t: any) =>
+          typeof t?.type === 'string'
+          && (t.type.startsWith('openrouter:') || t.type.startsWith('web_search_') || t.type.startsWith('web_fetch_'))));
+      const llmTimeoutMs = usesWebTooling ? LLM_PLUGIN_TIMEOUT_MS : LLM_TIMEOUT_MS;
       if (msg.stream === true) {
         startLlmStream(appId, url, msg.payload, llmTimeoutMs, sendResponse);
         return true;

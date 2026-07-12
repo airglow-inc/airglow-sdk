@@ -1,11 +1,12 @@
 /**
- * Pure manifest resolution for the single app source (the local daemon):
- * drops hidden/invalid manifests, dedupes by appId, tags each manifest with
- * its source so downstream code knows where to fetch userscripts/UI from.
+ * Pure manifest resolution for app sources (the local daemon and the cloud
+ * catalog tier): drops hidden/invalid manifests, dedupes by appId, tags each
+ * manifest with its source so downstream code knows where to fetch
+ * userscripts/UI from.
  */
 
 export type AppVisibility = 'public' | 'hidden';
-export type AppSourceType = 'local';
+export type AppSourceType = 'local' | 'cloud';
 
 export interface AppManifest {
   id: string;

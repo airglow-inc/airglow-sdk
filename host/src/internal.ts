@@ -149,10 +149,8 @@ function installServerSdk(): void {
         connectorsCall('disconnect', { toolkit, account: opts?.account }),
     },
     llm: {
-      anthropic: {
-        messages: (payload: Record<string, unknown>) =>
-          call('/api/llm/anthropic/messages', payload, 'llm'),
-      },
+      chat: (payload: Record<string, unknown>) =>
+        call('/api/llm/v1/chat/completions', payload, 'llm'),
     },
     log: { info: logAt('info'), warn: logAt('warn'), error: logAt('error') },
   };

@@ -26,11 +26,18 @@ export function getDefaultCloudApiUrl(): string {
   return trimTrailingSlash(CLOUD_API_URL);
 }
 
+// `localhost` resolves to ::1 first while local dev servers bind 127.0.0.1
+// only — fetch may fall back but iframe navigation won't. Normalize so every
+// consumer (fetches, app UI iframes, the daemon's gateway URL) agrees.
+function normalizeLocalhost(url: string): string {
+  return url.replace(/^(https?:\/\/)localhost(?=[:/]|$)/i, '$1127.0.0.1');
+}
+
 // The runtime dev override, '' when unset.
 export async function getCloudApiOverride(): Promise<string> {
   const stored = await chrome.storage.local.get(CLOUD_API_URL_OVERRIDE_KEY);
   const value = stored[CLOUD_API_URL_OVERRIDE_KEY];
-  return typeof value === 'string' ? trimTrailingSlash(value.trim()) : '';
+  return typeof value === 'string' ? normalizeLocalhost(trimTrailingSlash(value.trim())) : '';
 }
 
 export async function getCloudApiUrl(): Promise<string> {

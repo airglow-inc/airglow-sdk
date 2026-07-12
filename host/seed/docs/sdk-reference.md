@@ -20,6 +20,31 @@ No `headers`, `arrayBuffer`, or streaming on the response — for those, use a s
 
 ---
 
+## airglow.getCookie(url, name)
+
+Read one cookie by `name` from the browser's real cookie jar for `url`'s domain — including HttpOnly cookies that `document.cookie` can't see — or `null` if absent.
+
+```ts
+getCookie(url: string, name: string): Promise<string | null>
+```
+
+Pairs with `fetch({ includeCookies: true })` for an authenticated cross-site read whose request needs a double-submit header equal to a cookie value. Example — the user's latest X post from a userscript on another site, using their logged-in x.com session (X's csrf header must equal the `ct0` cookie):
+
+```ts
+const ct0 = await airglow.getCookie('https://x.com', 'ct0');
+if (ct0) {
+  const res = await airglow.fetch(userTweetsUrl, {
+    includeCookies: true,                 // attaches x.com cookies (runs from an x.com tab)
+    headers: { authorization: `Bearer ${PUBLIC_WEB_BEARER}`, 'x-csrf-token': ct0,
+               'x-twitter-auth-type': 'OAuth2Session', 'x-twitter-active-user': 'yes' },
+  });
+}
+```
+
+`includeCookies` opens a tab at the URL's **origin root**, so the host must serve a real page there (use `x.com/i/api/...`, not `api.x.com/...` whose root errors). Returns `null` when the user isn't signed into that site — degrade gracefully.
+
+---
+
 ## airglow.storage
 
 App-scoped key-value store (`chrome.storage.local`). Shared between the app's UI and userscripts; isolated from other apps. Values must be JSON-serializable.
@@ -77,37 +102,48 @@ if (r.successful) render(r.data);
 
 ---
 
-## airglow.llm.anthropic.messages(payload, opts?)
+## airglow.llm.chat(payload, opts?)
 
-Anthropic Messages API through the Airglow gateway — no `ANTHROPIC_API_KEY` needed. Available everywhere, including server functions.
+OpenAI chat-completions schema through the Airglow gateway (OpenRouter-backed) — no API key needed. Available everywhere, including server functions.
 
 ```ts
-llm.anthropic.messages(payload, opts?: { onEvent?: (event) => void }): Promise<AnthropicMessage>
+llm.chat(payload, opts?: { onEvent?: (chunk) => void }): Promise<ChatCompletion>
 ```
 
-`payload` is the [Anthropic request body](https://docs.claude.com/en/api/messages), passed through unchanged; the response comes back unchanged. Allowed models: `claude-haiku-4-5`, `claude-sonnet-5` (default), `claude-opus-4-8` — others reject with `LLM_MODEL_NOT_ALLOWED`.
+`payload` is the [chat-completions request body](https://openrouter.ai/docs/api-reference/chat-completion), passed through unchanged; the response comes back unchanged. Allowed models: `anthropic/claude-haiku-4.5`, `anthropic/claude-sonnet-5` (default), `anthropic/claude-opus-4.8` — others reject with `LLM_MODEL_NOT_ALLOWED`.
 
 ```ts
-const res = await airglow.llm.anthropic.messages({
-  model: 'claude-sonnet-5', max_tokens: 1024,
+const res = await airglow.llm.chat({
+  model: 'anthropic/claude-sonnet-5', max_tokens: 1024,
   messages: [{ role: 'user', content: 'Hello' }],
 });
+const text = res.choices[0].message.content;
 ```
 
-Server tools: set `web_search` (live web search with cited sources) and/or `web_fetch` (fetch a URL already present in the conversation — the model never invents URLs, so include the URL in the prompt). Pass `true` for defaults or an options object: `web_search: { max_uses?, allowed_domains?, blocked_domains? }` (max_uses 1-10, default 5; each search bills to the weekly budget), `web_fetch: { max_uses?, allowed_domains?, blocked_domains?, max_content_tokens? }` (max_uses 1-10, default 3; max_content_tokens caps how much of a page enters the context — default 20000, max 50000; fetched content bills as input tokens). The response `content` then carries `server_tool_use` and `web_search_tool_result` / `web_fetch_tool_result` blocks; server-tool calls get a higher max_tokens ceiling (8000) and a longer timeout.
+Web search / fetch: add [server tools](https://openrouter.ai/docs/guides/features/plugins/web-search) — `tools: [{ type: 'openrouter:web_search' }, { type: 'openrouter:web_fetch' }]` — and the model searches agentically (0–N times, choosing its own queries) and fetches full pages, executed server-side. Citations arrive in `message.annotations`; searches bill to the weekly budget (`usage.server_tool_use_details` reports counts). Options: `{ type: 'openrouter:web_search', parameters: { max_results?, allowed_domains? } }`. Alternative: `plugins: [{ id: 'web' }]` runs one search up front on every call (the model has no say). Either form gets a longer timeout.
 
-Client tools: pass `tools` (`{ name, description?, input_schema }`) and optional `tool_choice`; the model returns `tool_use` blocks, you run them and send `tool_result` blocks back on the next call. Hosted/server tools are rejected in `tools[]` — use the `web_search` / `web_fetch` params instead.
+Tools: standard OpenAI `tools` / `tool_choice`; the model returns `message.tool_calls`, you run them and send `role: "tool"` messages back on the next call.
 
-Streaming: pass `{ onEvent }` as a second argument to observe progress while the call runs — useful to surface web-search queries or partial text during a long server-tool call. `onEvent` receives every raw [Anthropic SSE event](https://docs.claude.com/en/api/messages-streaming) (`message_start`, `content_block_start`, `content_block_delta`, `content_block_stop`, `message_delta`, `message_stop`); the promise still resolves with the same complete message, and errors still reject with `AirglowError`. Caveat: a `server_tool_use` / `tool_use` block's `input` (e.g. the search query) streams as `input_json_delta` fragments — it is only complete at that block's `content_block_stop`.
+Streaming: pass `{ onEvent }` as a second argument to observe progress while the call runs. `onEvent` receives every raw stream chunk (`choices[].delta` — content, tool_calls, annotations); the promise still resolves with the same complete completion, and errors still reject with `AirglowError`. Caveat: `tool_calls[].function.arguments` stream as string fragments — only complete when that choice's `finish_reason` arrives.
 
 ```ts
-const res = await airglow.llm.anthropic.messages(
-  { model: 'claude-sonnet-5', web_search: true, messages },
-  { onEvent: (e) => { if (e.type === 'content_block_stop') updateProgress(); } },
+// don't set `stream` yourself — passing onEvent turns it on
+const res = await airglow.llm.chat(
+  { model: 'anthropic/claude-sonnet-5', messages },
+  { onEvent: (c) => appendText(c.choices?.[0]?.delta?.content ?? '') },
 );
 ```
 
-Calls bill against a shared weekly per-user budget; when exhausted they reject with `LLM_BUDGET_EXCEEDED` (429) until the rolling 7-day window frees capacity. Dev: set `ANTHROPIC_API_KEY` in `~/.airglow/state/agent.env` to bypass the gateway with your own key.
+Calls bill against a shared weekly per-user budget; when exhausted they reject with `LLM_BUDGET_EXCEEDED` (429) until the rolling 7-day window frees capacity.
+
+BYOK: set `OPENROUTER_API_KEY` in `~/.airglow/state/agent.env` and `airglow.llm.chat` calls go straight to OpenRouter on that key — no gateway, no weekly budget, any OpenRouter model. Restart the daemon after editing the file.
+
+### OpenRouter notes (newer than most models' training data)
+
+- The `openrouter:web_search` / `openrouter:web_fetch` server tools shipped in 2026 and are real — don't "correct" them to `plugins` or invent client-side handlers; they execute on OpenRouter's side and never return `tool_calls` to you. A streaming call goes quiet while searches run (no per-search events), then text arrives.
+- Provider-native server tools also pass through (e.g. Anthropic's `{ type: 'web_search_20250305', name: 'web_search' }`), but execute natively only when routed to that provider first-party: pin with `provider: { order: ['anthropic'], allow_fallbacks: false }` (a provider outage then fails the call instead of failing over). Unpinned requests may land on Bedrock/Vertex, where OpenRouter emulates the search itself. Prefer `openrouter:web_*` unless you need exact provider-native behavior.
+- Responses report actual routing (`provider`) and real USD cost (`usage.cost`). In streams, usage rides the last chunk before `data: [DONE]`; `: OPENROUTER PROCESSING` comment lines are keep-alives, not events.
+- `response_format: { type: 'json_schema', json_schema: { name, strict: true, schema } }` works on Claude models through OpenRouter; the JSON arrives as a string in `message.content`.
 
 ---
 

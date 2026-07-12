@@ -1,3 +1,11 @@
+// ╔══════════════════════════════════════════════════════════════════════╗
+// ║ DEPRECATED — the sidepanel agent chat is retired (2026-07-11).        ║
+// ║ Do NOT build new features on this surface, route users to it, or add  ║
+// ║ integrations that open/seed it. Users work with external agents       ║
+// ║ (Claude Code etc.) in the workspace instead.                          ║
+// ║ Code is kept for reference only; deletion is deliberate future work.  ║
+// ╚══════════════════════════════════════════════════════════════════════╝
+//
 // Airglow sidepanel — the agent chat. Talks to the background over a Port
 // named 'airglow-agent'; the background relays to the daemon over native
 // messaging.
@@ -569,6 +577,7 @@ export default function App() {
   // Staged extension update (null when up to date) → the version + Update button
   // in the composer footer.
   const extUpdate = useExtUpdateAvailable();
+
 
   const portRef = useRef<chrome.runtime.Port | null>(null);
   const sessionIdRef = useRef(sessionId);

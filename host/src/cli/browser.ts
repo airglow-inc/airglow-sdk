@@ -16,7 +16,7 @@ Usage:
                                                          \`"agent-other"\` = another agent's window (read-only);
                                                          \`"user"\` = the user's. Read any tab; act only in yours.
   airglow browser open <url> [--background]             open a tab in your own agent window (created on
-                                                         first open, a colored "Airglow" tab group)
+                                                         first open)
   airglow browser open --app <id> [--background]
                                                          open an app's UI fully wired (airglow.* live,
                                                          RPCs/storage work) as a top-level tab — then
@@ -31,12 +31,12 @@ Usage:
                                                          --app ID: run in app ID's world with its
                                                          \`airglow\` SDK defined, e.g.
                                                          --app ID 'await airglow.storage.get("k")'.
-                                                         --timeout MS: default 8000, max 14000. A wedged
+                                                         --timeout MS: default 15000, max 30000. A wedged
                                                          (CPU-pegged) page times out; raise for slow work.
   airglow browser html --tab N [--selector CSS] [--frame S]
                                                          outerHTML (whole document by default)
   airglow browser shot --tab N [--timeout MS]            screenshot → prints saved file path
-                                                         (--timeout MS: default 8000, max 14000)
+                                                         (--timeout MS: default 15000, max 30000)
   airglow browser close --tab N                          close a tab
   airglow browser logs [--level error] [--source <app>|daemon] [-n 50]
                                                          browser buffer + daemon log, merged by time.
@@ -51,7 +51,7 @@ Network capture (reverse-engineering a site's API):
 
 Options:
   --browser <substr>    target a specific Chrome when several are connected
-                        (matches the profile path from \`targets\`)
+                        (matches the profile path, id, or pid from \`targets\`)
 `;
 
 interface ParsedArgs {

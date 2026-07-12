@@ -1,7 +1,7 @@
 import { logger } from '../lib/logger';
 const log = (msg: string) => logger.info('airglow', msg);
-import { handleAirglowMessage, openAppInDashboard, setAppManifests, getAppManifests, setOnAppLog } from '../lib/airglow-message-handler';
-import { APP_MANIFESTS_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, type AppManifest, type SourcedManifest } from '../lib/app-loader';
+import { handleAirglowMessage, openAppInDashboard, setAppManifests, getAppManifests, setOnAppLog, clearAppStorage } from '../lib/airglow-message-handler';
+import { APP_MANIFESTS_KEY, DAEMON_DISABLED_KEY, loadAppManifests, registerAllUserscripts, runStartupScripts, type AppManifest, type SourcedManifest } from '../lib/app-loader';
 import { buildSdkCode } from '../lib/airglow-sdk';
 import { runtimeConfig } from '../lib/runtime-config';
 import { trackDashboardOpened, trackSidepanelOpened, trackLoggedIn, trackHostInstalled, trackAgentMessageSent, trackAgentResponseReceived, trackSidepanelError, trackIdentified, trackInstalled, trackUiPageOpened, trackUserscriptInjected, type DashboardPage } from '../lib/analytics';
@@ -274,7 +274,7 @@ export default defineBackground(() => {
     const isSeenMigration = prior[SEEN_APPS_KEY] === undefined;
     const priorManifests = (prior['__app_manifests'] as AppManifest[] | undefined) || [];
 
-    const { reachable, localReachable, usedCachedLocalManifests, manifests: allManifests } = await loadAppManifests();
+    const { reachable, localReachable, usedCachedLocalManifests, manifests: allManifests } = await loadAppManifests({ forceCloud: force });
 
     await setDevServerOnline(localReachable);
 
@@ -467,6 +467,14 @@ export default defineBackground(() => {
     if (area === 'local' && (CLOUD_API_URL_OVERRIDE_KEY in changes || AUTH_SESSION_KEY in changes) && nmWasConnected) {
       sendIdentityToHost();
     }
+    // These keys feed the app sources (account-scoped cloud manifests, the
+    // gateway URL, and the daemon-disabled dev toggle): a change alters which
+    // apps exist, so reload the merged set.
+    if (area === 'local' && (CLOUD_API_URL_OVERRIDE_KEY in changes || AUTH_SESSION_KEY in changes || DAEMON_DISABLED_KEY in changes)) {
+      loadAndRegisterApps(true).catch((e) =>
+        logger.warn('airglow', `app reload after auth/gateway change failed: ${e instanceof Error ? e.message : String(e)}`),
+      );
+    }
     // Sign-in just landed (interactive in the banner/dashboard, or a silent
     // refresh that switched accounts). trackLoggedIn dedups on userId, so a
     // same-account refresh is a no-op.
@@ -637,7 +645,7 @@ export default defineBackground(() => {
         flashAgentBanner(msg.tabId);
         return timedStep('evaluate script', () => domEval(msg.tabId, msg.code, msg.frame, msg.main, msg.app), stepTimeout(msg.timeout),
           `tab ${msg.tabId}'s page is unresponsive (likely CPU-pegged); recover with \`airglow browser close --tab ${msg.tabId}\` or \`nav\` — those run browser-side and work even when the page is wedged`);
-      })(), 14500);
+      })(), 31000);
     } else if (msg.type === 'newTab') {
       reply(msg, openAgentTab(msg.url, msg.active !== false, typeof msg.sessionId === 'string' ? msg.sessionId : null).then((r: any) => {
         if (typeof r?.id === 'number') paintBannerOnNextLoad(r.id);
@@ -658,7 +666,9 @@ export default defineBackground(() => {
         flashAgentBanner(msg.tabId);
         return timedStep('capture screenshot', () => captureTab(msg.tabId), stepTimeout(msg.timeout),
           `tab ${msg.tabId}'s page is unresponsive (likely CPU-pegged); recover with \`airglow browser close --tab ${msg.tabId}\` or \`nav\` — those run browser-side and work even when the page is wedged`);
-      })(), 14500);
+      })(), 31000);
+    } else if (msg.type === 'clearAppStorage' && typeof msg.appId === 'string') {
+      reply(msg, clearAppStorage(msg.appId), 5000);
     }
   }
 
@@ -685,8 +695,7 @@ export default defineBackground(() => {
   // ───── Agent windows ─────
   // Tabs the agent opens go into a dedicated, unfocused window — one per agent
   // session — so concurrent agents never share a window and fight over its single
-  // active-tab slot. Inside that window the tabs sit in a colored "Airglow" tab
-  // group, a visible marker that those tabs are agent-controlled.
+  // active-tab slot.
   //
   // The session→window map lives HERE (chrome.storage), not in the daemon: window
   // ids are per-browser and the daemon's memory is wiped on restart, which would
@@ -696,17 +705,10 @@ export default defineBackground(() => {
   // a browser restart invalidates the ids, which the validate-or-recreate handles.
   // A caller with no session (anonymous: piped/headless, no AIRGLOW_SESSION, no
   // TTY) shares one find-or-create window tracked under the legacy debug keys.
-  //
-  // CRITICAL: the group MUST be created with `createProperties.windowId` set to
-  // the agent window. Chrome's SavedTabGroups feature otherwise consolidates a
-  // group born in an unfocused window into the *active* (user's) window within
-  // ~1s, yanking the agent's tabs out of their window — pinning the group's home
-  // window at creation prevents that (verified).
   const DEBUG_WINDOW_KEY = '__debug_window'; // anonymous (session-less) window
-  const DEBUG_GROUP_KEY = '__debug_group';
-  const AGENT_WINDOWS_KEY = '__agent_windows'; // { [sessionId]: { windowId, groupId } }
+  const AGENT_WINDOWS_KEY = '__agent_windows'; // { [sessionId]: { windowId } }
 
-  type AgentWin = { windowId: number; groupId: number };
+  type AgentWin = { windowId: number };
 
   async function getAgentWindows(): Promise<Record<string, AgentWin>> {
     const r = await chrome.storage.local.get(AGENT_WINDOWS_KEY);
@@ -728,20 +730,6 @@ export default defineBackground(() => {
     catch { log(`agent-window: stored window ${id} gone`); return null; }
   }
 
-  // Put `tabId` into the agent group in `windowId`: reuse `groupId` if still
-  // valid, else create a fresh group PINNED to this window (see CRITICAL above)
-  // and style it. Returns the group id.
-  async function ensureAgentGroup(tabId: number, windowId: number, groupId: number | null): Promise<number> {
-    if (groupId != null && groupId >= 0) {
-      try { await chrome.tabs.group({ groupId, tabIds: [tabId] }); return groupId; }
-      catch { /* stale group (window recreated) → create a fresh one below */ }
-    }
-    const gid = await chrome.tabs.group({ tabIds: [tabId], createProperties: { windowId } });
-    // 'grey' is the nearest Chrome tab-group color to black (no black in the enum).
-    try { await chrome.tabGroups.update(gid, { title: 'Airglow', color: 'grey' }); } catch {}
-    return gid;
-  }
-
   // The window id the given session (or the anonymous caller) owns, or null.
   async function ownWindowFor(sessionId: string | null): Promise<number | null> {
     if (sessionId) return (await getAgentWindows())[sessionId]?.windowId ?? null;
@@ -749,24 +737,22 @@ export default defineBackground(() => {
   }
 
   // Open a tab in the caller's agent window. With a sessionId: reuse that
-  // session's stored window/group if still alive, else create a fresh window+group
-  // and persist it under the session. Anonymous (no sessionId): the single
-  // find-or-create window+group under the legacy debug keys.
+  // session's stored window if still alive, else create a fresh window and
+  // persist it under the session. Anonymous (no sessionId): the single
+  // find-or-create window under the legacy debug key.
   async function openAgentTab(url: string, active: boolean, sessionId: string | null) {
     let windowId: number | null = null;
-    let groupId: number | null = null;
     if (sessionId) {
       const cur = (await getAgentWindows())[sessionId];
-      if (cur) { windowId = cur.windowId; groupId = cur.groupId; }
+      if (cur) windowId = cur.windowId;
     } else {
-      const r = await chrome.storage.local.get([DEBUG_WINDOW_KEY, DEBUG_GROUP_KEY]);
+      const r = await chrome.storage.local.get(DEBUG_WINDOW_KEY);
       windowId = typeof r[DEBUG_WINDOW_KEY] === 'number' ? r[DEBUG_WINDOW_KEY] : null;
-      groupId = typeof r[DEBUG_GROUP_KEY] === 'number' ? r[DEBUG_GROUP_KEY] : null;
     }
-    // A dead window id (browser restarted, or user closed it) → fresh window+group.
+    // A dead window id (browser restarted, or user closed it) → fresh window.
     if (windowId != null) {
       try { await chrome.windows.get(windowId); }
-      catch { windowId = null; groupId = null; }
+      catch { windowId = null; }
     }
     let tab: chrome.tabs.Tab | undefined;
     if (windowId != null) {
@@ -775,19 +761,12 @@ export default defineBackground(() => {
       const win = await chrome.windows.create({ url, focused: false });
       windowId = win?.id ?? null;
       tab = win?.tabs?.[0];
-      groupId = null; // fresh window → fresh group
     }
     if (windowId == null || !tab?.id) return { error: 'failed to create agent window' };
-    try {
-      groupId = await ensureAgentGroup(tab.id, windowId, groupId);
-    } catch (e: any) {
-      log(`agent-window: grouping failed (${e?.message})`);
-      groupId = -1;
-    }
-    if (sessionId) await setAgentWindow(sessionId, { windowId, groupId });
-    else await chrome.storage.local.set({ [DEBUG_WINDOW_KEY]: windowId, [DEBUG_GROUP_KEY]: groupId });
-    log(`agent-window: tab ${tab.id} in window ${windowId} group ${groupId} (session ${sessionId ?? 'anon'})`);
-    return { id: tab.id, url: tab.url, windowId, groupId };
+    if (sessionId) await setAgentWindow(sessionId, { windowId });
+    else await chrome.storage.local.set({ [DEBUG_WINDOW_KEY]: windowId });
+    log(`agent-window: tab ${tab.id} in window ${windowId} (session ${sessionId ?? 'anon'})`);
+    return { id: tab.id, url: tab.url, windowId };
   }
 
   // Make the agent's OWN tab the active one in its window before acting on it: a
@@ -826,12 +805,14 @@ export default defineBackground(() => {
     return withTimeout(label, Promise.resolve().then(fn), timeoutMs, hint);
   }
 
-  // Inner timeout for renderer-bound ops (eval / screenshot). Defaults to 8s —
-  // long enough for a healthy page, short enough that a wedged tab surfaces
-  // fast — and an agent may raise it up to the 14s hard ceiling via --timeout.
-  // The 14.5s outer reply + 15s daemon backstops already cover that ceiling.
+  // Inner timeout for renderer-bound ops (eval / screenshot). Defaults to 15s —
+  // long enough for slow work (an in-page fetch, a render settle) without an
+  // agent having to pass --timeout for every non-instant call — and raisable to
+  // a 30s hard ceiling via --timeout. The 31s outer reply + 32s daemon
+  // backstops cover that ceiling; a truly wedged (CPU-pegged) tab still surfaces
+  // its own error before the default fires.
   function stepTimeout(v: unknown): number {
-    return Math.min(14000, Math.max(1000, Number(v) || 8000));
+    return Math.min(30000, Math.max(1000, Number(v) || 15000));
   }
 
   function flashAgentBanner(tabId: number) {
@@ -1485,6 +1466,9 @@ ${code}
 
   // Extension icon click → dashboard by default; the agent sidepanel instead
   // when the user enables it in Settings ("Enable sidepanel").
+  // DEPRECATED: the sidepanel agent chat is retired — do not add new code
+  // that opens or routes to it (see entrypoints/sidepanel/App.tsx header).
+  // This opt-in toggle is kept only so existing installs keep working.
   const SIDEPANEL_ENABLED_KEY = '__sidepanel_enabled';
   const applyActionClickBehavior = (sidepanel: boolean) => {
     chrome.sidePanel?.setPanelBehavior({ openPanelOnActionClick: sidepanel })
@@ -1497,16 +1481,7 @@ ${code}
   chrome.action.onClicked.addListener(() => {
     chrome.storage.local.get(SIDEPANEL_ENABLED_KEY, (r) => {
       if (r[SIDEPANEL_ENABLED_KEY]) return; // panel behavior handles the click
-      const dashboardUrl = chrome.runtime.getURL('dashboard.html');
-      chrome.tabs.query({ url: dashboardUrl + '*' }, (tabs) => {
-        const existing = tabs[0];
-        if (existing?.id !== undefined) {
-          chrome.tabs.update(existing.id, { active: true });
-          if (existing.windowId !== undefined) chrome.windows.update(existing.windowId, { focused: true });
-        } else {
-          chrome.tabs.create({ url: dashboardUrl });
-        }
-      });
+      chrome.tabs.create({ url: chrome.runtime.getURL('dashboard.html') });
     });
   });
 
@@ -1840,6 +1815,7 @@ ${code}
       logger.clear().then(() => sendResponse({ ok: true }));
       return true;
     }
+
 
 
     // Trace capture: content script bridge → native host

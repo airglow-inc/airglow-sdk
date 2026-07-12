@@ -1,9 +1,11 @@
 /**
- * App loader — loads manifests from the local daemon (the only app source)
- * and registers userscripts.
+ * App loader — loads manifests from the local daemon and the cloud catalog
+ * tier, merges them (daemon wins per appId), and registers userscripts.
  */
 
 import { buildSdkCode } from './airglow-sdk';
+import { getCloudApiUrl } from './cloud-api';
+import { getStoredSession } from './airglow-auth';
 import { logger } from './logger';
 import { trackAppsRegistered } from './analytics';
 import { ensureAirglowOffscreenDocument, sendRuntimeMessageWhenReady } from './offscreen-runtime';
@@ -23,6 +25,7 @@ export type { AppManifest, AppSource, SourcedManifest, AppVisibility } from './a
 const DAEMON_ORIGIN_KEY = '__daemon_origin';
 const DEFAULT_DAEMON_ORIGIN = 'http://127.0.0.1:3222';
 const LOCAL_SOURCE_TIMEOUT_MS = 4000;
+const CLOUD_SOURCE_TIMEOUT_MS = 8000;
 
 async function getLocalSource(): Promise<AppSource> {
   const result = await chrome.storage.local.get(DAEMON_ORIGIN_KEY);
@@ -32,8 +35,34 @@ async function getLocalSource(): Promise<AppSource> {
   return { url: origin, type: 'local' };
 }
 
+// The cloud tier serves the user's catalog installs. Its manifest listing is
+// per-account, so without a signed-in session there is no cloud source.
+async function getCloudSource(): Promise<AppSource | null> {
+  const session = await getStoredSession();
+  if (!session?.token) return null;
+  return { url: await getCloudApiUrl(), type: 'cloud' };
+}
+
+// /api/apps/manifests on the cloud asserts the same identity scheme as the
+// LLM gateway; bundle fetches are public and need no headers.
+async function cloudIdentityHeaders(): Promise<Record<string, string> | undefined> {
+  const session = await getStoredSession();
+  if (!session?.token) return undefined;
+  const headers: Record<string, string> = {
+    'X-Airglow-App-Id': 'airglow-extension',
+    Authorization: `Bearer ${session.token}`,
+  };
+  if (session.userId) headers['X-Airglow-User-Id'] = session.userId;
+  if (session.email) headers['X-Airglow-User-Email'] = session.email;
+  return headers;
+}
+
 const APP_SOURCES_KEY = '__app_sources';
 export const APP_MANIFESTS_KEY = '__app_manifests';
+// Dev toggle (Settings → Disable daemon): simulate "no host installed" — the
+// local source is skipped entirely (no live fetch, no cached fallback) so only
+// cloud catalog apps load and the daemonless UX can be exercised.
+export const DAEMON_DISABLED_KEY = '__daemon_disabled';
 // Per-app userscript source cache. Keyed by appId; hash-gated so we only
 // re-fetch when the manifest's _hash actually changes. Lets the extension
 // re-register userscripts on SW restart while the source is offline.
@@ -57,9 +86,10 @@ async function writeSourceCache(cache: AppSourceCache): Promise<void> {
   await chrome.storage.local.set({ [APP_SOURCE_CACHE_KEY]: cache });
 }
 
-async function fetchAppSource(source: AppSource, url: string): Promise<Response> {
+async function fetchAppSource(source: AppSource, url: string, headers?: Record<string, string>): Promise<Response> {
+  const timeout = source.type === 'cloud' ? CLOUD_SOURCE_TIMEOUT_MS : LOCAL_SOURCE_TIMEOUT_MS;
   try {
-    return await fetch(url, { signal: AbortSignal.timeout(LOCAL_SOURCE_TIMEOUT_MS) });
+    return await fetch(url, { headers, signal: AbortSignal.timeout(timeout) });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`app source ${source.url} unreachable: ${message}`);
@@ -68,7 +98,8 @@ async function fetchAppSource(source: AppSource, url: string): Promise<Response>
 
 async function fetchSourceManifests(source: AppSource): Promise<AppManifest[] | null> {
   try {
-    const res = await fetchAppSource(source, `${source.url}/api/apps/manifests`);
+    const headers = source.type === 'cloud' ? await cloudIdentityHeaders() : undefined;
+    const res = await fetchAppSource(source, `${source.url}/api/apps/manifests`, headers);
     if (!res.ok) {
       logger.warn('airglow', `app source ${source.url} returned ${res.status}`);
       return null;
@@ -84,12 +115,13 @@ async function fetchSourceManifests(source: AppSource): Promise<AppManifest[] | 
   }
 }
 
-async function getCachedLocalManifests(): Promise<SourcedManifest[]> {
+async function getCachedManifests(type: 'local' | 'cloud'): Promise<SourcedManifest[]> {
   const stored = await chrome.storage.local.get(APP_MANIFESTS_KEY);
   const cached = stored[APP_MANIFESTS_KEY];
   if (!Array.isArray(cached)) return [];
   return cached.filter((manifest): manifest is SourcedManifest =>
-    Boolean(manifest && typeof manifest === 'object' && (manifest as SourcedManifest)._source),
+    Boolean(manifest && typeof manifest === 'object' && (manifest as SourcedManifest)._source)
+    && (manifest as SourcedManifest)._sourceType === type,
   );
 }
 
@@ -108,33 +140,75 @@ async function setChangedStorageValues(values: Record<string, unknown>): Promise
 }
 
 export interface LoadResult {
-  // True if the daemon provided manifests (live OR fall-back-cached).
+  // True if any source provided manifests (live OR fall-back-cached).
   reachable: boolean;
   localReachable: boolean;
+  cloudReachable: boolean;
   // True when the daemon was unreachable and we replayed the prior snapshot.
   usedCachedLocalManifests: boolean;
   manifests: SourcedManifest[];
 }
 
+// The background polls manifests every few seconds to catch live daemon dev
+// edits; per-account cloud listings only change on install/uninstall/publish,
+// so reuse the last cloud response between polls. Install paths force-refresh.
+const CLOUD_MANIFESTS_TTL_MS = 60_000;
+let cloudManifestsCache: { at: number; manifests: AppManifest[] } | null = null;
+
+async function fetchCloudManifests(source: AppSource, force: boolean): Promise<AppManifest[] | null> {
+  if (!force && cloudManifestsCache && Date.now() - cloudManifestsCache.at < CLOUD_MANIFESTS_TTL_MS) {
+    return cloudManifestsCache.manifests;
+  }
+  const manifests = await fetchSourceManifests(source);
+  if (manifests) cloudManifestsCache = { at: Date.now(), manifests };
+  return manifests;
+}
+
 /**
- * Load manifests from the local daemon. Falls back to the cached snapshot
- * when the daemon is offline so userscripts keep working across SW restarts.
+ * Load manifests from both sources — the local daemon and the cloud catalog
+ * tier — and merge them, daemon winning per appId (a local copy of an app
+ * shadows the cloud-published one). Each source falls back to its cached
+ * snapshot when unreachable so userscripts keep working across SW restarts.
  */
-export async function loadAppManifests(): Promise<LoadResult> {
+export async function loadAppManifests(opts?: { forceCloud?: boolean }): Promise<LoadResult> {
   const localSource = await getLocalSource();
-  const localManifests = await fetchSourceManifests(localSource);
+  const cloudSource = await getCloudSource();
+  const daemonDisabled = Boolean(
+    (await chrome.storage.local.get(DAEMON_DISABLED_KEY))[DAEMON_DISABLED_KEY],
+  );
+  const [localManifests, cloudManifests] = await Promise.all([
+    daemonDisabled ? Promise.resolve(null) : fetchSourceManifests(localSource),
+    cloudSource ? fetchCloudManifests(cloudSource, opts?.forceCloud ?? false) : Promise.resolve(null),
+  ]);
 
   let usedCachedLocalManifests = false;
-  let allManifests: SourcedManifest[];
-
+  let local: SourcedManifest[];
   if (localManifests) {
-    allManifests = resolveAppManifests(localSource, localManifests);
+    local = resolveAppManifests(localSource, localManifests);
+  } else if (daemonDisabled) {
+    local = [];
   } else {
-    allManifests = resolveAppManifests(localSource, await getCachedLocalManifests());
-    usedCachedLocalManifests = allManifests.length > 0;
+    local = resolveAppManifests(localSource, await getCachedManifests('local'));
+    usedCachedLocalManifests = local.length > 0;
   }
 
-  if (localManifests || usedCachedLocalManifests) {
+  let usedCachedCloudManifests = false;
+  let cloud: SourcedManifest[] = [];
+  if (cloudSource) {
+    if (cloudManifests) {
+      cloud = resolveAppManifests(cloudSource, cloudManifests);
+    } else {
+      cloud = resolveAppManifests(cloudSource, await getCachedManifests('cloud'));
+      usedCachedCloudManifests = cloud.length > 0;
+    }
+  }
+
+  const localIds = new Set(local.map((m) => m.id));
+  const allManifests = [...local, ...cloud.filter((m) => !localIds.has(m.id))];
+
+  const anySource = Boolean(localManifests) || usedCachedLocalManifests
+    || Boolean(cloudManifests) || usedCachedCloudManifests;
+  if (anySource) {
     await setChangedStorageValues({
       [APP_SOURCES_KEY]: buildSourceMap(allManifests),
       [APP_MANIFESTS_KEY]: allManifests,
@@ -145,8 +219,9 @@ export async function loadAppManifests(): Promise<LoadResult> {
   }
 
   return {
-    reachable: Boolean(localManifests) || usedCachedLocalManifests,
+    reachable: anySource,
     localReachable: Boolean(localManifests),
+    cloudReachable: Boolean(cloudManifests),
     usedCachedLocalManifests,
     manifests: allManifests,
   };
@@ -234,16 +309,39 @@ async function fetchUserscriptSource(manifest: SourcedManifest, file: string): P
 
 /**
  * Register all userscripts from all installed apps via chrome.userScripts API.
+ *
+ * Serialized: the body awaits per-file source fetches between unregister()
+ * and register(), so two overlapping calls (boot-time cached replay racing the
+ * fresh daemon load) interleave as unregister/unregister/register/register and
+ * the second register throws "Duplicate script ID". The chain runs callers one
+ * at a time; each caller still sees its own call's result/error.
  */
-export async function registerAllUserscripts(manifests: SourcedManifest[], changedAppIds?: string[], opts?: { skipReload?: boolean }): Promise<void> {
+let registerChain: Promise<void> = Promise.resolve();
+
+export function registerAllUserscripts(manifests: SourcedManifest[], changedAppIds?: string[], opts?: { skipReload?: boolean }): Promise<void> {
+  const run = registerChain.then(() => doRegisterAllUserscripts(manifests, changedAppIds, opts));
+  registerChain = run.catch(() => {});
+  return run;
+}
+
+async function doRegisterAllUserscripts(manifests: SourcedManifest[], changedAppIds?: string[], opts?: { skipReload?: boolean }): Promise<void> {
   await chrome.userScripts.unregister();
 
   const scripts: chrome.userScripts.RegisteredUserScript[] = [];
   const worldIds = new Set<string>();
   const unreachableSources = new Set<string>();
 
+  const seenAppIds = new Set<string>();
+
   outer: for (const manifest of manifests) {
     if (!manifest.userscripts?.length) continue;
+    // Same app id from two sources would produce duplicate script ids and
+    // fail the whole register() batch — first source wins.
+    if (seenAppIds.has(manifest.id)) {
+      logger.warn('airglow', `duplicate manifest for '${manifest.id}' — skipping its userscripts`);
+      continue;
+    }
+    seenAppIds.add(manifest.id);
 
     const sdkCode = buildSdkCode(manifest.id, 'userscript');
     const worldId = `airglow:${manifest.id}`;

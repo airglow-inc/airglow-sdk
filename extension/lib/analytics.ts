@@ -31,7 +31,6 @@ type AppAnalyticsManifest = {
   _serverFunctions?: unknown;
   _hasUi?: unknown;
   userscripts?: unknown;
-  _sourceType?: string;
 };
 
 export type DashboardPage = 'apps' | 'logs';
@@ -40,16 +39,11 @@ function arrayCount(value: unknown): number {
   return Array.isArray(value) ? value.length : 0;
 }
 
-function normalizeAppSourceType(value: string | undefined): string {
-  return value === 'local' ? value : 'unknown';
-}
-
 function appRegistrationProperties(app: AppAnalyticsManifest): Record<string, AnalyticsPropertyValue> {
   const serverFunctionCount = arrayCount(app.serverFunctions || app._serverFunctions);
   const userscriptCount = arrayCount(app.userscripts);
   return {
     app_id: app.id,
-    app_source_type: normalizeAppSourceType(app._sourceType),
     has_ui: app._hasUi === true,
     has_startup: typeof app.startup === 'string' && app.startup.trim().length > 0,
     has_server_functions: serverFunctionCount > 0,

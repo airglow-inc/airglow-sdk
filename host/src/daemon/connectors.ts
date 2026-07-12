@@ -14,8 +14,9 @@
 // OAuth consent moment; one app can never silently use credentials another
 // app obtained. The agent uses the pseudo-app id "agent".
 //
-// The label is a claim, not a verified identity: login_hint nudges Google to
-// preselect the matching account, but the user can authorize a different one.
+// The label is a claim, not a verified identity: the extension nudges Google
+// to preselect the matching account (login_hint in the popup flow), but the
+// user can authorize a different one.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -187,9 +188,10 @@ export class ConnectorService {
     if (!link?.redirect_url || !link?.connected_account_id) {
       throw connectorError(`connection link for ${toolkit} returned no redirect URL`, 'CONNECTOR_UPSTREAM_ERROR');
     }
-    let authUrl: string = link.redirect_url;
-    if (account.includes('@')) authUrl = await rewriteWithLoginHint(authUrl, account);
-    return { connected: false, authUrl, connectedAccountId: link.connected_account_id };
+    // Account preselection happens in the extension popup flow (hintedAuthUrl):
+    // Composio's hosted link resolves to Google client-side, so nothing useful
+    // can be appended to this URL server-side.
+    return { connected: false, authUrl: link.redirect_url, connectedAccountId: link.connected_account_id };
   }
 
   // Poll one pending connection until ACTIVE, a terminal status, or timeout.
@@ -311,17 +313,4 @@ export class ConnectorService {
       input_parameters: t.input_parameters,
     };
   }
-}
-
-// Google shows an account chooser on OAuth; pre-resolving Composio's redirect
-// and appending login_hint preselects the account matching the label.
-async function rewriteWithLoginHint(authUrl: string, email: string): Promise<string> {
-  try {
-    const res = await fetch(authUrl, { redirect: 'manual', signal: AbortSignal.timeout(8000) });
-    const location = res.headers.get('location');
-    if (location?.includes('accounts.google.com')) {
-      return `${location}&login_hint=${encodeURIComponent(email)}`;
-    }
-  } catch {}
-  return authUrl;
 }

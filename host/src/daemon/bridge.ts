@@ -149,15 +149,19 @@ export class BrowserBridge {
   }
 
   // Pick the connector a browser command should go to. An explicit `filter`
-  // (substring of userDataDir) always wins. Otherwise a session-scoped command
-  // routes to the Chrome hosting that session's sidepanel chat, so the agent
-  // stays inside its own browser. Only when neither pins a browser do we fall
-  // back to the most recently connected one.
+  // (substring of userDataDir, or an exact connector id / pid — the default
+  // Chrome profile reports no userDataDir, so path matching alone can't
+  // address it) always wins. Otherwise a session-scoped command routes to the
+  // Chrome hosting that session's sidepanel chat, so the agent stays inside
+  // its own browser. Only when neither pins a browser do we fall back to the
+  // most recently connected one.
   private pickConnector(filter?: string, sessionId?: string): Connector | { error: string } {
     const all = [...this.connectors.values()].sort((a, b) => b.connectedAt - a.connectedAt);
     if (all.length === 0) return { error: 'no browser connected — open Chrome with the Airglow extension installed' };
     if (filter) {
-      const match = all.find((c) => c.userDataDir?.includes(filter));
+      const match = all.find(
+        (c) => c.userDataDir?.includes(filter) || String(c.id) === filter || String(c.pid) === filter,
+      );
       if (!match) return { error: `no connected browser matches "${filter}" (${all.length} connected)` };
       return match;
     }
@@ -194,6 +198,16 @@ export class BrowserBridge {
     });
   }
 
+  // Send to every connected browser — for state that lives per-profile in each
+  // extension's chrome.storage (e.g. clearing an uninstalled app's data).
+  // Resolves when all have replied or timed out; per-connector errors are in
+  // the results, never thrown.
+  broadcastToExtensions(payload: Record<string, unknown>, timeoutMs: number): Promise<any[]> {
+    return Promise.all(
+      [...this.connectors.values()].map((c) => this.sendToExtension(c, payload, timeoutMs)),
+    );
+  }
+
   // ── Browser commands (HTTP API surface for the CLI / agent harness) ──
   //
   // Command set is deliberately small: tabs, open, nav, eval, html, shot,
@@ -223,10 +237,10 @@ export class BrowserBridge {
         if (!args.url) return { error: 'url required' };
         const sessionId = typeof args.sessionId === 'string' && args.sessionId ? args.sessionId : null;
         const active = args.active !== false;
-        // The extension keys the agent's window+group off sessionId (its own
+        // The extension keys the agent's window off sessionId (its own
         // chrome.storage, durable across daemon restarts); no sessionId →
-        // anonymous shared window. windowId/groupId are internal bookkeeping —
-        // the agent only targets a tab by `id`, so don't surface them.
+        // anonymous shared window. windowId is internal bookkeeping —
+        // the agent only targets a tab by `id`, so don't surface it.
         const reply = await this.sendToExtension(c, { type: 'newTab', url: args.url, active, sessionId }, 10000);
         return reply?.error ? reply : { id: reply?.id, url: reply?.url };
       }
@@ -247,7 +261,7 @@ export class BrowserBridge {
         return this.sendToExtension(
           c,
           { type: 'eval', tabId: args.tabId, code: args.code, frame: args.frame ?? null, main: !!args.main, app: args.app ?? null, timeout: args.timeout, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null },
-          15000,
+          32000,
         );
       }
 
@@ -262,7 +276,7 @@ export class BrowserBridge {
 
       case 'shot': {
         if (!args.tabId) return { error: 'tabId required' };
-        const reply = await this.sendToExtension(c, { type: 'capture', tabId: args.tabId, timeout: args.timeout, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null }, 15000);
+        const reply = await this.sendToExtension(c, { type: 'capture', tabId: args.tabId, timeout: args.timeout, sessionId: typeof args.sessionId === 'string' ? args.sessionId : null }, 32000);
         if (reply?.error) return reply;
         const dataUrl: string = reply?.dataUrl || '';
         const m = dataUrl.match(/^data:image\/(\w+);base64,(.+)$/s);

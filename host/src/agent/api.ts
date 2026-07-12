@@ -64,6 +64,13 @@ export function agentModel(): string {
 
 export function gatewayUrl(): string | null {
   if (process.env.ANTHROPIC_API_KEY) return null; // dev: direct Anthropic
+  return llmGatewayUrl();
+}
+
+// The gateway URL unconditionally. The app-LLM proxy (daemon/llm.ts) routes on
+// OPENROUTER_API_KEY (BYOK), not on the agent's dev key — an agent running
+// direct-Anthropic must not silently reroute app llm calls.
+export function llmGatewayUrl(): string {
   return (process.env.AIRGLOW_GATEWAY_URL || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
 }
 
@@ -156,6 +163,19 @@ export async function streamMessage(
       continue;
     }
     if (res.status >= 500) {
+      if (res.status === 503) {
+        // Server-side kill switch (AIRGLOW_AGENT_GATEWAY_ENABLED=0): a
+        // deliberate off state, not an outage — don't retry into it.
+        const body = await res.text().catch(() => '');
+        let code = '';
+        try { code = JSON.parse(body)?.error?.code ?? ''; } catch {}
+        if (code === 'AGENT_GATEWAY_DISABLED') {
+          const err: any = new Error('The Airglow assistant is switched off on the server right now. Your installed apps keep working as usual.');
+          err.status = 503;
+          err.code = 'AGENT_GATEWAY_DISABLED';
+          throw err;
+        }
+      }
       lastStatus = res.status;
       lastError = `upstream ${res.status}`;
       continue;

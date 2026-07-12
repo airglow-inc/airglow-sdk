@@ -234,4 +234,4 @@ Assumptions that matter:
 - **`startup.ts` runs on every boot** — keep it idempotent.
 - **`server/` runs on the machine, not the browser** — no `window`, `document`, `chrome.*`, or `react-dom`.
 - **`airglow.fetch` response is limited** — `{ status, ok, json(), text() }`. For headers or streaming, use a server function with native `fetch`.
-- **No API keys in browser code** — `.env` keys exist only in `server/*.ts`. Use `airglow.rpc()`, or `airglow.llm.anthropic.messages()` (no key needed).
+- **No API keys in browser code** — `.env` keys exist only in `server/*.ts`. Use `airglow.rpc()`, or `airglow.llm.chat()` (no key needed).

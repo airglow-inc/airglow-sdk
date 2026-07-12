@@ -13,10 +13,14 @@ import { useExtUpdateAvailable, applyExtUpdate } from '../../lib/ext-update';
 import { useHostVersion } from '../../lib/host-version';
 import { AUTH_SESSION_KEY, AuthCancelledError, getStoredSession, signInWithGoogle, signOut, type AuthSession } from '../../lib/airglow-auth';
 import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, getDefaultCloudApiUrl } from '../../lib/cloud-api';
+import { DAEMON_DISABLED_KEY } from '../../lib/app-loader';
 
 const APP_ORDER_KEY = '__app_order';
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
 const SIDE_BUTTON_KEY = '__side_button_enabled';
+// DEPRECATED: the sidepanel agent chat is retired — toggle kept only for
+// existing installs (see entrypoints/sidepanel/App.tsx header). Don't route
+// anything new to the sidepanel.
 const SIDEPANEL_KEY = '__sidepanel_enabled';
 type AppVisibility = 'public' | 'hidden';
 
@@ -26,6 +30,10 @@ interface AppManifest {
   description: string;
   server_env?: Record<string, { label?: string }>;
   visibility?: AppVisibility;
+  // Loader-injected: which source serves this app ('local' daemon or 'cloud')
+  // and its base URL — the UI iframe + uninstall path follow it.
+  _sourceType?: 'local' | 'cloud';
+  _source?: { url: string; type: string };
   // Daemon-injected: names of `server/*.ts` RPC handlers. Non-empty list
   // means RPC calls will fail when the daemon is down — surfaced as a
   // warning chip in the dashboard.
@@ -42,7 +50,12 @@ interface CatalogApp {
   // Userscript match patterns, so the catalog card can show the same site list
   // as the installed gallery. Absent on older feeds → no site row.
   matches?: string[];
+  // The app has server functions — it can only run daemon-served.
+  requiresHost?: boolean;
 }
+
+// One command; install.sh handles platform detection + native-host registration.
+const HOST_INSTALL_CMD = 'curl -fsSL https://airglow.dev/install.sh | bash';
 
 // Catalog install provenance from the daemon (GET /api/catalog/installed).
 interface Provenance {
@@ -207,21 +220,24 @@ const ACTION_TONE = {
 } as const;
 
 // One button for every app action — Enable/Disable/Install render solid,
-// Uninstall/Secrets render outline. Same height, shape, and typography across
-// the gallery, app page, and catalog; callers vary only tone, icon, and label.
+// Uninstall/Secrets render outline, passive states (catalog "Installed")
+// render soft (tinted background, tone-colored text, pill-like). Same height,
+// shape, and typography across the gallery, app page, and catalog; callers
+// vary only tone, icon, and label.
 function ActionButton({
   onClick, disabled, tone, variant = 'solid', icon: Icon, children, testid,
 }: {
   onClick?: () => void;
   disabled?: boolean;
   tone: keyof typeof ACTION_TONE;
-  variant?: 'solid' | 'outline';
+  variant?: 'solid' | 'outline' | 'soft';
   icon?: React.ComponentType<{ size?: number }>;
   children: React.ReactNode;
   testid?: string;
 }) {
   const c = ACTION_TONE[tone];
   const solid = variant === 'solid';
+  const baseBg = solid ? c : variant === 'soft' ? `color-mix(in srgb, ${c} 14%, var(--bg-white))` : 'var(--bg-white)';
   return (
     <button
       type="button"
@@ -231,24 +247,38 @@ function ActionButton({
       className="inline-flex items-center justify-center gap-1.5 h-9 px-3.5 rounded-md text-base font-medium border transition-all"
       style={{
         color: solid ? 'var(--bg-white)' : c,
-        background: solid ? c : 'var(--bg-white)',
-        borderColor: solid ? c : 'var(--border-secondary)',
+        background: baseBg,
+        borderColor: solid ? c : variant === 'soft' ? `color-mix(in srgb, ${c} 35%, var(--bg-white))` : 'var(--border-secondary)',
         cursor: disabled ? 'default' : 'pointer',
         opacity: disabled ? 0.5 : 1,
       }}
       onMouseEnter={(e) => {
         if (disabled) return;
         if (solid) e.currentTarget.style.opacity = '0.85';
-        else e.currentTarget.style.background = `color-mix(in srgb, ${c} 8%, var(--bg-white))`;
+        else e.currentTarget.style.background = `color-mix(in srgb, ${c} ${variant === 'soft' ? 20 : 8}%, var(--bg-white))`;
       }}
       onMouseLeave={(e) => {
         e.currentTarget.style.opacity = disabled ? '0.5' : '1';
-        if (!solid) e.currentTarget.style.background = 'var(--bg-white)';
+        if (!solid) e.currentTarget.style.background = baseBg;
       }}
     >
       {Icon && <Icon size={15} />}
       {children}
     </button>
+  );
+}
+
+// The catalog card's button for an up-to-date installed app: a green
+// "✓ Installed" at rest that swaps to a red "Uninstall" on hover, so the card
+// gets an uninstall affordance without a second destructive button.
+function InstalledUninstallButton({ busy, onUninstall, testid }: { busy?: boolean; onUninstall: () => void; testid?: string }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <span className="inline-flex" onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}>
+      {hover || busy
+        ? <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={busy} onClick={onUninstall} testid={testid}>{busy ? 'Removing…' : 'Uninstall'}</ActionButton>
+        : <ActionButton tone="green" variant="soft" icon={Check} testid={testid}>Installed</ActionButton>}
+    </span>
   );
 }
 
@@ -270,7 +300,7 @@ function SiteList({ sites, testid }: { sites: NonNullable<ReturnType<typeof appS
 // Title, version/status pills, description, and the site list all render here,
 // so the two surfaces are identical by construction; callers vary only the
 // `pills` and `actions` slots. `onOpen`/`href` make the title + description a
-// link (gallery); the catalog passes neither. `drag` carries the gallery DnD.
+// link (gallery always; catalog only when installed). `drag` carries the DnD.
 function AppListCard({
   name, description, sites, sitesTestid, pills, actions, note, onOpen, href, draggable, drag, testid,
 }: {
@@ -401,6 +431,9 @@ export default function App() {
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   // App pending uninstall confirmation (native in-page modal, not window.confirm).
   const [confirmUninstall, setConfirmUninstall] = useState<AppManifest | null>(null);
+  const [showHostPopup, setShowHostPopup] = useState(false);
+  const [hostCmdCopied, setHostCmdCopied] = useState(false);
+  const [daemonDisabled, setDaemonDisabled] = useState(false);
 
   // Settings modal state
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -479,9 +512,6 @@ export default function App() {
   // Closeable "dev server offline — running from cache" banner. Dismissal is
   // session-scoped: comes back on the next dashboard open so the user notices
   // again if the server is still down, but stays quiet within a session.
-  const [offlineBannerDismissed, setOfflineBannerDismissed] = useState(
-    () => sessionStorage.getItem('__airglow_offline_banner_dismissed') === '1',
-  );
 
   // Drag-and-drop reorder
   const [appOrder, setAppOrder] = useState<Record<string, string[]>>({});
@@ -548,6 +578,11 @@ export default function App() {
   function loadEnvStatus() {
     void (async () => {
       try {
+        if ((await chrome.storage.local.get(DAEMON_DISABLED_KEY))[DAEMON_DISABLED_KEY]) {
+          setEnvApps([]);
+          setEnvError(null);
+          return;
+        }
         const origin = await getDaemonOrigin();
         const res = await fetch(`${origin}/api/env/status`);
         const data = await res.json();
@@ -574,6 +609,10 @@ export default function App() {
 
   async function loadProvenance() {
     try {
+      if ((await chrome.storage.local.get(DAEMON_DISABLED_KEY))[DAEMON_DISABLED_KEY]) {
+        setProvenance({});
+        return;
+      }
       const origin = await getDaemonOrigin();
       const res = await fetch(`${origin}/api/catalog/installed`);
       const data = await res.json();
@@ -581,17 +620,43 @@ export default function App() {
     } catch { /* daemon down — handled elsewhere */ }
   }
 
-  async function installCatalogApp(appId: string) {
+  // Install target: daemon when the app needs the host, a daemon copy is
+  // being replaced/updated (a local copy shadows the cloud one, so a cloud
+  // install would be invisible), or the user asked for the source locally
+  // ("Edit locally"); cloud otherwise — works with no host at all.
+  async function installCatalogApp(appId: string, opts?: { daemon?: boolean }) {
+    const entry = catalogApps?.find((c) => c.id === appId);
+    const daemonOwned = Boolean(provenance[appId]) || (apps || []).some(
+      (a) => a.id === appId && a._sourceType !== 'cloud',
+    );
+    const viaDaemon = opts?.daemon || entry?.requiresHost || daemonOwned;
     setInstalling(appId);
     try {
-      const origin = await getDaemonOrigin();
-      const res = await fetch(`${origin}/api/catalog/install`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appId }),
-      });
-      const data = await res.json();
-      if (!data?.ok) throw new Error(data?.error || 'install failed');
+      if (viaDaemon) {
+        const origin = await getDaemonOrigin();
+        const res = await fetch(`${origin}/api/catalog/install`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appId }),
+        });
+        const data = await res.json();
+        if (!data?.ok) throw new Error(data?.error || 'install failed');
+      } else {
+        const session = await getStoredSession();
+        if (!session?.token) throw new Error('Sign in first (Settings → Account)');
+        const cloud = await getCloudApiUrl();
+        const res = await fetch(`${cloud}/api/apps/install`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Airglow-App-Id': 'airglow-extension',
+            Authorization: `Bearer ${session.token}`,
+          },
+          body: JSON.stringify({ appId }),
+        });
+        const data = await res.json();
+        if (!data?.ok) throw new Error(data?.error?.message || 'install failed');
+      }
       // loadAll() reads the background loader's cached manifest list, which
       // only refreshes on a 5s poll. Force an immediate re-fetch first, else
       // the just-installed app is absent on the first click and only appears
@@ -606,20 +671,38 @@ export default function App() {
     }
   }
 
-  // Uninstall: delete the app's folder + daemon sidecars (provenance, secrets).
-  // The opener just surfaces the in-page confirm modal; performUninstall does the work.
+  // Uninstall follows the app's source: cloud installs flip the account
+  // record; daemon installs delete the app's folder + sidecars (provenance,
+  // secrets). The opener just surfaces the in-page confirm modal.
   async function performUninstall(app: AppManifest) {
     setConfirmUninstall(null);
     setUninstalling(app.id);
     try {
-      const origin = await getDaemonOrigin();
-      const res = await fetch(`${origin}/api/apps/uninstall`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ appId: app.id }),
-      });
-      const data = await res.json();
-      if (!data?.ok) throw new Error(data?.error || 'uninstall failed');
+      if (app._sourceType === 'cloud') {
+        const session = await getStoredSession();
+        if (!session?.token) throw new Error('Sign in first (Settings → Account)');
+        const cloud = await getCloudApiUrl();
+        const res = await fetch(`${cloud}/api/apps/uninstall`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Airglow-App-Id': 'airglow-extension',
+            Authorization: `Bearer ${session.token}`,
+          },
+          body: JSON.stringify({ appId: app.id }),
+        });
+        const data = await res.json();
+        if (!data?.ok) throw new Error(data?.error?.message || 'uninstall failed');
+      } else {
+        const origin = await getDaemonOrigin();
+        const res = await fetch(`${origin}/api/apps/uninstall`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ appId: app.id }),
+        });
+        const data = await res.json();
+        if (!data?.ok) throw new Error(data?.error || 'uninstall failed');
+      }
       // Force an immediate manifest re-fetch (same as install) so the removed
       // app disappears now instead of after the next 5s background poll.
       await chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }).catch(() => null);
@@ -666,13 +749,14 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY], (result) => {
+    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY, DAEMON_DISABLED_KEY], (result) => {
       const nh = result['__native_host_connected'];
       setNativeHostConnected(nh === undefined ? null : (nh as boolean));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
       setSidepanelEnabled(!!result[SIDEPANEL_KEY]);
+      setDaemonDisabled(!!result[DAEMON_DISABLED_KEY]);
       setGatewayUrlInput(typeof result[CLOUD_API_URL_OVERRIDE_KEY] === 'string' ? result[CLOUD_API_URL_OVERRIDE_KEY] : '');
       getStoredSession().then((session) => {
         setAuthSession(session);
@@ -707,6 +791,9 @@ export default function App() {
       if (SIDEPANEL_KEY in changes) {
         setSidepanelEnabled(!!changes[SIDEPANEL_KEY].newValue);
       }
+      if (DAEMON_DISABLED_KEY in changes) {
+        setDaemonDisabled(!!changes[DAEMON_DISABLED_KEY].newValue);
+      }
     };
     chrome.storage.local.onChanged.addListener(onChange);
     return () => chrome.storage.local.onChanged.removeListener(onChange);
@@ -720,6 +807,16 @@ export default function App() {
       page,
     }, () => { void chrome.runtime.lastError; });
   }, [identityLoaded, page]);
+
+  // An app's UI became visible — in-shell navigation, ?app= deep link, and
+  // chromeless popups all funnel through openAppId.
+  useEffect(() => {
+    if (!openAppId) return;
+    chrome.runtime.sendMessage({
+      type: 'airglow:track-ui-page-opened',
+      appId: openAppId,
+    }, () => { void chrome.runtime.lastError; });
+  }, [openAppId]);
 
   // Probe the cloud's /api/healthz so the sidebar can show whether it's
   // reachable. Re-runs (debounced) whenever the resolved URL changes — e.g.
@@ -746,6 +843,15 @@ export default function App() {
   function setSidepanel(next: boolean) {
     setSidepanelEnabled(next);
     chrome.storage.local.set({ [SIDEPANEL_KEY]: next });
+  }
+
+  async function setDaemonDisabledFlag(next: boolean) {
+    setDaemonDisabled(next);
+    await chrome.storage.local.set({ [DAEMON_DISABLED_KEY]: next });
+    // The background reloads the merged app set on this key's change; refresh
+    // the dashboard's daemon-derived state immediately rather than on its poll.
+    await chrome.runtime.sendMessage({ type: 'airglow:reload-apps' }).catch(() => null);
+    await loadAll();
   }
 
   function saveGatewayUrl() {
@@ -1059,7 +1165,7 @@ export default function App() {
               <Badge color={PILL.error} hoverable>Server down</Badge>
             </Tooltip>
           )}
-          {prov ? (
+          {prov || app._sourceType === 'cloud' ? (
             <Tooltip content={<span>Installed from the catalog{app.version ? ` (v${app.version})` : ''}.</span>}>
               <Badge color={PILL.catalog} hoverable>Catalog{app.version ? ` · v${app.version}` : ''}</Badge>
             </Tooltip>
@@ -1091,6 +1197,20 @@ export default function App() {
               Secrets
             </ActionButton>
           )}
+          {app._sourceType === 'cloud' && localOnline && (
+            <Tooltip content={<span>Copies the source into ~/.airglow/apps — your local copy then serves the app.</span>}>
+              <ActionButton
+                tone="neutral"
+                variant="outline"
+                icon={Download}
+                disabled={installing === app.id}
+                onClick={() => installCatalogApp(app.id, { daemon: true })}
+                testid={`edit-locally-${app.id}`}
+              >
+                Edit locally
+              </ActionButton>
+            </Tooltip>
+          )}
         </>}
       />
     );
@@ -1108,24 +1228,52 @@ export default function App() {
       );
     }
     const installedIds = new Set((apps || []).map((a) => a.id));
+    // Uninstallable (host-required, host offline) apps sink to the bottom.
+    const sorted = localOnline ? catalogApps : [...catalogApps].sort(
+      (a, b) => Number(!!a.requiresHost) - Number(!!b.requiresHost),
+    );
     return (
       <div className="flex flex-col gap-4">
-        {catalogApps.map((c) => {
+        {sorted.map((c) => {
           const installed = installedIds.has(c.id);
           const installedApp = (apps || []).find((a) => a.id === c.id);
-          const fromCatalog = !!provenance[c.id];
-          const updatable = installed && !!installedApp?.version && isNewerVersion(c.version, installedApp.version);
+          const cloudInstalled = installedApp?._sourceType === 'cloud';
+          const fromCatalog = !!provenance[c.id] || cloudInstalled;
+          const updatable = installed && !cloudInstalled && !!installedApp?.version && isNewerVersion(c.version, installedApp.version);
           const busy = installing === c.id;
           const installedDone = installed && fromCatalog && !updatable;
-          const disabledBtn = busy || installedDone;
+          const appDisabled = disabledApps.has(c.id);
           const sites = c.matches?.length ? appSites({ userscripts: [{ matches: c.matches }] }) : null;
+          // Server apps only run daemon-served — without a daemon the card is
+          // inert: title + a centered pointer, no install.
+          const hostMissing = !!c.requiresHost && !localOnline;
+          if (hostMissing) {
+            return (
+              <div
+                key={c.id}
+                className="rounded-[var(--radius-md)] p-5 border"
+                style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', boxShadow: 'var(--shadow-card)', opacity: 0.55 }}
+                data-testid={`catalog-host-missing-${c.id}`}
+              >
+                <div className="text-xl font-semibold" style={{ color: 'var(--fg-primary)' }}>{c.name}</div>
+                <div
+                  className="inline-block mt-3 text-lg font-semibold px-4 py-1.5 rounded-[var(--radius-md)]"
+                  style={{ color: '#5f7344', background: 'color-mix(in srgb, #5f7344 12%, var(--bg-white))', border: '1px solid color-mix(in srgb, #5f7344 35%, var(--bg-white))' }}
+                >
+                  Host install required
+                </div>
+              </div>
+            );
+          }
           return (
+            <div key={c.id}>
             <AppListCard
-              key={c.id}
               name={c.name}
               description={c.description}
               sites={sites}
               sitesTestid={`catalog-sites-${c.id}`}
+              onOpen={installed ? () => openApp(c.id) : undefined}
+              href={installed ? appUrl(c.id) : undefined}
               note={installed && !fromCatalog ? (
                 <div className="text-sm mt-2" style={{ color: 'var(--fg-tertiary)' }}>
                   A local app with this id exists — installing replaces it with the catalog version.
@@ -1137,18 +1285,46 @@ export default function App() {
                 {installed && !fromCatalog && <Badge color={PILL.neutral}>Installed locally</Badge>}
                 {updatable && <Badge color={PILL.update}>Update available</Badge>}
               </>}
-              actions={
-                <ActionButton
-                  tone="green"
-                  icon={installedDone ? Check : Download}
-                  disabled={disabledBtn}
-                  onClick={() => installCatalogApp(c.id)}
-                  testid={`install-${c.id}`}
-                >
-                  {busy ? 'Installing…' : updatable ? 'Update' : installed ? (fromCatalog ? 'Installed' : 'Replace') : 'Install'}
-                </ActionButton>
-              }
+              actions={<>
+                {installedDone ? (
+                  <InstalledUninstallButton
+                    busy={uninstalling === c.id}
+                    onUninstall={() => installedApp && setConfirmUninstall(installedApp)}
+                    testid={`install-${c.id}`}
+                  />
+                ) : (
+                  <ActionButton
+                    tone="green"
+                    icon={Download}
+                    disabled={busy}
+                    onClick={() => installCatalogApp(c.id)}
+                    testid={`install-${c.id}`}
+                  >
+                    {busy ? 'Installing…' : updatable ? 'Update' : installed ? 'Replace' : 'Install'}
+                  </ActionButton>
+                )}
+                {installed && (
+                  <ActionButton tone={appDisabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(c.id)}>
+                    {appDisabled ? 'Enable' : 'Disable'}
+                  </ActionButton>
+                )}
+                {cloudInstalled && localOnline && (
+                  <Tooltip content={<span>Copies the source into ~/.airglow/apps — your local copy then serves the app.</span>}>
+                    <ActionButton
+                      tone="neutral"
+                      variant="outline"
+                      icon={Download}
+                      disabled={busy}
+                      onClick={() => installCatalogApp(c.id, { daemon: true })}
+                      testid={`edit-locally-${c.id}`}
+                    >
+                      Edit locally
+                    </ActionButton>
+                  </Tooltip>
+                )}
+              </>}
             />
+            </div>
           );
         })}
       </div>
@@ -1179,7 +1355,7 @@ export default function App() {
           <div className="flex items-center gap-2.5 flex-wrap">
             <h1 className="text-2xl font-semibold tracking-tight" style={{ color: 'var(--fg-primary)' }} data-testid="app-page-title">{name}</h1>
             {disabled && <Badge color={PILL.error}>Disabled</Badge>}
-            {prov
+            {prov || app?._sourceType === 'cloud'
               ? <Badge color={PILL.catalog}>Catalog{app?.version ? ` · v${app.version}` : ''}</Badge>
               : <Badge color={PILL.local}>Local</Badge>}
             {prov?.modified && <Badge color={PILL.green}>Modified</Badge>}
@@ -1200,8 +1376,8 @@ export default function App() {
             )}
           </div>
         </header>
-        {daemonOriginUrl
-          ? <AppFrame appId={appId} origin={daemonOriginUrl} page={appPage} autoHeight />
+        {(app?._source?.url ?? daemonOriginUrl)
+          ? <AppFrame appId={appId} origin={app?._source?.url ?? daemonOriginUrl!} page={appPage} autoHeight />
           : <div className="flex-1 p-8 text-base" style={{ color: 'var(--fg-tertiary)' }}>Loading…</div>}
       </div>
     );
@@ -1211,10 +1387,11 @@ export default function App() {
   // no sidebar/header. The frame still bridges the app's SDK to the background,
   // so app_ui calls (storage, llm, captureTab) work as they do in-dashboard.
   if (chromeless && openAppId) {
+    const frameOrigin = local.find((a) => a.id === openAppId)?._source?.url ?? daemonOriginUrl;
     return (
       <div style={{ width: '100vw', height: '100vh', background: 'var(--bg-primary)' }}>
-        {daemonOriginUrl
-          ? <AppFrame appId={openAppId} origin={daemonOriginUrl} page={appPage} />
+        {frameOrigin
+          ? <AppFrame appId={openAppId} origin={frameOrigin} page={appPage} />
           : <div className="p-8 text-base" style={{ color: 'var(--fg-tertiary)' }}>Loading…</div>}
       </div>
     );
@@ -1436,46 +1613,6 @@ export default function App() {
             </div>
           </header>
           <div className="p-8">
-        {/* Dev server offline — running from cached source. Closeable; the
-            bottom-left status pill already shows the underlying offline state.
-            (The User Scripts / pin setup banners moved to the sidepanel —
-            see components/SetupBanners.tsx.) */}
-        {localOnline === false && apps !== null && apps.length > 0 && !offlineBannerDismissed && (
-          <div
-            className="relative p-5 rounded-[var(--radius-md)] mb-6 border w-fit mx-auto"
-            style={{
-              background: 'color-mix(in srgb, var(--error) 8%, var(--bg-white))',
-              borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
-            }}
-            data-testid="banner-dev-server-offline-cached"
-          >
-            <button
-              onClick={() => {
-                sessionStorage.setItem('__airglow_offline_banner_dismissed', '1');
-                setOfflineBannerDismissed(true);
-              }}
-              className="absolute top-2 right-2 inline-flex items-center justify-center h-8 w-8 rounded cursor-pointer border"
-              style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))' }}
-              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; e.currentTarget.style.color = 'var(--fg-secondary)'; }}
-              aria-label="Dismiss"
-              data-testid="banner-dev-server-offline-cached-dismiss"
-            >
-              <X size={16} strokeWidth={2.5} />
-            </button>
-            <div>
-              <div className="text-lg font-semibold flex items-center gap-2 pr-8" style={{ color: 'var(--fg-primary)' }}>
-                <TriangleAlert size={20} style={{ color: 'var(--error)' }} />
-                Local Apps server is offline
-              </div>
-              <div className="mt-4 text-base" style={{ color: 'var(--fg-secondary)', maxWidth: '560px' }}>
-                Only userscripts will work — app UIs and server functions are disabled.
-                The server starts automatically when the Airglow native host is connected.
-              </div>
-            </div>
-          </div>
-        )}
-
         {error ? (
           <div className="min-h-[calc(100vh-200px)] flex items-center justify-center">
             <div
@@ -1601,6 +1738,66 @@ export default function App() {
 
       {/* Feedback modal */}
       {/* Uninstall confirmation modal (replaces window.confirm) */}
+      {showHostPopup && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-5"
+          style={{ background: 'rgba(28,25,23,0.4)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setShowHostPopup(false); }}
+          data-testid="host-popup-backdrop"
+        >
+          <div
+            className="w-full max-w-[520px] rounded-lg p-8 border"
+            style={{
+              background: 'var(--bg-white)',
+              borderColor: 'var(--border-tertiary)',
+              boxShadow: '0 20px 60px rgba(28,25,23,0.2)',
+              color: 'var(--fg-primary)',
+            }}
+            data-testid="host-popup"
+          >
+            <h3 className="text-2xl font-bold" style={{ color: 'var(--fg-primary)' }}>
+              This app needs the Airglow host
+            </h3>
+            <p className="mt-3 text-base" style={{ color: 'var(--fg-secondary)' }}>
+              Install it in a terminal, then come back:
+            </p>
+            <div
+              className="mt-3 pl-3 pr-1.5 py-1.5 rounded-md text-sm font-mono break-all flex items-center justify-between gap-2"
+              style={{ background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}
+            >
+              <span data-testid="host-install-cmd">{HOST_INSTALL_CMD}</span>
+              <button
+                type="button"
+                className="shrink-0 h-8 w-8 inline-flex items-center justify-center rounded-md cursor-pointer border-0 bg-transparent"
+                style={{ color: 'var(--fg-secondary)' }}
+                title="Copy"
+                onClick={() => {
+                  navigator.clipboard.writeText(HOST_INSTALL_CMD).then(() => {
+                    setHostCmdCopied(true);
+                    setTimeout(() => setHostCmdCopied(false), 1500);
+                  });
+                }}
+              >
+                {hostCmdCopied ? <Check size={16} /> : <Copy size={16} />}
+              </button>
+            </div>
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setShowHostPopup(false)}
+                className="h-9 px-4 rounded-md text-base font-medium cursor-pointer border"
+                style={{
+                  color: 'var(--fg-primary)',
+                  borderColor: 'var(--border-secondary)',
+                  background: 'var(--bg-white)',
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {confirmUninstall && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-5"
@@ -1622,15 +1819,19 @@ export default function App() {
               Uninstall {confirmUninstall.name}?
             </h3>
             <p className="mt-3 text-base" style={{ color: 'var(--fg-secondary)' }}>
-              This deletes the app's folder and any saved secrets. This cannot be undone.
+              {confirmUninstall._sourceType === 'cloud'
+                ? 'This removes the app from your account. You can reinstall it from the Catalog.'
+                : "This deletes the app's folder and any saved secrets. This cannot be undone."}
             </p>
-            <div
-              className="mt-3 px-3 py-2 rounded-md text-sm font-mono break-all"
-              style={{ background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}
-              data-testid="uninstall-path"
-            >
-              apps/{confirmUninstall.id}
-            </div>
+            {confirmUninstall._sourceType !== 'cloud' && (
+              <div
+                className="mt-3 px-3 py-2 rounded-md text-sm font-mono break-all"
+                style={{ background: 'var(--bg-tertiary)', color: 'var(--fg-primary)' }}
+                data-testid="uninstall-path"
+              >
+                apps/{confirmUninstall.id}
+              </div>
+            )}
             <div className="mt-6 flex justify-end gap-2">
               <button
                 type="button"
@@ -1680,7 +1881,7 @@ export default function App() {
           data-testid="settings-modal-backdrop"
         >
           <div
-            className="w-[420px] rounded-lg p-6"
+            className="w-[420px] max-h-[85vh] overflow-y-auto rounded-lg p-6"
             style={{ background: 'var(--bg-white)', boxShadow: '0 20px 60px rgba(0,0,0,0.2)' }}
             data-testid="settings-modal"
           >
@@ -1791,6 +1992,41 @@ export default function App() {
                   style={{
                     width: 18, height: 18,
                     left: sidepanelEnabled ? 22 : 2,
+                    background: 'var(--bg-white)',
+                    boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
+                  }}
+                />
+              </button>
+            </label>
+            <label
+              className="flex items-center justify-between gap-4 py-2 cursor-pointer"
+              data-testid="settings-daemon-disabled-row"
+            >
+              <div>
+                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Disable daemon</div>
+                <div className="text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                  Development only. Simulates no host installed: local apps unload, only cloud catalog apps run.
+                </div>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={daemonDisabled}
+                onClick={() => setDaemonDisabledFlag(!daemonDisabled)}
+                className="relative shrink-0 transition-colors cursor-pointer rounded-full border"
+                style={{
+                  boxSizing: 'border-box',
+                  width: 44, height: 24,
+                  background: daemonDisabled ? 'var(--error)' : 'var(--bg-tertiary)',
+                  borderColor: daemonDisabled ? 'var(--error)' : 'var(--border-secondary)',
+                }}
+                data-testid="settings-daemon-disabled-toggle"
+              >
+                <span
+                  className="absolute top-1/2 -translate-y-1/2 rounded-full transition-all"
+                  style={{
+                    width: 18, height: 18,
+                    left: daemonDisabled ? 22 : 2,
                     background: 'var(--bg-white)',
                     boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
                   }}

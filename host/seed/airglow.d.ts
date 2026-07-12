@@ -69,91 +69,78 @@ interface AirglowConnectors {
   execute<T = any>(tool: string, args?: Record<string, any>, opts?: AirglowConnectorOptions): Promise<AirglowExecuteResult<T>>;
 }
 
-/** One block of an Anthropic Messages response (text, tool_use, …). */
-interface AirglowLlmContentBlock {
-  type: string;
-  text?: string;
+/** One choice of a chat-completions response. */
+interface AirglowLlmChoice {
+  index: number;
+  message: {
+    role: 'assistant';
+    content: string | null;
+    tool_calls?: { id: string; type: 'function'; function: { name: string; arguments: string } }[];
+    /** Web-plugin citations (url_citation annotations). */
+    annotations?: Record<string, any>[];
+    [key: string]: any;
+  };
+  finish_reason: string | null;
   [key: string]: any;
 }
 
-/** Anthropic Messages API response, returned unchanged by the gateway. */
-interface AirglowLlmMessage {
+/** OpenAI-style chat-completions response, returned unchanged by the gateway. */
+interface AirglowChatCompletion {
   id: string;
-  type: 'message';
-  role: 'assistant';
+  object: 'chat.completion';
+  created: number;
   model: string;
-  content: AirglowLlmContentBlock[];
-  stop_reason: string | null;
-  stop_sequence: string | null;
-  usage: { input_tokens: number; output_tokens: number; [key: string]: any };
+  choices: AirglowLlmChoice[];
+  usage?: { prompt_tokens: number; completion_tokens: number; [key: string]: any };
   [key: string]: any;
 }
 
 /**
- * LLM access through the Airglow gateway — no app-side ANTHROPIC_API_KEY needed.
+ * LLM access through the Airglow gateway — no app-side API key needed.
  * Available in every context, including server functions.
  */
 interface AirglowLlm {
-  anthropic: {
-    /**
-     * Anthropic Messages API. `payload` is the request body, passed through
-     * unchanged. Allowed models: `claude-haiku-4-5`, `claude-sonnet-5`
-     * (default), `claude-opus-4-8`.
-     *
-     * Set `web_search` to give the model live web search (Anthropic's hosted
-     * web_search tool) — it researches before answering and cites sources.
-     * The response `content` then includes `server_tool_use` /
-     * `web_search_tool_result` blocks alongside the usual `text` blocks. Pass
-     * `true` for defaults, or `{ max_uses?, allowed_domains?, blocked_domains? }`
-     * to tune it (max_uses 1-10, default 5). Web-search calls get a higher
-     * max_tokens ceiling and longer timeout; each search bills to the weekly
-     * budget.
-     *
-     * Set `web_fetch` to let the model fetch URLs already present in the
-     * conversation (Anthropic's hosted web_fetch tool — it never invents
-     * URLs, so include the URL in your prompt). The response then includes
-     * `server_tool_use` / `web_fetch_tool_result` blocks. Pass `true` for
-     * defaults, or `{ max_uses?, allowed_domains?, blocked_domains?,
-     * max_content_tokens? }` (max_uses 1-10, default 3; max_content_tokens
-     * caps how much of a page enters the context — default 20000, max
-     * 50000). Fetched content bills as ordinary input tokens; web-fetch
-     * calls get the same higher max_tokens ceiling and longer timeout as
-     * web search. Both params can be combined on one request.
-     *
-     * Pass `tools` (client tools `{ name, description?, input_schema }`) and
-     * optional `tool_choice` to let the model call your functions: it returns
-     * `tool_use` blocks, you run them and send `tool_result` blocks back on the
-     * next call. Hosted/server tools are rejected — use the `web_search` /
-     * `web_fetch` params instead.
-     *
-     *   await airglow.llm.anthropic.messages({
-     *     model: 'claude-opus-4-8', max_tokens: 4000, web_search: true,
-     *     messages: [{ role: 'user', content: 'Research Jane Doe, CEO of Acme.' }],
-     *   });
-     *
-     * Streaming: pass `{ onEvent }` as a second argument to observe the call's
-     * progress while it runs (e.g. show each web-search query as the model
-     * issues it). `onEvent` receives every raw Anthropic SSE event
-     * (`message_start`, `content_block_start`, `content_block_delta`,
-     * `content_block_stop`, `message_delta`, `message_stop`); the promise still
-     * resolves with the same complete message as the non-streaming call.
-     * Caveat: a `server_tool_use` / `tool_use` block's `input` (e.g. the search
-     * query) streams as `input_json_delta` fragments — it is only complete at
-     * that block's `content_block_stop`; accumulate `partial_json` and parse
-     * there.
-     *
-     *   const res = await airglow.llm.anthropic.messages(payload, {
-     *     onEvent: (e) => { if (e.type === 'content_block_start') showProgress(e); },
-     *   });
-     */
-    messages(payload: Record<string, any> & {
-      web_search?: boolean | { max_uses?: number; allowed_domains?: string[]; blocked_domains?: string[] };
-      web_fetch?: boolean | { max_uses?: number; allowed_domains?: string[]; blocked_domains?: string[]; max_content_tokens?: number };
-    }, opts?: {
-      /** Called with each raw Anthropic SSE event as the call streams. */
-      onEvent?: (event: Record<string, any>) => void;
-    }): Promise<AirglowLlmMessage>;
-  };
+  /**
+   * OpenAI chat-completions schema, proxied to OpenRouter. `payload` is the
+   * request body, passed through unchanged. Allowed models:
+   * `anthropic/claude-haiku-4.5`, `anthropic/claude-sonnet-5` (default),
+   * `anthropic/claude-opus-4.8`.
+   *
+   *   await airglow.llm.chat({
+   *     model: 'anthropic/claude-sonnet-5', max_tokens: 1024,
+   *     messages: [{ role: 'user', content: 'Hello' }],
+   *   });
+   *
+   * Web search / fetch: add server tools — `tools: [{ type:
+   * 'openrouter:web_search' }, { type: 'openrouter:web_fetch' }]` — and the
+   * model searches (0-N times, choosing its own queries) and fetches URLs as
+   * it sees fit, server-side. Citations arrive in `message.annotations`.
+   * Alternative: `plugins: [{ id: 'web' }]` runs one search up front on every
+   * call (the model has no say). Either form gets a longer timeout.
+   *
+   * Tools: standard OpenAI `tools` / `tool_choice`; the model returns
+   * `message.tool_calls`, you run them and send `role: 'tool'` messages back
+   * on the next call.
+   *
+   * Streaming: pass `{ onEvent }` as a second argument to observe the call's
+   * progress while it runs. `onEvent` receives every raw stream chunk
+   * (`choices[].delta`); the promise still resolves with the same complete
+   * completion as the non-streaming call. Caveat: `tool_calls[].function
+   * .arguments` stream as string fragments — only complete when the chunk
+   * carrying that choice's `finish_reason` arrives.
+   *
+   *   const res = await airglow.llm.chat(payload, {
+   *     onEvent: (c) => appendText(c.choices?.[0]?.delta?.content ?? ''),
+   *   });
+   */
+  chat(payload: Record<string, any> & {
+    model?: string;
+    messages: { role: string; content: any; [key: string]: any }[];
+    plugins?: Record<string, any>[];
+  }, opts?: {
+    /** Called with each raw stream chunk as the call streams. */
+    onEvent?: (chunk: Record<string, any>) => void;
+  }): Promise<AirglowChatCompletion>;
 }
 
 interface Airglow {
@@ -214,6 +201,15 @@ interface Airglow {
   listApps(): Promise<AirglowAppSummary[]>;
 
   captureTab(): Promise<AirglowCaptureResult>;
+
+  /**
+   * Read one cookie (by `name`) from the browser's real cookie jar for `url`'s
+   * domain — including HttpOnly cookies `document.cookie` can't see — or `null`
+   * if absent. Pairs with `fetch({ includeCookies: true })` for authenticated
+   * cross-site reads that need a double-submit header whose value must equal a
+   * cookie (e.g. an X csrf token that must match the `ct0` cookie).
+   */
+  getCookie(url: string, name: string): Promise<string | null>;
 
   platform: {
     allowIframes(domains: string[], initiators?: string[]): Promise<void>;

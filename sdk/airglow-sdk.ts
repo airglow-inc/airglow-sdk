@@ -271,8 +271,8 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
   // model latency, and it reuses the existing bridge unchanged in all three
   // contexts (userscript / app_ui iframe / startup).
   const LLM_STREAM_POLL_MS = 300;
-  async function llmMessagesStreaming(payload, onEvent) {
-    const start = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload, stream: true });
+  async function llmChatStreaming(payload, onEvent) {
+    const start = await sendMsg({ type: 'airglow:llm:chat', payload, stream: true });
     const streamId = start?.streamId;
     if (!streamId) throw makeAirglowError({ error: 'streaming start failed: no streamId', code: 'LLM_STREAM_ERROR' });
     while (true) {
@@ -290,26 +290,26 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
   }
 
   const llm = {
-    anthropic: {
-      async messages(payload, opts) {
-        // Opt-in streaming: observe raw Anthropic SSE events while the call
-        // runs; resolves with the same complete message as the buffered path.
-        if (opts && typeof opts.onEvent === 'function') {
-          return llmMessagesStreaming(payload, opts.onEvent);
-        }
-        const res = await sendMsg({ type: 'airglow:llm:anthropic:messages', payload });
-        // Surface gateway failures (budget exhausted, rate limit, validation)
-        // as a throw rather than silently returning undefined — otherwise the
-        // caller mistakes a backend error for an empty/garbage completion.
-        if (res?.error) {
-          const err = new Error(res.error);
-          if (res.code) err.code = res.code;
-          if (res.status) err.status = res.status;
-          if (res.details) err.details = res.details;
-          throw err;
-        }
-        return res?.result;
-      },
+    // OpenAI chat-completions schema, proxied to OpenRouter by the gateway.
+    async chat(payload, opts) {
+      // Opt-in streaming: observe raw OpenAI-style stream chunks while the
+      // call runs; resolves with the same complete completion object as the
+      // buffered path.
+      if (opts && typeof opts.onEvent === 'function') {
+        return llmChatStreaming(payload, opts.onEvent);
+      }
+      const res = await sendMsg({ type: 'airglow:llm:chat', payload });
+      // Surface gateway failures (budget exhausted, rate limit, validation)
+      // as a throw rather than silently returning undefined — otherwise the
+      // caller mistakes a backend error for an empty/garbage completion.
+      if (res?.error) {
+        const err = new Error(res.error);
+        if (res.code) err.code = res.code;
+        if (res.status) err.status = res.status;
+        if (res.details) err.details = res.details;
+        throw err;
+      }
+      return res?.result;
     },
   };
 
@@ -317,6 +317,17 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     const res = await sendMsg({ type: 'airglow:captureTab' });
     if (res?.error) throw new Error(res.error);
     return { base64: res.base64, mediaType: res.mediaType };
+  }
+
+  // Read one cookie (by name) set on \`url\`'s domain, from the browser's real
+  // cookie jar — including HttpOnly cookies a page's document.cookie can't see.
+  // Returns the value string, or null if absent. Pairs with
+  // fetch({ includeCookies: true }) for authenticated cross-site reads that
+  // need a double-submit header (e.g. an X csrf token that must equal ct0).
+  async function getCookie(url, name) {
+    const res = await sendMsg({ type: 'airglow:cookie:get', url, name });
+    if (res?.error) throw new Error(res.error);
+    return res?.value ?? null;
   }
 
   async function openWindow(url, opts = {}) {
@@ -437,6 +448,7 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     platform,
     identity,
     captureTab,
+    getCookie,
     openWindow,
     openWindowAndWaitClose,
     openTab,

@@ -1,37 +1,31 @@
-// App-facing LLM proxy. The extension routes airglow.llm calls to whichever
-// source owns the app, so locally-served apps land here; the daemon forwards
-// to the cloud LLM gateway, which owns auth, rate limits, and the shared
-// weekly usage budget. With ANTHROPIC_API_KEY set (dev) calls go straight to
-// Anthropic instead — the same escape hatch the agent uses (agent/api.ts).
+// App-facing LLM proxy (airglow.llm.chat — OpenAI chat-completions schema).
+// The extension routes airglow.llm calls to whichever source owns the app, so
+// locally-served apps land here; the daemon forwards to the cloud LLM gateway,
+// which owns auth, rate limits, and the shared weekly usage budget. With
+// OPENROUTER_API_KEY set (~/.airglow/state/agent.env) calls go straight to
+// OpenRouter on that key instead — BYOK: no gateway, no shared budget, no
+// model allowlist.
 
-import { gatewayUrl, type AgentIdentity } from '../agent/api';
+import { llmGatewayUrl, type AgentIdentity } from '../agent/api';
 
-const ANTHROPIC_MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
-const ANTHROPIC_VERSION = '2023-06-01';
-const WEB_SEARCH_TOOL_TYPE = 'web_search_20250305';
-const WEB_SEARCH_DEFAULT_MAX_USES = 5;
-const WEB_SEARCH_DEV_DEFAULT_MAX_TOKENS = 4000;
-const WEB_FETCH_TOOL_TYPE = 'web_fetch_20250910';
-const WEB_FETCH_DEFAULT_MAX_USES = 3;
-const WEB_FETCH_DEFAULT_MAX_CONTENT_TOKENS = 20_000;
-// Direct-Anthropic dev calls skip the gateway's normalization, so fill its
-// defaults here; everything else passes through for Anthropic to validate.
-const DEV_DEFAULT_MODEL = 'claude-sonnet-5';
-const DEV_DEFAULT_MAX_TOKENS = 2000;
+const OPENROUTER_CHAT_URL = 'https://openrouter.ai/api/v1/chat/completions';
+// BYOK calls skip the gateway's normalization, so fill its defaults here;
+// everything else passes through for OpenRouter to validate.
+const BYOK_DEFAULT_MODEL = 'anthropic/claude-sonnet-5';
+const BYOK_DEFAULT_MAX_TOKENS = 2000;
 // Above the gateway's own 20s upstream timeout so its error wins, below the
 // extension's 60s client timeout.
 const TIMEOUT_MS = 30_000;
-// Server-tool (web search / web fetch) round-trips are slow; allow the gateway
-// (45s upstream) and direct Anthropic calls to finish. Stays below the
-// extension's server-tool timeout.
-const WEB_SEARCH_TIMEOUT_MS = 90_000;
+// Plugin round-trips (e.g. OpenRouter's web plugin searching before the model
+// answers) are slow; allow the gateway (90s upstream) and direct calls to
+// finish. Stays below the extension's plugin-call timeout (120s).
+const PLUGIN_TIMEOUT_MS = 110_000;
 
 // The gateway authenticates on the Bearer session token only; the app id is
-// for attribution/rate-limit scoping. Legacy x-airglow-user-id/-email are no
-// longer read server-side, so they aren't forwarded.
+// for attribution/rate-limit scoping.
 const IDENTITY_HEADERS = ['x-airglow-app-id', 'authorization'];
 
-export async function handleLlmAnthropicMessages(
+export async function handleLlmChatCompletions(
   req: Request,
   fallbackIdentity?: AgentIdentity | null,
   // Called once if the gateway rejects the session token (401
@@ -46,16 +40,21 @@ export async function handleLlmAnthropicMessages(
     return [400, { error: 'LLM request body must be a JSON object', code: 'LLM_INVALID_JSON' }];
   }
   const payload = body as Record<string, unknown>;
-  const wantsWebSearch = !!payload.web_search;
-  const wantsWebFetch = !!payload.web_fetch;
-  const wantsServerTool = wantsWebSearch || wantsWebFetch;
+  // Web tooling (the web plugin, or server tools like openrouter:web_search)
+  // adds search round-trips inside the request — allow the longer deadline.
+  const wantsWebTooling = (Array.isArray(payload.plugins) && payload.plugins.length > 0)
+    || (Array.isArray(payload.tools) && payload.tools.some((t: any) =>
+      typeof t?.type === 'string'
+      && (t.type.startsWith('openrouter:') || t.type.startsWith('web_search_') || t.type.startsWith('web_fetch_'))));
   const wantsStream = payload.stream === true;
 
-  const gw = gatewayUrl();
+  // BYOK wins over the gateway: the user opted out of the shared budget.
+  const byok = process.env.OPENROUTER_API_KEY?.trim() || null;
+  const gw = byok ? null : llmGatewayUrl();
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (gw) {
-    // Gateway path: forward web_search untouched — the cloud gateway owns the
-    // web_search→tools translation, validation, and cost accounting.
+    // Gateway path: forward the payload untouched — the cloud gateway owns
+    // validation, the model allowlist, and cost accounting.
     for (const name of IDENTITY_HEADERS) {
       const value = req.headers.get(name);
       if (value) headers[name] = value;
@@ -67,42 +66,13 @@ export async function handleLlmAnthropicMessages(
       headers['authorization'] = `Bearer ${fallbackIdentity.authToken}`;
     }
   } else {
-    headers['x-api-key'] = process.env.ANTHROPIC_API_KEY!;
-    headers['anthropic-version'] = ANTHROPIC_VERSION;
-    if (typeof payload.model !== 'string' || !payload.model.trim()) payload.model = DEV_DEFAULT_MODEL;
-    // Direct Anthropic doesn't know the gateway's web_search / web_fetch
-    // convenience params; translate them to the real tools here so dev mode
-    // matches the gateway.
-    if (wantsServerTool && !payload.tools) {
-      const tools: Record<string, unknown>[] = [];
-      if (wantsWebSearch) {
-        const ws = payload.web_search;
-        const maxUses = ws && typeof ws === 'object' && typeof (ws as Record<string, unknown>).max_uses === 'number'
-          ? (ws as Record<string, number>).max_uses
-          : WEB_SEARCH_DEFAULT_MAX_USES;
-        tools.push({ type: WEB_SEARCH_TOOL_TYPE, name: 'web_search', max_uses: maxUses });
-      }
-      if (wantsWebFetch) {
-        const wf = payload.web_fetch;
-        const opts = wf && typeof wf === 'object' ? (wf as Record<string, unknown>) : {};
-        tools.push({
-          type: WEB_FETCH_TOOL_TYPE,
-          name: 'web_fetch',
-          max_uses: typeof opts.max_uses === 'number' ? opts.max_uses : WEB_FETCH_DEFAULT_MAX_USES,
-          max_content_tokens: typeof opts.max_content_tokens === 'number' ? opts.max_content_tokens : WEB_FETCH_DEFAULT_MAX_CONTENT_TOKENS,
-        });
-      }
-      payload.tools = tools;
-    }
-    delete payload.web_search;
-    delete payload.web_fetch;
-    if (typeof payload.max_tokens !== 'number') {
-      payload.max_tokens = wantsServerTool ? WEB_SEARCH_DEV_DEFAULT_MAX_TOKENS : DEV_DEFAULT_MAX_TOKENS;
-    }
+    headers['authorization'] = `Bearer ${byok}`;
+    if (typeof payload.model !== 'string' || !payload.model.trim()) payload.model = BYOK_DEFAULT_MODEL;
+    if (typeof payload.max_tokens !== 'number') payload.max_tokens = BYOK_DEFAULT_MAX_TOKENS;
   }
 
-  const url = gw ? `${gw}/api/llm/anthropic/messages` : ANTHROPIC_MESSAGES_URL;
-  const timeoutMs = wantsServerTool ? WEB_SEARCH_TIMEOUT_MS : TIMEOUT_MS;
+  const url = gw ? `${gw}/api/llm/v1/chat/completions` : OPENROUTER_CHAT_URL;
+  const timeoutMs = wantsWebTooling ? PLUGIN_TIMEOUT_MS : TIMEOUT_MS;
   if (wantsStream) return proxyLlmStream(url, headers, payload, timeoutMs, gw, refreshAuth);
   const send = () => fetch(url, {
     method: 'POST',
@@ -117,7 +87,7 @@ export async function handleLlmAnthropicMessages(
     // Gateway rejected this session's token (expiry, secret rotation, or the dev
     // switching gateway between prod and local). Ask the originating browser to
     // silently re-mint and retry once — no user-visible error while Google is
-    // signed in. Only on the gateway path; direct-Anthropic dev has no session.
+    // signed in. Only on the gateway path; BYOK has no session.
     if (gw && res.status === 401 && refreshAuth) {
       let code = '';
       try { code = (JSON.parse(text) as any)?.error?.code ?? ''; } catch {}
@@ -146,8 +116,8 @@ function parseLlmErrorBody(text: string): unknown {
 // responses (non-2xx) never stream, so the 401 refresh dance still works —
 // the token is rejected before any stream bytes exist. The whole-request
 // deadline is replaced by (a) a headers timeout on connect and (b) an idle
-// guard on the body: killing a healthy 60s+ web_search stream mid-flight is
-// exactly what AbortSignal.timeout would do.
+// guard on the body: killing a healthy 60s+ plugin-assisted stream mid-flight
+// is exactly what AbortSignal.timeout would do.
 async function proxyLlmStream(
   url: string,
   headers: Record<string, string>,
