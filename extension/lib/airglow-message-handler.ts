@@ -419,7 +419,7 @@ export function setOnAppLog(cb: OnAppLog): void { _onAppLog = cb; }
 // serve the edge-button popup's plain `airglow:open-app` message, which carries
 // no `_airglow` flag and so never reaches dispatchAirglowMessage.
 export function openAppInDashboard(
-  msg: { appId?: unknown; page?: unknown; window?: unknown; width?: number; height?: number },
+  msg: { appId?: unknown; page?: unknown; window?: unknown; width?: number; height?: number; newTab?: unknown },
   sendResponse: (response: any) => void,
 ): boolean {
   const appId = typeof msg.appId === 'string' ? msg.appId : '';
@@ -442,11 +442,16 @@ export function openAppInDashboard(
     });
     return true;
   }
+  // newTab (edge button): always open a fresh tab, matching the icon click.
+  if (msg.newTab === true) {
+    chrome.tabs.create({ url }, () => sendResponse({ ok: true }));
+    return true;
+  }
   // Default: reuse the single dashboard tab (navigate + focus) so it feels
   // like one SaaS site; otherwise open a fresh one.
   const dashPrefix = chrome.runtime.getURL('dashboard.html');
   chrome.tabs.query({}, (tabs) => {
-    const existing = tabs.find((t) => t.url && t.url.startsWith(dashPrefix));
+    const existing = tabs.find((t) => t.url && t.url.startsWith(dashPrefix) && !t.url.includes('chromeless=1'));
     if (existing?.id != null) {
       chrome.tabs.update(existing.id, { url, active: true });
       if (existing.windowId != null) chrome.windows.update(existing.windowId, { focused: true });

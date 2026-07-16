@@ -65,6 +65,10 @@ export default defineBackground(() => {
   // ───── Airglow app platform ─────
   const lastAppHashes = new Map<string, string>(); // appId → _hash
   let loadGeneration = 0; // bumped on each call; stale runs abort before registering
+  // Cached-replay registration ran for the current offline episode. Without
+  // this, every poll while the daemon is offline re-attempts live source
+  // fetches (4s timeout per file) before falling back to the cache.
+  let offlineReplayDone = false;
   let dashboardAppManifests: SourcedManifest[] = [];
 
   async function getDisabledApps(): Promise<Set<string>> {
@@ -256,8 +260,12 @@ export default defineBackground(() => {
     trackStoredUserEmail(stored);
   })();
 
-  async function loadAndRegisterApps(force = false, skipReload = false) {
+  async function loadAndRegisterApps(force = false) {
     const gen = ++loadGeneration;
+    // A forced load must re-run the cached-replay registration too — e.g.
+    // re-enabling an app while the daemon is offline registers its scripts
+    // from the source cache instead of being skipped by the replay gate.
+    if (force) offlineReplayDone = false;
     // If the user just flipped "Allow User Scripts" on, force re-registration:
     // chrome.userScripts works again, but the per-app hash gate below would
     // otherwise skip re-running registerAllUserscripts and leave userscripts
@@ -277,6 +285,7 @@ export default defineBackground(() => {
     const { reachable, localReachable, usedCachedLocalManifests, manifests: allManifests } = await loadAppManifests({ forceCloud: force });
 
     await setDevServerOnline(localReachable);
+    if (localReachable) offlineReplayDone = false;
 
     // Nothing from any source — clear in-memory + early-exit. The handler's
     // own hydrate-from-storage fallback handles the SW-restart race.
@@ -284,6 +293,18 @@ export default defineBackground(() => {
       lastAppHashes.clear();
       dashboardAppManifests = [];
       setAppManifests([]);
+      // Userscript registrations persist across SW restarts; without this,
+      // apps whose sources are gone (host off past the cache grace window,
+      // signed out) would keep injecting into pages with no card to disable.
+      if (userScriptsAllowed) {
+        try {
+          const leftover = await chrome.userScripts.getScripts();
+          if (leftover.length > 0) {
+            await chrome.userScripts.unregister();
+            logger.info('airglow', `unregistered ${leftover.length} userscript(s) — no app sources`);
+          }
+        } catch {}
+      }
       return;
     }
 
@@ -292,10 +313,12 @@ export default defineBackground(() => {
     if (usedCachedLocalManifests && allManifests.length > 0) {
       dashboardAppManifests = allManifests;
       setAppManifests(allManifests);
+      if (offlineReplayDone) return;
       const disabled = await getDisabledApps();
       const manifests = allManifests.filter(m => !disabled.has(m.id));
       try {
-        await registerAllUserscripts(manifests, undefined, { skipReload: true });
+        await registerAllUserscripts(manifests);
+        offlineReplayDone = true;
       } catch (e) {
         logger.error('airglow', `offline userscript registration failed: ${e}`);
       }
@@ -332,7 +355,17 @@ export default defineBackground(() => {
     for (const id of lastAppHashes.keys()) {
       if (!currentIds.has(id)) removedIds.push(id);
     }
-    const appsRemoved = removedIds.length > 0;
+    let appsRemoved = removedIds.length > 0;
+    // Registrations persist across SW restarts, so an app removed while the
+    // worker was dead leaves scripts behind with no lastAppHashes entry. With
+    // a non-empty current list the full re-register below sweeps them up (all
+    // current apps count as changed); when the list is empty nothing would
+    // run, so force the cleanup pass if leftovers exist.
+    if (!appsRemoved && manifests.length === 0 && userScriptsAllowed) {
+      try {
+        appsRemoved = (await chrome.userScripts.getScripts()).length > 0;
+      } catch {}
+    }
 
     if (!force && !appsRemoved && changedApps.length === 0) return;
 
@@ -349,7 +382,7 @@ export default defineBackground(() => {
 
     // Register userscripts first (critical path — must not be blocked by startup scripts)
     try {
-      await registerAllUserscripts(manifests, force ? undefined : changedApps, { skipReload });
+      await registerAllUserscripts(manifests);
       for (const [id, hash] of pendingHashUpdates) lastAppHashes.set(id, hash);
       for (const id of removedIds) lastAppHashes.delete(id);
     } catch (e) {
@@ -1699,9 +1732,9 @@ ${code}
         await chrome.storage.local.set({ '__disabled_apps': Array.from(disabled) });
         lastAppHashes.delete(appId);
         // Immediately unregister this app's scripts when transitioning to
-        // disabled. Works whether or not the dev server is reachable; the
-        // re-register path below would otherwise no-op when offline and the
-        // already-registered scripts would survive on new page loads.
+        // disabled. The re-register below also removes them, but it queues
+        // behind the serialized registration chain and its source fetches
+        // (seconds, worse offline) — this makes disable take effect now.
         if (nowDisabled) {
           try {
             const scripts = await chrome.userScripts.getScripts();
@@ -1711,9 +1744,15 @@ ${code}
             logger.warn('airglow', `unregister scripts for ${appId} failed: ${e?.message ?? e}`);
           }
         }
-        // force=true to bypass change detection; skipReload=true — user
-        // refreshes their own tabs (side panel hints "Refresh to apply").
-        await loadAndRegisterApps(true, true);
+        // force=true to bypass change detection; the user refreshes their
+        // own tabs (side panel hints "Refresh to apply"). The toggle is
+        // already committed (storage + unregister above), so a failure here
+        // must not fail the toggle — log and report success.
+        try {
+          await loadAndRegisterApps(true);
+        } catch (e) {
+          logger.error('airglow', `re-register after toggle of ${appId} failed: ${e}`);
+        }
         sendResponse({ ok: true, disabled: nowDisabled });
       }).catch(e => sendResponse({ error: e.message }));
       return true;

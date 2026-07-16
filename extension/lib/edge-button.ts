@@ -204,7 +204,7 @@ function createPopup(opts?: PopupOpts): { el: HTMLElement; show: () => void; hid
       label.addEventListener('click', (e) => {
         e.preventDefault();
         e.stopPropagation();
-        chrome.runtime.sendMessage({ type: 'airglow:open-app', appId: app.id });
+        chrome.runtime.sendMessage({ type: 'airglow:open-app', appId: app.id, newTab: true });
       });
       labelWrap.appendChild(label);
 

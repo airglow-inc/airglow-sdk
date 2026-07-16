@@ -3,10 +3,9 @@
 
 import { type FormEvent, useState } from 'react';
 import { Send, X } from 'lucide-react';
-import { type FeedbackKind, type FeedbackSource, type FeedbackStatus, sendFeedback } from '../lib/feedback';
+import { type FeedbackSource, type FeedbackStatus, sendFeedback } from '../lib/feedback';
 
 export function FeedbackModal({ open, onClose, source }: { open: boolean; onClose: () => void; source: FeedbackSource }) {
-  const [kind, setKind] = useState<FeedbackKind>('general');
   const [message, setMessage] = useState('');
   const [status, setStatus] = useState<FeedbackStatus | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -20,9 +19,9 @@ export function FeedbackModal({ open, onClose, source }: { open: boolean; onClos
       return;
     }
     setSubmitting(true);
-    setStatus({ type: 'info', text: 'Sending…' });
+    setStatus(null);
     try {
-      await sendFeedback(kind, trimmed, source);
+      await sendFeedback('general', trimmed, source);
       setStatus({ type: 'success', text: 'Sent. Thank you.' });
       setMessage('');
     } catch (error) {
@@ -53,10 +52,7 @@ export function FeedbackModal({ open, onClose, source }: { open: boolean; onClos
         data-testid="feedback-modal"
       >
         <div className="flex items-start justify-between gap-3 mb-3">
-          <div>
-            <div className="text-sm mb-1" style={{ color: 'var(--fg-tertiary)' }}>Airglow feedback</div>
-            <div className="text-lg font-semibold" style={{ color: 'var(--fg-primary)' }}>What should we fix or improve?</div>
-          </div>
+          <div className="text-lg font-semibold" style={{ color: 'var(--fg-primary)' }}>Airglow feedback</div>
           <button
             type="button"
             onClick={onClose}
@@ -67,17 +63,6 @@ export function FeedbackModal({ open, onClose, source }: { open: boolean; onClos
             <X size={18} />
           </button>
         </div>
-        <select
-          value={kind}
-          onChange={(e) => setKind(e.target.value as FeedbackKind)}
-          className="w-full h-9 px-3 mb-2 text-base rounded-sm border outline-none"
-          style={{ borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)', color: 'var(--fg-primary)' }}
-          data-testid="feedback-kind"
-        >
-          <option value="general">General</option>
-          <option value="bug">Bug</option>
-          <option value="idea">Idea</option>
-        </select>
         <textarea
           required
           minLength={3}
@@ -90,23 +75,25 @@ export function FeedbackModal({ open, onClose, source }: { open: boolean; onClos
           data-testid="feedback-message"
           autoFocus
         />
-        <div
-          className="min-h-[20px] mt-2 text-sm"
-          style={{
-            color: status?.type === 'error'
-              ? 'var(--error)'
-              : status?.type === 'success'
-                ? 'var(--olive)'
-                : 'var(--fg-secondary)',
-          }}
-          data-testid="feedback-status"
-        >
-          {status?.text || ''}
-        </div>
+        {status && (
+          <div
+            className="mt-2 text-sm"
+            style={{
+              color: status.type === 'error'
+                ? 'var(--error)'
+                : status.type === 'success'
+                  ? 'var(--olive)'
+                  : 'var(--fg-secondary)',
+            }}
+            data-testid="feedback-status"
+          >
+            {status.text}
+          </div>
+        )}
         <button
           type="submit"
           disabled={submitting || message.trim().length < 3}
-          className="mt-2 h-9 px-4 rounded-md text-base font-medium transition-all border inline-flex items-center gap-2"
+          className="mt-3 h-9 px-4 rounded-md text-base font-medium transition-all border inline-flex items-center gap-2"
           style={{
             color: 'var(--bg-white)',
             borderColor: 'var(--clay)',

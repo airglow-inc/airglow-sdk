@@ -23,6 +23,14 @@
   font-display: swap;
   src: url('/fonts/jetbrains-mono-variable.woff2') format('woff2-variations');
 }
+/* Brand wordmark only — matches the landing page (Sora ExtraBold). */
+@font-face {
+  font-family: 'Sora';
+  font-style: normal;
+  font-weight: 800;
+  font-display: swap;
+  src: url('/fonts/sora-extrabold.woff2') format('woff2');
+}
 
 /* --font-sans / --font-mono are defined in host/seed/shared/theme/tokens.css
    (single source of truth). We just reference them here so consumers of this

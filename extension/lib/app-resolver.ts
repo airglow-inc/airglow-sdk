@@ -18,7 +18,7 @@ export interface AppManifest {
   defaultEnabled?: boolean;
   startup?: string;
   serverFunctions?: string[];
-  userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string }[];
+  userscripts?: { file: string; matches: string[]; allFrames?: boolean; runAt?: string; world?: 'MAIN' | 'USER_SCRIPT' }[];
   server_env?: Record<string, { label?: string }>;
   host_permissions?: string[];
   // App-source-injected: whether the app exposes a UI entrypoint.

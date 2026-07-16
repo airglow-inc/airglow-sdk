@@ -17,14 +17,13 @@
 // ?debug-banners=1 (or pass `force`) to render every banner for design.
 
 import { useEffect, useState, type ReactElement } from 'react';
-import { Check, Copy, LogIn, Pin, X } from 'lucide-react';
+import { Check, Copy, LogIn, Pin } from 'lucide-react';
 import { AUTH_SESSION_KEY, AuthCancelledError, getStoredSession, isAuthConfigured, signInWithGoogle, type AuthSession } from '../lib/airglow-auth';
 
 const INSTALL_CMD = 'curl -fsSL https://airglow.dev/install.sh | bash';
 
 // Pin is a convenience, not a blocker — once dismissed it stays dismissed
 // across sessions (it still auto-hides the moment the icon is pinned).
-const PIN_DISMISSED_KEY = '__pin_banner_dismissed';
 
 export type SetupStep = 'signin' | 'host' | 'pin';
 const ALL_STEPS: SetupStep[] = ['signin', 'host', 'pin'];
@@ -63,25 +62,6 @@ const cardStyle = {
   background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))',
   borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
 } as const;
-
-// Dismiss control — a cross in a bordered white box, matching the announcement
-// banner's dismiss button (components/AnnouncementBanner.tsx) so both top-of-
-// panel cards share one affordance.
-function DismissButton({ onClick }: { onClick: () => void }) {
-  return (
-    <button
-      onClick={onClick}
-      aria-label="Dismiss"
-      data-testid="banner-dismiss"
-      className="absolute top-2 right-2 inline-flex items-center justify-center h-7 w-7 rounded cursor-pointer border"
-      style={{ background: 'var(--bg-white)', color: 'var(--fg-secondary)', borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))' }}
-      onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; e.currentTarget.style.color = 'var(--fg-primary)'; }}
-      onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; e.currentTarget.style.color = 'var(--fg-secondary)'; }}
-    >
-      <X size={14} strokeWidth={2.5} />
-    </button>
-  );
-}
 
 // Live setup state, polled every 2s (chrome.action emits no change event, so a
 // freshly pinned icon would otherwise stay invisible until the panel is
@@ -126,12 +106,7 @@ export function SetupBanners({
   const state = useSetupState();
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
-  const [pinDismissed, setPinDismissed] = useState(false);
   const [installCopied, setInstallCopied] = useState(false);
-
-  useEffect(() => {
-    chrome.storage?.local?.get(PIN_DISMISSED_KEY).then((r) => { if (r?.[PIN_DISMISSED_KEY]) setPinDismissed(true); });
-  }, []);
 
   async function doSignIn() {
     if (signingIn) return;
@@ -146,11 +121,6 @@ export function SetupBanners({
     } finally {
       setSigningIn(false);
     }
-  }
-
-  function dismissPin() {
-    setPinDismissed(true);
-    chrome.storage?.local?.set({ [PIN_DISMISSED_KEY]: true });
   }
 
   function copyInstall() {
@@ -222,29 +192,28 @@ export function SetupBanners({
 
     pin: () => (
       <div className={wrap} style={cardStyle} data-testid="banner-pin">
-        <DismissButton onClick={dismissPin} />
-        <div className="text-[15px] font-semibold flex items-center gap-2 pr-7" style={{ color: 'var(--fg-primary)' }}>
-          <Pin size={18} style={{ color: 'var(--error)' }} />
+        <div className="text-[19px] font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
+          <Pin size={22} style={{ color: 'var(--error)' }} />
           Add Airglow shortcut
         </div>
-        <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
+        <div className="flex flex-col gap-2 mt-3 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
           <div className="flex items-start gap-2">
             <Step n={1} />
             <span className="inline-flex items-center gap-1 flex-wrap">
-              Click <PuzzleIcon size={18} className="inline-block shrink-0" color="var(--fg-primary)" /> icon <strong>(Extensions)</strong> in Chrome's top right corner
+              Click <PuzzleIcon size={22} className="inline-block shrink-0" color="var(--fg-primary)" /> icon <strong>(Extensions)</strong> in top right corner
             </span>
           </div>
           <div className="flex items-start gap-2">
             <Step n={2} />
             <span className="inline-flex items-center gap-1 flex-wrap">
-              Click <Pin size={18} className="inline-block shrink-0" style={{ color: 'var(--fg-primary)' }} /> icon next to <strong>Airglow</strong>
+              Click <Pin size={22} className="inline-block shrink-0" style={{ color: 'var(--fg-primary)' }} /> icon next to <strong>Airglow</strong>
             </span>
           </div>
         </div>
         <img
           src={chrome.runtime.getURL('pin-instructions.png')}
           alt="Chrome Extensions menu: the puzzle icon in the top right corner and the pin button next to Airglow"
-          className="mt-3 block mx-auto w-[300px] max-w-full rounded-sm border"
+          className="mt-3 block mx-auto w-[380px] max-w-full rounded-sm border"
           style={{ borderColor: 'color-mix(in srgb, var(--error) 22%, var(--border-tertiary))' }}
         />
       </div>
@@ -259,7 +228,7 @@ export function SetupBanners({
     for (const step of steps) {
       if (step === 'signin' && !state.authSession && isAuthConfigured()) { active = step; break; }
       if (step === 'host' && state.hostConnected === false) { active = step; break; }
-      if (step === 'pin' && state.isPinned === false && !pinDismissed) { active = step; break; }
+      if (step === 'pin' && state.isPinned === false) { active = step; break; }
     }
   }
   // In force/preview mode every banner renders at once — report no single active.

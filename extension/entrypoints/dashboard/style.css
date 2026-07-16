@@ -34,6 +34,37 @@ code {
   background: color-mix(in srgb, var(--fg-primary) 8%, transparent);
 }
 
+/* Plyr-style seek bar for the catalog detail video: accent-filled progress up
+   to --fill (set inline from playback time), translucent track after, round
+   white thumb. Chrome-only surface, so the -webkit pseudos are sufficient. */
+.video-range {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 5px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(
+    to right,
+    var(--accent) var(--fill, 0%),
+    rgba(255, 255, 255, 0.35) var(--fill, 0%)
+  );
+  outline: none;
+}
+.video-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  border-radius: var(--radius-full);
+  background: #fff;
+  border: 0;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  transition: transform 0.15s;
+}
+.video-range:hover::-webkit-slider-thumb,
+.video-range:active::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
 .sidebar-scroll::-webkit-scrollbar {
   width: 4px;
 }

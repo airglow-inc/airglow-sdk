@@ -7,7 +7,7 @@
 // polled because chrome.userScripts emits no change event.
 
 import { useEffect, useState } from 'react';
-import { ExternalLink, FileCode2, TriangleAlert } from 'lucide-react';
+import { ExternalLink, FileCode2 } from 'lucide-react';
 import { Step } from './SetupBanners';
 
 // Polls whether "Allow User Scripts" is enabled. chrome.userScripts.getScripts()
@@ -32,6 +32,22 @@ function useUserScriptsEnabled(): { loaded: boolean; enabled: boolean } {
   return s;
 }
 
+// Opens this extension's chrome://extensions detail page as a centered popup
+// window (rather than a tab) so the gate's instructions stay visible behind it.
+async function openExtensionSettingsPopup() {
+  const url = `chrome://extensions/?id=${chrome.runtime.id}`;
+  const width = 780;
+  const height = 860;
+  try {
+    const current = await chrome.windows.getCurrent();
+    const left = Math.max(0, (current.left ?? 0) + Math.round(((current.width ?? width) - width) / 2));
+    const top = Math.max(0, (current.top ?? 0) + Math.round(((current.height ?? height) - height) / 2));
+    await chrome.windows.create({ url, type: 'popup', width, height, left, top });
+  } catch {
+    await chrome.tabs.create({ url });
+  }
+}
+
 export function UserScriptsOverlay() {
   const { loaded, enabled } = useUserScriptsEnabled();
   if (!loaded || enabled) return null;
@@ -50,27 +66,35 @@ export function UserScriptsOverlay() {
 // The gate's inner card, split out so the design-mock page can render it
 // standalone (the overlay above only paints when the permission is actually off).
 export function UserScriptsCard() {
+  const [zoomed, setZoomed] = useState(false);
+  useEffect(() => {
+    if (!zoomed) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setZoomed(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [zoomed]);
+
   return (
       <div
-        className="w-full max-w-[400px] rounded-sm border p-5"
+        className="w-full max-w-[860px] rounded-sm border p-5"
         style={{
           background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))',
           borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
           boxShadow: '0 12px 40px rgba(17, 17, 16, 0.18)',
         }}
       >
-        <div className="text-[15px] font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
-          <FileCode2 size={18} style={{ color: 'var(--error)' }} />
+        <div className="text-[19px] font-semibold flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
+          <FileCode2 size={22} style={{ color: 'var(--error)' }} />
           Enable User Scripts
         </div>
-        <div className="flex flex-col gap-1.5 mt-3 text-[14px]" style={{ color: 'var(--fg-secondary)' }}>
+        <div className="flex flex-col gap-2 mt-3.5 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
           <div className="flex items-center gap-2">
             <Step n={1} />
             <span className="inline-flex items-center gap-1.5">
               Open
               <button
                 type="button"
-                onClick={() => chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` })}
+                onClick={() => void openExtensionSettingsPopup()}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm border font-medium cursor-pointer"
                 style={{ color: 'color-mix(in srgb, var(--sky) 65%, var(--fg-primary))', borderColor: 'color-mix(in srgb, var(--sky) 55%, var(--border-tertiary))', background: 'color-mix(in srgb, var(--sky) 14%, var(--bg-white))' }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--sky) 26%, var(--bg-white))'; }}
@@ -85,18 +109,30 @@ export function UserScriptsCard() {
             <Step n={2} />
             <span>Scroll down and enable <strong>Allow User Scripts</strong></span>
           </div>
-          <div className="flex items-center gap-2">
-            <Step n={3} />
-            <span>Reload this page</span>
+        </div>
+        <img
+          src={chrome.runtime.getURL('userscripts-toggle.png')}
+          alt='The "Allow User Scripts" toggle on the extension settings page'
+          className="mt-3 w-full rounded-sm border cursor-zoom-in transition-shadow"
+          style={{ borderColor: 'color-mix(in srgb, var(--error) 20%, var(--border-tertiary))' }}
+          onClick={() => setZoomed(true)}
+          onMouseEnter={(e) => { e.currentTarget.style.boxShadow = '0 4px 16px rgba(17, 17, 16, 0.22)'; }}
+          onMouseLeave={(e) => { e.currentTarget.style.boxShadow = 'none'; }}
+        />
+        {zoomed && (
+          <div
+            className="fixed inset-0 z-[60] flex items-center justify-center p-6 cursor-zoom-out"
+            style={{ background: 'rgba(17, 17, 16, 0.65)' }}
+            onClick={() => setZoomed(false)}
+          >
+            <img
+              src={chrome.runtime.getURL('userscripts-toggle.png')}
+              alt='The "Allow User Scripts" toggle on the extension settings page'
+              className="max-w-full max-h-full rounded-sm"
+              style={{ boxShadow: '0 24px 80px rgba(0, 0, 0, 0.5)' }}
+            />
           </div>
-        </div>
-        <div
-          className="mt-3 inline-flex items-center gap-2 px-3 py-1.5 rounded-full border"
-          style={{ borderColor: 'var(--error)', background: 'color-mix(in srgb, var(--error) 18%, var(--bg-white))', color: 'var(--fg-secondary)', fontSize: '13px' }}
-        >
-          <TriangleAlert size={15} className="shrink-0" style={{ color: 'var(--error)' }} />
-          <span>Airglow won't run until User Scripts are enabled.</span>
-        </div>
+        )}
       </div>
   );
 }

@@ -1,6 +1,15 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, RefreshCw, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download } from 'lucide-react';
+import { Trash2, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code } from 'lucide-react';
+
+// GitHub mark (lucide deprecated its brand icons).
+function GithubLogo({ size }: { size: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27s1.36.09 2 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z" />
+    </svg>
+  );
+}
 import logoUrl from '../../lib/branding/icon.svg';
 
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
@@ -16,6 +25,24 @@ import { CLOUD_API_URL_OVERRIDE_KEY, checkCloudApiReachable, getCloudApiUrl, get
 import { DAEMON_DISABLED_KEY } from '../../lib/app-loader';
 
 const APP_ORDER_KEY = '__app_order';
+// Set once the "Develop apps" guide popup has been closed (it auto-opens on
+// startup until then; the sidebar button reopens it).
+const DEV_GUIDE_SEEN_KEY = '__dev_guide_seen';
+const DEV_GUIDE_AGENT_CMD = 'cd ~/.airglow && claude';
+const DEV_GUIDE_EXAMPLE_PROMPT = 'Create an app that hides YouTube Shorts';
+
+// Numbered step chip for the guide popup — same shape as SetupBanners' Step,
+// clay-tinted instead of error-red (it's a guide, not a warning).
+function GuideStep({ n }: { n: number }) {
+  return (
+    <span
+      className="shrink-0 text-[13px] font-medium w-6 h-6 inline-flex items-center justify-center rounded-full"
+      style={{ background: 'color-mix(in srgb, var(--clay) 18%, var(--bg-white))', color: 'var(--clay)' }}
+    >
+      {n}
+    </span>
+  );
+}
 const LOGS_LAST_SEEN_KEY = '__logs_last_seen_ts';
 const SIDE_BUTTON_KEY = '__side_button_enabled';
 // DEPRECATED: the sidepanel agent chat is retired — toggle kept only for
@@ -46,12 +73,19 @@ interface CatalogApp {
   id: string;
   name: string;
   version: string;
+  // Short copy (1–2 lines) shown on both the card and the detail page.
   description: string;
+  // Card media (absolute URLs into the catalog repo): hover-play video + its
+  // poster frame. Optional — apps without media render a monogram placeholder.
+  media?: { video?: string; thumbnail?: string } | null;
   // Userscript match patterns, so the catalog card can show the same site list
   // as the installed gallery. Absent on older feeds → no site row.
   matches?: string[];
   // The app has server functions — it can only run daemon-served.
   requiresHost?: boolean;
+  // Full app manifest for cloud-buildable apps (null when daemon-only) — its
+  // presence means the cloud can serve the app's UI for the detail preview.
+  manifest?: Record<string, unknown> | null;
 }
 
 // One command; install.sh handles platform detection + native-host registration.
@@ -200,6 +234,29 @@ function appSites(manifest: any): { anyWebsite: boolean; hosts: string[] } | nul
   return hosts.length ? { anyWebsite: false, hosts } : null;
 }
 
+// One-word "where it runs" label for catalog cards: a single brand name
+// (LinkedIn, Gmail) or "Multiple" (several sites, or match-all patterns).
+const SITE_BRANDS: Record<string, string> = {
+  'linkedin.com': 'LinkedIn', 'mail.google.com': 'Gmail', 'calendar.google.com': 'Calendar',
+  'x.com': 'X', 'twitter.com': 'X', 'youtube.com': 'YouTube', 'instagram.com': 'Instagram',
+  'web.whatsapp.com': 'WhatsApp', 'web.telegram.org': 'Telegram', 'github.com': 'GitHub',
+};
+function siteWord(matches?: string[]): string | null {
+  if (!matches?.length) return null;
+  const brands = new Set<string>();
+  let any = false;
+  for (const pattern of matches) {
+    if (pattern === '<all_urls>') { any = true; continue; }
+    const host = /^[^:]+:\/\/([^/]+)/.exec(pattern)?.[1];
+    if (!host || host === '*') { any = true; continue; }
+    const clean = host.replace(/^\*\./, '').replace(/^www\./, '');
+    brands.add(SITE_BRANDS[clean] ?? clean);
+  }
+  if (brands.size > 1) return 'Multiple';
+  if (brands.size === 1) return [...brands][0];
+  return any ? 'Multiple' : null;
+}
+
 // Single source of truth for status-pill colors across the gallery (AppCard),
 // the app page header (AppView), and the catalog (CatalogView), so the three
 // surfaces never drift. Change a pill's color here once.
@@ -342,6 +399,117 @@ function AppListCard({
   );
 }
 
+// Catalog card thumbnail: 16:10 static media box — thumbnail image when
+// available, the video's first frame as a fallback poster. Apps without media
+// get a monogram placeholder so the grid keeps its rhythm.
+function MediaThumb({ media, name, onClick, testid }: {
+  media?: { video?: string; thumbnail?: string } | null;
+  name: string;
+  onClick?: () => void;
+  testid?: string;
+}) {
+  return (
+    <div
+      onClick={onClick}
+      className="relative w-full overflow-hidden border"
+      style={{
+        aspectRatio: '16 / 10',
+        borderRadius: 'var(--radius-md)',
+        borderColor: 'var(--border-tertiary)',
+        background: 'var(--bg-white)',
+        boxShadow: 'var(--shadow-card)',
+        cursor: onClick ? 'pointer' : undefined,
+      }}
+      data-testid={testid}
+    >
+      {media?.video && !media.thumbnail ? (
+        <video
+          src={media.video}
+          muted
+          playsInline
+          preload="metadata"
+          className="w-full h-full object-cover"
+        />
+      ) : media?.thumbnail ? (
+        <img src={media.thumbnail} alt="" className="w-full h-full object-cover" />
+      ) : (
+        <div className="w-full h-full flex items-center justify-center" style={{ background: 'linear-gradient(135deg, var(--gray-150), var(--gray-200))' }}>
+          <span className="text-5xl font-semibold select-none" style={{ color: 'var(--fg-tertiary)', opacity: 0.4 }}>{name.charAt(0)}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Catalog detail header video: autoplaying loop with a mini control bar —
+// play/pause, seek slider, seconds remaining.
+function DetailVideo({ src, poster }: { src: string; poster?: string }) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const [playing, setPlaying] = useState(true);
+  const [time, setTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  // Plyr-style countdown: -MM:SS remaining
+  const left = Math.max(0, Math.round(duration - time));
+  const remaining = `-${String(Math.floor(left / 60)).padStart(2, '0')}:${String(left % 60).padStart(2, '0')}`;
+  const fill = duration ? (time / duration) * 100 : 0;
+  const toggle = () => {
+    const v = ref.current;
+    if (!v) return;
+    if (v.paused) void v.play().catch(() => {}); else v.pause();
+  };
+  return (
+    <div className="relative w-full h-full">
+      <video
+        ref={ref}
+        src={src}
+        poster={poster}
+        autoPlay
+        muted
+        loop
+        playsInline
+        className="w-full h-full object-cover"
+        data-testid="catalog-detail-video"
+        onClick={toggle}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onTimeUpdate={(e) => setTime(e.currentTarget.currentTime)}
+        onLoadedMetadata={(e) => setDuration(e.currentTarget.duration || 0)}
+      />
+      <div
+        className="absolute inset-x-0 bottom-0 flex items-center gap-2.5 px-3 pb-2 pt-8"
+        style={{ background: 'linear-gradient(transparent, rgba(0,0,0,0.55))' }}
+      >
+        <button
+          type="button"
+          onClick={toggle}
+          className="shrink-0 flex items-center justify-center bg-transparent border-0 p-0 cursor-pointer text-white"
+          aria-label={playing ? 'Pause' : 'Play'}
+          data-testid="catalog-detail-video-toggle"
+        >
+          {playing ? <Pause size={16} fill="currentColor" /> : <Play size={16} fill="currentColor" />}
+        </button>
+        <input
+          type="range"
+          min={0}
+          max={duration || 0}
+          step={0.05}
+          value={Math.min(time, duration || 0)}
+          onChange={(e) => {
+            const v = ref.current;
+            if (v) v.currentTime = Number(e.target.value);
+          }}
+          className="video-range flex-1 min-w-0 cursor-pointer"
+          style={{ '--fill': `${fill}%` } as React.CSSProperties}
+          aria-label="Seek"
+        />
+        <span className="shrink-0 text-[13px] font-medium tabular-nums text-white">
+          {remaining}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // Hosts an app's own UI as a sandboxed iframe and bridges its SDK postMessages
 // to the background — the single-shell replacement for the old app-shell.html
 // page. The shell stamps the appId it loaded, so the iframe can't spoof another.
@@ -409,9 +577,47 @@ export default function App() {
   }
   const [apps, setApps] = useState<AppManifest[] | null>(null);
   const [error, setError] = useState(false);
-  const [installCopied, setInstallCopied] = useState(false);
+  // The native host is macOS/Linux only — on Windows the guide popup shows
+  // "not supported" instead of an install command that can't work.
+  const [isWindows, setIsWindows] = useState(false);
+  useEffect(() => {
+    chrome.runtime.getPlatformInfo((info) => setIsWindows(info.os === 'win'));
+  }, []);
+  // Design preview (mirrors SetupBanners' ?debug-banners): ?debug-offline=1
+  // forces the offline state, ?debug-offline=win the Windows variant.
+  const debugOffline = new URLSearchParams(window.location.search).get('debug-offline');
+  // Dev-guide popup. Auto-opens on startup — offline, Windows, and online
+  // alike — until closed once (persisted); the sidebar button reopens it.
+  // null = storage not read yet.
+  const [guideSeen, setGuideSeen] = useState<boolean | null>(null);
+  const [guideOpen, setGuideOpen] = useState(false);
+  // Which guide snippet was just copied ('cmd' | 'prompt'), for the check icon.
+  const [guideCopied, setGuideCopied] = useState<string | null>(null);
+  function closeGuide() {
+    setGuideOpen(false);
+    if (!guideSeen) {
+      setGuideSeen(true);
+      chrome.storage.local.set({ [DEV_GUIDE_SEEN_KEY]: true });
+    }
+  }
+  function copyGuide(text: string, key: string) {
+    navigator.clipboard.writeText(text).then(() => {
+      setGuideCopied(key);
+      setTimeout(() => setGuideCopied(null), 1500);
+    });
+  }
   const [disabledApps, setDisabledApps] = useState<Set<string>>(new Set());
   const [localOnline, setLocalOnline] = useState<boolean | null>(null);
+  // Problem surfaced on the sidebar dev button (red "Start Daemon" when the
+  // daemon is offline) and explained inside its popup. Windows (host
+  // unsupported) beats offline. Live: the background poll flips
+  // __dev_server_online → loadAll re-runs → the popup's red banner swaps to
+  // the guide steps the moment the host comes up.
+  const offlineIsWindows = isWindows || debugOffline === 'win';
+  const devIssue: 'windows' | 'offline' | null =
+    offlineIsWindows ? 'windows'
+      : (error || localOnline === false || debugOffline !== null) ? 'offline'
+      : null;
   // null = checking; true/false = cloud /api/healthz reachability.
   const [cloudOnline, setCloudOnline] = useState<boolean | null>(null);
   // null = not yet known; true/false = native host liveness.
@@ -424,13 +630,29 @@ export default function App() {
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
   // Apps view: Installed | Catalog
-  const [activeTab, setActiveTab] = useState<'installed' | 'catalog'>('installed');
+  // Both the tab and the open detail page live in the URL (?page=catalog,
+  // ?catalogApp=<id>) so F5 and copied links restore the same view.
+  const [activeTab, setActiveTab] = useState<'installed' | 'catalog'>(
+    () => new URLSearchParams(window.location.search).get('page') === 'catalog' ? 'catalog' : 'installed',
+  );
   const [catalogApps, setCatalogApps] = useState<CatalogApp[] | null>(null);
+  // Catalog detail page (card click) — an app id, or null for the grid.
+  const [catalogOpenId, setCatalogOpenId] = useState<string | null>(
+    () => new URLSearchParams(window.location.search).get('catalogApp'),
+  );
   const [provenance, setProvenance] = useState<Record<string, Provenance>>({});
   const [installing, setInstalling] = useState<string | null>(null);
   const [uninstalling, setUninstalling] = useState<string | null>(null);
   // App pending uninstall confirmation (native in-page modal, not window.confirm).
   const [confirmUninstall, setConfirmUninstall] = useState<AppManifest | null>(null);
+  // Transient top-of-page notice (e.g. "host offline" on a failed uninstall).
+  const [notice, setNotice] = useState<string | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function showNotice(msg: string) {
+    setNotice(msg);
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 5000);
+  }
   const [showHostPopup, setShowHostPopup] = useState(false);
   const [hostCmdCopied, setHostCmdCopied] = useState(false);
   const [daemonDisabled, setDaemonDisabled] = useState(false);
@@ -491,12 +713,35 @@ export default function App() {
   function openApp(appId: string | null) {
     setOpenAppId(appId);
     setAppPage(null);
+    setCatalogOpenId(null);
     if (appId) _setPage('apps');
     const url = new URL(window.location.href);
-    url.searchParams.delete('page');
+    // Keep ?page=catalog when closing an app back onto the catalog tab, so a
+    // reload still lands there; anything else (logs/settings) clears.
+    if (!appId && activeTab === 'catalog') url.searchParams.set('page', 'catalog');
+    else url.searchParams.delete('page');
     url.searchParams.delete('appPage');
+    url.searchParams.delete('catalogApp');
     if (appId) url.searchParams.set('app', appId);
     else url.searchParams.delete('app');
+    history.replaceState(null, '', url.toString());
+  }
+
+  // Switch the Installed/Catalog tab, stamped in the URL (?page=catalog).
+  function setTab(tab: 'installed' | 'catalog') {
+    setActiveTab(tab);
+    const url = new URL(window.location.href);
+    if (tab === 'catalog') url.searchParams.set('page', 'catalog');
+    else url.searchParams.delete('page');
+    history.replaceState(null, '', url.toString());
+  }
+
+  // Open/close the catalog detail page, mirrored in the URL (?catalogApp=).
+  function openCatalogApp(id: string | null) {
+    setCatalogOpenId(id);
+    const url = new URL(window.location.href);
+    if (id) url.searchParams.set('catalogApp', id);
+    else url.searchParams.delete('catalogApp');
     history.replaceState(null, '', url.toString());
   }
 
@@ -504,7 +749,7 @@ export default function App() {
   // (Catalog / Settings; logs/apps are handled by the page initializer).
   useEffect(() => {
     const p = new URLSearchParams(window.location.search).get('page');
-    if (p === 'catalog') { setActiveTab('catalog'); void loadCatalog(); }
+    if (p === 'catalog') { void loadCatalog(); }
     else if (p === 'settings') { setSettingsOpen(true); }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -600,7 +845,10 @@ export default function App() {
   async function loadCatalog() {
     try {
       const cloud = await getCloudApiUrl();
-      const res = await fetch(`${cloud}/api/catalog`);
+      // 'no-cache' revalidates past the browser HTTP cache — the route's
+      // max-age=60 + stale-while-revalidate otherwise serves a minutes-old
+      // copy on refresh. Prod still gets the CDN cache server-side.
+      const res = await fetch(`${cloud}/api/catalog`, { cache: 'no-cache' });
       const data = await res.json();
       if (Array.isArray(data?.apps)) setCatalogApps(data.apps);
     } catch { setCatalogApps([]); }
@@ -695,11 +943,20 @@ export default function App() {
         if (!data?.ok) throw new Error(data?.error?.message || 'uninstall failed');
       } else {
         const origin = await getDaemonOrigin();
-        const res = await fetch(`${origin}/api/apps/uninstall`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ appId: app.id }),
-        });
+        let res: Response;
+        try {
+          res = await fetch(`${origin}/api/apps/uninstall`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ appId: app.id }),
+          });
+        } catch {
+          // Daemon unreachable — local apps can only be uninstalled by the
+          // daemon (it owns the folder + sidecars). Surface a notice instead
+          // of the generic "Failed to fetch" alert.
+          showNotice('Host offline — start the Airglow host to uninstall local apps.');
+          return;
+        }
         const data = await res.json();
         if (!data?.ok) throw new Error(data?.error || 'uninstall failed');
       }
@@ -749,7 +1006,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY, DAEMON_DISABLED_KEY], (result) => {
+    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY, DAEMON_DISABLED_KEY, DEV_GUIDE_SEEN_KEY], (result) => {
       const nh = result['__native_host_connected'];
       setNativeHostConnected(nh === undefined ? null : (nh as boolean));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
@@ -757,6 +1014,7 @@ export default function App() {
       setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
       setSidepanelEnabled(!!result[SIDEPANEL_KEY]);
       setDaemonDisabled(!!result[DAEMON_DISABLED_KEY]);
+      setGuideSeen(!!result[DEV_GUIDE_SEEN_KEY]);
       setGatewayUrlInput(typeof result[CLOUD_API_URL_OVERRIDE_KEY] === 'string' ? result[CLOUD_API_URL_OVERRIDE_KEY] : '');
       getStoredSession().then((session) => {
         setAuthSession(session);
@@ -798,6 +1056,16 @@ export default function App() {
     chrome.storage.local.onChanged.addListener(onChange);
     return () => chrome.storage.local.onChanged.removeListener(onChange);
   }, []);
+
+  // Auto-open the "Develop apps" guide on startup once the app list settles —
+  // offline and Windows included (the popup then leads with the problem
+  // callout). Waits out the pin nag; closing marks it seen (persisted) so it
+  // stops auto-opening.
+  useEffect(() => {
+    if (guideSeen === false && authSession && page === 'apps' && !openAppId && !chromeless && dashSetup !== 'pin' && apps !== null) {
+      setGuideOpen(true);
+    }
+  }, [guideSeen, authSession, page, openAppId, dashSetup, apps]);
 
   useEffect(() => {
     if (!identityLoaded || dashboardOpenTracked.current) return;
@@ -1216,6 +1484,55 @@ export default function App() {
     );
   }
 
+  // Shared install/lifecycle state for one catalog entry — computed the same
+  // way for the grid card and the detail page so the two never disagree.
+  function catalogFlags(c: CatalogApp) {
+    const installedApp = (apps || []).find((a) => a.id === c.id);
+    const installed = !!installedApp;
+    const cloudInstalled = installedApp?._sourceType === 'cloud';
+    const fromCatalog = !!provenance[c.id] || cloudInstalled;
+    const updatable = installed && !cloudInstalled && !!installedApp?.version && isNewerVersion(c.version, installedApp.version);
+    return {
+      installedApp, installed, cloudInstalled, fromCatalog, updatable,
+      busy: installing === c.id,
+      installedDone: installed && fromCatalog && !updatable,
+      hostMissing: !!c.requiresHost && !localOnline,
+    };
+  }
+
+  // The chip shown instead of Install when an app needs the (absent) host.
+  function HostRequiredChip({ testid }: { testid?: string }) {
+    return (
+      <span
+        className="inline-flex items-center h-9 px-3 rounded-md text-sm font-medium whitespace-nowrap"
+        style={{ color: '#5f7344', background: 'color-mix(in srgb, #5f7344 12%, var(--bg-white))', border: '1px solid color-mix(in srgb, #5f7344 35%, var(--bg-white))' }}
+        data-testid={testid}
+      >
+        Host required
+      </span>
+    );
+  }
+
+  // The primary action for a catalog entry: Install / Update / Replace, or the
+  // hover-to-uninstall "Installed" state once the catalog version is in place.
+  function CatalogAction({ c, f }: { c: CatalogApp; f: ReturnType<typeof catalogFlags> }) {
+    if (f.hostMissing) return <HostRequiredChip testid={`catalog-host-missing-${c.id}`} />;
+    if (f.installedDone) {
+      return (
+        <InstalledUninstallButton
+          busy={uninstalling === c.id}
+          onUninstall={() => f.installedApp && setConfirmUninstall(f.installedApp)}
+          testid={`install-${c.id}`}
+        />
+      );
+    }
+    return (
+      <ActionButton tone="green" icon={Download} disabled={f.busy} onClick={() => installCatalogApp(c.id)} testid={`install-${c.id}`}>
+        {f.busy ? 'Installing…' : f.updatable ? 'Update' : f.installed ? 'Replace' : 'Install'}
+      </ActionButton>
+    );
+  }
+
   function CatalogView() {
     if (catalogApps === null) {
       return <div className="text-base py-8 text-center" style={{ color: 'var(--fg-tertiary)' }}>Loading catalog…</div>;
@@ -1227,94 +1544,101 @@ export default function App() {
         </div>
       );
     }
-    const installedIds = new Set((apps || []).map((a) => a.id));
     // Uninstallable (host-required, host offline) apps sink to the bottom.
     const sorted = localOnline ? catalogApps : [...catalogApps].sort(
       (a, b) => Number(!!a.requiresHost) - Number(!!b.requiresHost),
     );
+    // 2-up on a laptop, 3-up on a wide screen: cards flow at ≥360px each and
+    // the container's 1360px cap stops the grid at three columns.
     return (
-      <div className="flex flex-col gap-4">
+      <div className="grid gap-x-6 gap-y-8" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(360px, 1fr))' }}>
         {sorted.map((c) => {
-          const installed = installedIds.has(c.id);
-          const installedApp = (apps || []).find((a) => a.id === c.id);
-          const cloudInstalled = installedApp?._sourceType === 'cloud';
-          const fromCatalog = !!provenance[c.id] || cloudInstalled;
-          const updatable = installed && !cloudInstalled && !!installedApp?.version && isNewerVersion(c.version, installedApp.version);
-          const busy = installing === c.id;
-          const installedDone = installed && fromCatalog && !updatable;
-          const appDisabled = disabledApps.has(c.id);
-          const sites = c.matches?.length ? appSites({ userscripts: [{ matches: c.matches }] }) : null;
-          // Server apps only run daemon-served — without a daemon the card is
-          // inert: title + a centered pointer, no install.
-          const hostMissing = !!c.requiresHost && !localOnline;
-          if (hostMissing) {
-            return (
-              <div
-                key={c.id}
-                className="rounded-[var(--radius-md)] p-5 border"
-                style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', boxShadow: 'var(--shadow-card)', opacity: 0.55 }}
-                data-testid={`catalog-host-missing-${c.id}`}
-              >
-                <div className="text-xl font-semibold" style={{ color: 'var(--fg-primary)' }}>{c.name}</div>
-                <div
-                  className="inline-block mt-3 text-lg font-semibold px-4 py-1.5 rounded-[var(--radius-md)]"
-                  style={{ color: '#5f7344', background: 'color-mix(in srgb, #5f7344 12%, var(--bg-white))', border: '1px solid color-mix(in srgb, #5f7344 35%, var(--bg-white))' }}
-                >
-                  Host install required
+          const f = catalogFlags(c);
+          const open = () => openCatalogApp(c.id);
+          return (
+            <div key={c.id} data-testid={`catalog-card-${c.id}`} style={f.hostMissing ? { opacity: 0.6 } : undefined}>
+              <MediaThumb media={c.media} name={c.name} onClick={open} testid={`catalog-thumb-${c.id}`} />
+              <div className="mt-3 flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <a
+                    href="#"
+                    onClick={(e) => { e.preventDefault(); open(); }}
+                    className="block text-lg font-semibold leading-snug truncate no-underline cursor-pointer"
+                    style={{ color: 'var(--fg-primary)' }}
+                  >
+                    {c.name}
+                  </a>
+                  <div className="text-[15px] line-clamp-2" style={{ color: 'var(--fg-secondary)' }}>{c.description}</div>
+                  {siteWord(c.matches) && (
+                    <div className="flex items-center gap-1.5 text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }} data-testid={`catalog-sites-${c.id}`}>
+                      <Globe size={14} />
+                      {siteWord(c.matches)}
+                    </div>
+                  )}
+                </div>
+                <div className="shrink-0">
+                  <CatalogAction c={c} f={f} />
                 </div>
               </div>
-            );
-          }
-          return (
-            <div key={c.id}>
-            <AppListCard
-              name={c.name}
-              description={c.description}
-              sites={sites}
-              sitesTestid={`catalog-sites-${c.id}`}
-              onOpen={installed ? () => openApp(c.id) : undefined}
-              href={installed ? appUrl(c.id) : undefined}
-              note={installed && !fromCatalog ? (
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // Catalog detail page (card click): AppView-like header — full description,
+  // lifecycle actions, the preview video top-right — over the app's real UI,
+  // dimmed and click-disabled, when the cloud can serve it (manifest present).
+  function CatalogDetail({ appId }: { appId: string }) {
+    const c = (catalogApps || []).find((x) => x.id === appId);
+    if (!c) return null;
+    const f = catalogFlags(c);
+    const sites = c.matches?.length ? appSites({ userscripts: [{ matches: c.matches }] }) : null;
+    const appDisabled = disabledApps.has(c.id);
+    return (
+      <div className="-m-8 flex flex-col" style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
+        <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }} data-testid="catalog-detail-header">
+          <nav className="inline-flex items-center gap-1.5 mb-5 text-base" style={{ color: 'var(--fg-tertiary)' }} data-testid="catalog-detail-breadcrumb">
+            <button type="button" onClick={() => openCatalogApp(null)} className="bg-transparent border-0 p-0 text-xl font-medium cursor-pointer" style={{ color: 'var(--fg-tertiary)' }}>Catalog</button>
+            <ChevronRight size={17} style={{ opacity: 0.6 }} />
+            <span className="font-medium truncate" style={{ color: 'var(--fg-secondary)' }}>{c.name}</span>
+          </nav>
+          <div className="flex items-start gap-8">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <h1 className="text-2xl font-semibold tracking-tight" style={{ color: 'var(--fg-primary)' }} data-testid="catalog-detail-title">{c.name}</h1>
+                <Badge color={PILL.catalog}>v{c.version}</Badge>
+                {f.installedDone && <Badge color={PILL.green}>Installed</Badge>}
+                {f.installed && !f.fromCatalog && <Badge color={PILL.neutral}>Installed locally</Badge>}
+                {f.updatable && <Badge color={PILL.update}>Update available</Badge>}
+              </div>
+              <p className="mt-1.5 text-[15px] leading-relaxed max-w-2xl" style={{ color: 'var(--fg-secondary)' }}>{c.description}</p>
+              {sites && <SiteList sites={sites} testid="catalog-detail-sites" />}
+              {f.installed && !f.fromCatalog && (
                 <div className="text-sm mt-2" style={{ color: 'var(--fg-tertiary)' }}>
                   A local app with this id exists — installing replaces it with the catalog version.
                 </div>
-              ) : undefined}
-              pills={<>
-                <Badge color={PILL.catalog}>v{c.version}</Badge>
-                {installedDone && <Badge color={PILL.green}>Installed</Badge>}
-                {installed && !fromCatalog && <Badge color={PILL.neutral}>Installed locally</Badge>}
-                {updatable && <Badge color={PILL.update}>Update available</Badge>}
-              </>}
-              actions={<>
-                {installedDone ? (
-                  <InstalledUninstallButton
-                    busy={uninstalling === c.id}
-                    onUninstall={() => installedApp && setConfirmUninstall(installedApp)}
-                    testid={`install-${c.id}`}
-                  />
-                ) : (
-                  <ActionButton
-                    tone="green"
-                    icon={Download}
-                    disabled={busy}
-                    onClick={() => installCatalogApp(c.id)}
-                    testid={`install-${c.id}`}
-                  >
-                    {busy ? 'Installing…' : updatable ? 'Update' : installed ? 'Replace' : 'Install'}
-                  </ActionButton>
-                )}
-                {installed && (
+              )}
+              <div className="flex items-center gap-2 mt-4">
+                {f.installedDone ? (<>
+                  <ActionButton tone="green" onClick={() => openApp(c.id)} testid="catalog-detail-open">Open app</ActionButton>
                   <ActionButton tone={appDisabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(c.id)}>
                     {appDisabled ? 'Enable' : 'Disable'}
                   </ActionButton>
+                  <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={uninstalling === c.id} onClick={() => f.installedApp && setConfirmUninstall(f.installedApp)}>
+                    {uninstalling === c.id ? 'Removing…' : 'Uninstall'}
+                  </ActionButton>
+                </>) : (
+                  <CatalogAction c={c} f={f} />
                 )}
-                {cloudInstalled && localOnline && (
+                {f.cloudInstalled && localOnline && (
                   <Tooltip content={<span>Copies the source into ~/.airglow/apps — your local copy then serves the app.</span>}>
                     <ActionButton
                       tone="neutral"
                       variant="outline"
                       icon={Download}
-                      disabled={busy}
+                      disabled={f.busy}
                       onClick={() => installCatalogApp(c.id, { daemon: true })}
                       testid={`edit-locally-${c.id}`}
                     >
@@ -1322,11 +1646,33 @@ export default function App() {
                     </ActionButton>
                   </Tooltip>
                 )}
-              </>}
-            />
+              </div>
             </div>
-          );
-        })}
+            {(c.media?.video || c.media?.thumbnail) && (
+              <div className="shrink-0 overflow-hidden border" style={{ width: 'clamp(400px, 42vw, 720px)', aspectRatio: '16 / 10', borderRadius: 'var(--radius-md)', borderColor: 'var(--border-tertiary)', boxShadow: 'var(--shadow-card)' }}>
+                {c.media?.video
+                  ? <DetailVideo src={c.media.video} poster={c.media.thumbnail} />
+                  : <img src={c.media.thumbnail} alt="" className="w-full h-full object-cover" />}
+              </div>
+            )}
+          </div>
+        </header>
+        {c.manifest && cloudApiUrl && (
+          <div className="relative flex-1 flex flex-col" style={{ minHeight: 520 }} data-testid="catalog-detail-preview">
+            {/* autoHeight grows the iframe to its content, so the whole app is
+                visible and the page scroll covers it — the frame itself stays
+                click-disabled. */}
+            <div className="flex-1 flex flex-col" style={{ pointerEvents: 'none', opacity: 0.5, filter: 'saturate(0.9)' }}>
+              <AppFrame appId={c.id} origin={cloudApiUrl} autoHeight />
+            </div>
+            <div
+              className="absolute left-1/2 -translate-x-1/2 top-4 px-3 py-1 rounded-full text-sm font-medium border"
+              style={{ background: 'var(--bg-white)', color: 'var(--fg-tertiary)', borderColor: 'var(--border-secondary)', boxShadow: 'var(--shadow-card)' }}
+            >
+              Preview{f.installedDone ? '' : ' — install to interact'}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -1407,12 +1753,12 @@ export default function App() {
         {/* Brand lockup */}
         <a
           href={chrome.runtime.getURL('dashboard.html')}
-          onClick={(e) => { e.preventDefault(); openApp(null); setActiveTab('installed'); setPage('apps'); }}
+          onClick={(e) => { e.preventDefault(); openApp(null); setPage('apps'); setTab('installed'); }}
           className="px-5 pt-5 pb-4 flex items-center gap-2.5 no-underline cursor-pointer"
           data-testid="dashboard-logo"
         >
           <img src={logoUrl} alt="Airglow" width={34} height={34} />
-          <span className="text-xl font-bold tracking-tight" style={{ color: 'var(--fg-primary)' }}>Airglow</span>
+          <span className="text-2xl" style={{ fontFamily: "'Sora', var(--font-sans, sans-serif)", fontWeight: 800, letterSpacing: '-0.02em', color: 'var(--fg-primary)' }}>Airglow</span>
         </a>
 
         {/* Primary nav */}
@@ -1421,7 +1767,7 @@ export default function App() {
             icon={LayoutGrid}
             label="Apps"
             active={page === 'apps' && !openAppId && activeTab === 'installed'}
-            onClick={() => { openApp(null); setActiveTab('installed'); setPage('apps'); }}
+            onClick={() => { openApp(null); setPage('apps'); setTab('installed'); }}
             testId="nav-apps"
           />
           <div className="flex flex-col">
@@ -1442,36 +1788,57 @@ export default function App() {
             icon={Store}
             label="Catalog"
             active={page === 'apps' && !openAppId && activeTab === 'catalog'}
-            onClick={() => { openApp(null); setActiveTab('catalog'); setPage('apps'); void loadCatalog(); }}
+            onClick={() => { openApp(null); setPage('apps'); setTab('catalog'); void loadCatalog(); }}
             badge={catalogApps ? <span className="text-sm font-normal" style={{ color: 'var(--fg-tertiary)' }}>{catalogApps.length}</span> : null}
             testId="nav-catalog"
-          />
-          <NavRow
-            icon={ScrollText}
-            label="Logs"
-            active={page === 'logs'}
-            disabled={!authSession}
-            title={!authSession ? 'Sign in to view logs' : undefined}
-            onClick={() => { if (authSession) { openApp(null); setPage('logs'); } }}
-            badge={unseenErrorCount > 0 && page !== 'logs'
-              ? <span className="inline-flex items-center gap-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--error)' }} data-testid="logs-unseen-badge"><AlertTriangle size={16} />{unseenErrorCount > 99 ? '99+' : unseenErrorCount}</span>
-              : null}
-            testId="nav-logs"
           />
         </nav>
 
         {/* Footer card: server status, Settings, cloud + version */}
         <div className="px-3 pb-2 pt-2">
+          {/* Reopens the "Develop apps" guide popup (auto-shown once on first
+              run). Sidebar bg is --gray-150, so hover steps to --gray-200. */}
+          <button
+            type="button"
+            onClick={() => setGuideOpen(true)}
+            className="w-full h-10 px-3 mb-2 rounded-lg text-base font-medium cursor-pointer transition-colors border flex items-center gap-2"
+            style={{
+              color: devIssue === 'offline' ? 'var(--error)' : 'var(--fg-secondary)',
+              borderColor: devIssue === 'offline' ? 'color-mix(in srgb, var(--error) 40%, var(--border-secondary))' : 'var(--border-secondary)',
+              background: 'var(--bg-white)',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--gray-200)'; }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; }}
+            data-testid="develop-apps-button"
+          >
+            <Code size={16} />
+            {devIssue === 'offline' ? 'Start Daemon' : 'Develop apps'}
+            {devIssue && (
+              <TriangleAlert
+                size={15}
+                className="ml-auto shrink-0"
+                style={{ color: 'var(--error)' }}
+                data-testid="develop-apps-warning"
+              />
+            )}
+          </button>
           <div className="rounded-lg p-2" style={{ background: 'var(--bg-white)', border: '1px solid var(--border-tertiary)' }}>
-            <div className="px-2 pt-1 pb-2.5" data-testid="local-apps-status">
-              <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-tertiary)' }}>
-                <span className="inline-block w-2 h-2 rounded-full" style={{ background: localOnline === null ? 'var(--fg-tertiary)' : localOnline ? 'var(--olive)' : 'var(--error)' }} />
-                <span><span style={{ color: 'var(--olive)', fontWeight: 600 }}>Host</span> {localOnline === null ? '…' : localOnline ? 'online' : 'offline'}</span>
-              </div>
-              {nativeHostConnected === false && (
-                <div className="flex items-center gap-2 mt-1 text-sm" style={{ color: 'var(--error)' }} data-testid="native-host-status">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full" style={{ background: 'var(--error)' }} />
-                  Native host offline
+            <div className="px-2 pt-1 pb-2.5 flex flex-col gap-1" data-testid="local-apps-status">
+              {/* Two independent channels: the native-messaging connector (agent
+                  browser control) and the daemon HTTP server (apps, catalog
+                  installs). In the normal agreeing states one line stands for
+                  both; when they disagree (e.g. a source daemon running without
+                  the connector) show both. */}
+              {!(nativeHostConnected && localOnline) && (
+                <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-tertiary)' }} data-testid="native-host-status">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ background: nativeHostConnected === null ? 'var(--fg-tertiary)' : nativeHostConnected ? 'var(--olive)' : 'var(--error)' }} />
+                  <span><span style={{ color: 'var(--olive)', fontWeight: 600 }}>Native host</span> {nativeHostConnected === null ? '…' : nativeHostConnected ? 'online' : 'offline'}</span>
+                </div>
+              )}
+              {!(nativeHostConnected === false && localOnline === false) && (
+                <div className="flex items-center gap-2 text-sm" style={{ color: 'var(--fg-tertiary)' }} data-testid="daemon-status">
+                  <span className="inline-block w-2 h-2 rounded-full" style={{ background: localOnline === null ? 'var(--fg-tertiary)' : localOnline ? 'var(--olive)' : 'var(--error)' }} />
+                  <span><span style={{ color: 'var(--olive)', fontWeight: 600 }}>Daemon</span> {localOnline === null ? '…' : localOnline ? 'online' : 'offline'}</span>
                 </div>
               )}
             </div>
@@ -1487,6 +1854,31 @@ export default function App() {
               >
                 <Settings size={16} />
                 Settings
+              </button>
+              <button
+                type="button"
+                disabled={!authSession}
+                title={!authSession ? 'Sign in to view logs' : undefined}
+                onClick={() => { if (authSession) { openApp(null); setPage('logs'); } }}
+                className="w-full h-10 px-3 rounded-lg text-base font-medium transition-colors border flex items-center gap-2"
+                style={{
+                  color: page === 'logs' ? 'var(--fg-primary)' : 'var(--fg-secondary)',
+                  borderColor: 'var(--border-secondary)',
+                  background: page === 'logs' ? 'var(--bg-tertiary)' : 'var(--bg-primary)',
+                  cursor: authSession ? 'pointer' : 'not-allowed',
+                  opacity: authSession ? 1 : 0.5,
+                }}
+                onMouseEnter={(e) => { if (authSession) e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = page === 'logs' ? 'var(--bg-tertiary)' : 'var(--bg-primary)'; }}
+                data-testid="nav-logs"
+              >
+                <ScrollText size={16} />
+                Logs
+                {unseenErrorCount > 0 && page !== 'logs' && (
+                  <span className="ml-auto inline-flex items-center gap-1 text-sm font-semibold tabular-nums" style={{ color: 'var(--error)' }} data-testid="logs-unseen-badge">
+                    <AlertTriangle size={16} />{unseenErrorCount > 99 ? '99+' : unseenErrorCount}
+                  </span>
+                )}
               </button>
               {/* Dev-only shortcut to the component mock gallery (planmock.html). */}
               {import.meta.env.DEV && (
@@ -1536,6 +1928,19 @@ export default function App() {
                   Update to v{extUpdate}
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => chrome.tabs.create({ url: 'https://github.com/airglow-inc/airglow-sdk' })}
+                className="ml-auto cursor-pointer border-0 bg-transparent p-0 inline-flex items-center gap-1.5 transition-colors"
+                style={{ color: 'var(--fg-tertiary)', fontSize: '14px', fontFamily: 'var(--font-sans)' }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = 'var(--fg-secondary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = 'var(--fg-tertiary)'; }}
+                title="Airglow SDK on GitHub"
+                data-testid="sidebar-github-button"
+              >
+                <GithubLogo size={15} />
+                Github
+              </button>
             </div>
           </div>
         </div>
@@ -1602,6 +2007,10 @@ export default function App() {
           // "double refresh" when async data from loadAll lands). Called as a
           // function its tree reconciles in place and the iframe is preserved.
           AppView({ appId: openAppId })
+        ) : activeTab === 'catalog' && catalogOpenId ? (
+          // Same function-call rule as AppView: keeps the preview iframe and
+          // the header video from remounting on every App re-render.
+          CatalogDetail({ appId: catalogOpenId })
         ) : (
         <div className="-m-8 flex flex-col" style={{ minHeight: '100vh' }}>
           <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }}>
@@ -1610,71 +2019,29 @@ export default function App() {
               {activeTab === 'catalog' && catalogApps && (
                 <span className="text-lg" style={{ color: 'var(--fg-tertiary)' }}>{catalogApps.length}</span>
               )}
-            </div>
-          </header>
-          <div className="p-8">
-        {error ? (
-          <div className="min-h-[calc(100vh-200px)] flex items-center justify-center">
-            <div
-              className="text-center max-w-[520px] p-8 rounded-[var(--radius-md)] border"
-              style={{
-                background: 'color-mix(in srgb, var(--error) 8%, var(--bg-white))',
-                borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
-              }}
-              data-testid="banner-dev-server-offline"
-            >
-              <div className="flex justify-center mb-4">
-                <div
-                  className="rounded-full p-4 inline-flex"
-                  style={{ background: 'color-mix(in srgb, var(--error) 18%, var(--bg-white))' }}
-                >
-                  <TriangleAlert size={48} style={{ color: 'var(--error)' }} />
-                </div>
-              </div>
-              <div className="text-2xl font-bold mb-2" style={{ color: 'var(--fg-primary)' }}>
-                Local Apps server offline
-              </div>
-              <p className="text-base mb-3" style={{ color: 'var(--fg-secondary)' }}>
-                Run this command to install the host:
-              </p>
-              <div className="inline-flex items-stretch gap-2 max-w-full">
-                <code
-                  className="px-2.5 py-1.5 rounded-md font-mono text-[13px] whitespace-nowrap overflow-x-auto"
-                  style={{ background: 'var(--gray-150)', color: 'var(--fg-primary)' }}
-                >
-                  curl -fsSL https://airglow.dev/install.sh | bash
-                </code>
+              {activeTab === 'catalog' && (
                 <button
                   type="button"
-                  onClick={() => {
-                    navigator.clipboard.writeText('curl -fsSL https://airglow.dev/install.sh | bash').then(() => {
-                      setInstallCopied(true);
-                      setTimeout(() => setInstallCopied(false), 1500);
-                    });
-                  }}
-                  title={installCopied ? 'Copied' : 'Copy'}
-                  className="shrink-0 inline-flex items-center justify-center w-9 rounded-md cursor-pointer"
-                  style={{ background: 'var(--gray-150)', color: 'var(--fg-secondary)' }}
+                  onClick={() => chrome.tabs.create({ url: 'https://github.com/airglow-inc/airglow-catalog' })}
+                  className="ml-3 h-8 px-3 rounded-lg text-sm font-medium cursor-pointer transition-colors border inline-flex items-center gap-1.5"
+                  style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-white)' }}
+                  onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; }}
+                  title="Catalog source on GitHub"
+                  data-testid="catalog-github-button"
                 >
-                  {installCopied ? <Check size={15} /> : <Copy size={15} />}
+                  <GithubLogo size={14} />
+                  Source
                 </button>
-              </div>
-              <button
-                onClick={() => loadAll()}
-                className="mt-5 h-10 px-5 rounded-md text-base font-medium cursor-pointer border transition-colors inline-flex items-center gap-2"
-                style={{ borderColor: 'var(--error)', color: 'var(--error)', background: 'transparent' }}
-                onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--error) 10%, transparent)'; }}
-                onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
-                data-testid="retry-dev-server"
-              >
-                <RefreshCw size={16} />
-                Retry
-              </button>
+              )}
             </div>
-          </div>
-        ) : (
+          </header>
+          {/* Bottom padding leaves scroll headroom past the last row, so the
+              floating Feedback button never permanently covers a card's
+              actions. */}
+          <div className="p-8" style={{ paddingBottom: 112 }}>
         <div
-          className={dashSetup === 'pin' ? 'flex items-center justify-center' : 'max-w-3xl'}
+          className={dashSetup === 'pin' ? 'flex items-center justify-center' : activeTab === 'catalog' ? 'max-w-[1360px]' : 'max-w-3xl'}
           style={dashSetup === 'pin' ? { minHeight: 'calc(100vh - 180px)' } : undefined}
         >
           {/* Chrome-setup nag (pin to toolbar). While it's up, it renders as a
@@ -1691,7 +2058,7 @@ export default function App() {
               {local.length === 0 && apps !== null ? (
                 <div className="text-base py-8 text-center rounded-[var(--radius-md)]" style={{ color: 'var(--fg-tertiary)', border: '1px dashed var(--border-secondary)' }}>
                   No apps installed — browse the{' '}
-                  <button onClick={() => { setActiveTab('catalog'); void loadCatalog(); }} className="underline cursor-pointer" style={{ color: 'var(--clay)' }}>Catalog</button>{' '}to add one.
+                  <button onClick={() => { setTab('catalog'); void loadCatalog(); }} className="underline cursor-pointer" style={{ color: 'var(--clay)' }}>Catalog</button>{' '}to add one.
                 </div>
               ) : (
                 <div className="flex flex-col gap-4">
@@ -1702,10 +2069,11 @@ export default function App() {
               )}
             </>
           ) : (
-            <CatalogView />
+            // Function call, not JSX — same remount-avoidance rule as AppView
+            // (hover-playing card videos would reset on every App re-render).
+            CatalogView()
           ))}
         </div>
-        )}
           </div>
         </div>
         )}
@@ -1713,8 +2081,11 @@ export default function App() {
 
       <button
         onClick={() => setFeedbackOpen(true)}
-        className="fixed right-5 bottom-5 z-40 h-12 px-4 rounded-full text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-2"
+        className="fixed right-5 z-40 h-12 px-4 rounded-full text-base font-medium cursor-pointer transition-all border inline-flex items-center gap-2"
         style={{
+          // Pinned to the viewport corner; z-40 floats it over the offline
+          // banner (z-30) rather than stacking above it.
+          bottom: 20,
           color: 'var(--bg-white)',
           borderColor: 'color-mix(in srgb, var(--clay) 80%, transparent)',
           background: 'var(--clay)',
@@ -1735,6 +2106,173 @@ export default function App() {
         <MessageSquare size={17} />
         Feedback
       </button>
+
+      {/* "Develop apps" guide popup. Auto-opens once when the local server
+          first comes up on the Apps page; the sidebar button reopens it. */}
+      {guideOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-5"
+          style={{ background: 'rgba(28,25,23,0.4)' }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeGuide(); }}
+          data-testid="dev-guide-backdrop"
+        >
+          <div
+            className="relative w-full max-w-[620px] rounded-lg p-7 border"
+            style={{
+              background: 'var(--bg-white)',
+              borderColor: 'var(--border-tertiary)',
+              boxShadow: '0 20px 60px rgba(28,25,23,0.2)',
+              color: 'var(--fg-primary)',
+            }}
+            data-testid="dev-guide-popup"
+          >
+            <button
+              type="button"
+              onClick={closeGuide}
+              className="absolute top-3 right-3 h-9 w-9 inline-flex items-center justify-center rounded-md cursor-pointer border-0 bg-transparent transition-colors"
+              style={{ color: 'var(--fg-secondary)' }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = 'transparent'; }}
+              aria-label="Close"
+              title="Close"
+              data-testid="dev-guide-close"
+            >
+              <X size={18} />
+            </button>
+            <div className="text-[19px] font-semibold flex items-center gap-2 pr-8" style={{ color: 'var(--fg-primary)' }}>
+              <Code size={22} style={{ color: 'var(--clay)' }} />
+              Develop your own apps
+            </div>
+            {/* Offline moves this line below the install command; Windows
+                drops it (no workspace will ever be created there). */}
+            {devIssue === null && (
+              <div className="mt-2 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                Your workspace is at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>~/.airglow</code>; it contains instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>AGENTS.md</code> to use Airglow.
+              </div>
+            )}
+            {/* Problem callout — mirrors the warning icon on the sidebar's
+                "Develop apps" button. When present it replaces the steps:
+                Windows has no host at all; offline shows only the install
+                command (the fix) until the server is up. */}
+            {devIssue === 'windows' && (
+              <div
+                className="mt-4 p-4 rounded-lg border"
+                style={{
+                  background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))',
+                  borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
+                }}
+                data-testid="dev-guide-windows-unsupported"
+              >
+                <div className="inline-flex items-center gap-2 text-[16px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
+                  <TriangleAlert size={17} className="shrink-0" style={{ color: 'var(--error)' }} />
+                  Developing apps on Windows is not supported
+                </div>
+                <div className="mt-1 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                  Airglow apps can only be developed on Mac or Linux.
+                </div>
+              </div>
+            )}
+            {devIssue === 'offline' && (
+              <div
+                className="mt-4 p-4 rounded-lg border"
+                style={{
+                  background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))',
+                  borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
+                }}
+                data-testid="dev-guide-offline"
+              >
+                <div className="inline-flex items-center gap-2 text-[16px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
+                  <TriangleAlert size={17} className="shrink-0" style={{ color: 'var(--error)' }} />
+                  Local server is offline
+                </div>
+                <div className="mt-1 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                  Run this command in a terminal to install Airglow workspace:
+                </div>
+                <div className="mt-2.5 flex items-stretch gap-2">
+                  <button
+                    type="button"
+                    onClick={() => copyGuide(HOST_INSTALL_CMD, 'install')}
+                    title={guideCopied === 'install' ? 'Copied' : 'Copy'}
+                    className="shrink-0 flex items-center justify-center w-9 rounded-sm cursor-pointer"
+                    style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', color: 'var(--fg-secondary)' }}
+                  >
+                    {guideCopied === 'install' ? <Check size={15} /> : <Copy size={15} />}
+                  </button>
+                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[14px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+                    {HOST_INSTALL_CMD}
+                  </pre>
+                </div>
+                <div className="mt-2.5 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                  It creates your <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>~/.airglow</code> workspace with instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>AGENTS.md</code> to use Airglow.
+                </div>
+              </div>
+            )}
+            {devIssue === null && (
+            <div className="mt-4 flex flex-col gap-4 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+              <div>
+                <div className="flex items-center gap-2.5" style={{ color: 'var(--fg-primary)' }}>
+                  <GuideStep n={1} />
+                  <span>Start a coding agent in your Airglow workspace</span>
+                </div>
+                <div className="mt-2 ml-[34px] flex items-stretch gap-2">
+                  <button
+                    type="button"
+                    onClick={() => copyGuide(DEV_GUIDE_AGENT_CMD, 'cmd')}
+                    title={guideCopied === 'cmd' ? 'Copied' : 'Copy'}
+                    className="shrink-0 flex items-center justify-center w-9 rounded-sm cursor-pointer"
+                    style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', color: 'var(--fg-secondary)' }}
+                  >
+                    {guideCopied === 'cmd' ? <Check size={15} /> : <Copy size={15} />}
+                  </button>
+                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[14px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+                    {DEV_GUIDE_AGENT_CMD}
+                  </pre>
+                </div>
+              </div>
+              <div>
+                <div className="flex items-center gap-2.5" style={{ color: 'var(--fg-primary)' }}>
+                  <GuideStep n={2} />
+                  <span>Ask it to build what you want — for example:</span>
+                </div>
+                <div className="mt-2 ml-[34px] flex items-stretch gap-2">
+                  <button
+                    type="button"
+                    onClick={() => copyGuide(DEV_GUIDE_EXAMPLE_PROMPT, 'prompt')}
+                    title={guideCopied === 'prompt' ? 'Copied' : 'Copy'}
+                    className="shrink-0 flex items-center justify-center w-9 rounded-sm cursor-pointer"
+                    style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', color: 'var(--fg-secondary)' }}
+                  >
+                    {guideCopied === 'prompt' ? <Check size={15} /> : <Copy size={15} />}
+                  </button>
+                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[14px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+                    {DEV_GUIDE_EXAMPLE_PROMPT}
+                  </pre>
+                </div>
+              </div>
+              <div className="text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                Apps are saved at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>~/.airglow/apps</code> and hot-reload into the extension.
+              </div>
+            </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Transient notice toast (auto-hides after 5s) */}
+      {notice && (
+        <div
+          className="fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-md border text-sm font-medium"
+          style={{
+            background: 'color-mix(in srgb, var(--error) 8%, var(--bg-white))',
+            borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
+            color: 'var(--fg-primary)',
+            boxShadow: '0 8px 24px rgba(28,25,23,0.15)',
+          }}
+          data-testid="dashboard-notice"
+        >
+          {notice}
+        </div>
+      )}
 
       {/* Feedback modal */}
       {/* Uninstall confirmation modal (replaces window.confirm) */}
@@ -1963,6 +2501,7 @@ export default function App() {
                 />
               </button>
             </label>
+            {import.meta.env.DEV && (<>
             <label
               className="flex items-center justify-between gap-4 py-2 cursor-pointer"
               data-testid="settings-sidepanel-row"
@@ -2033,6 +2572,7 @@ export default function App() {
                 />
               </button>
             </label>
+            </>)}
             <div className="py-2" data-testid="settings-gateway-url-row">
               <div className="text-lg font-medium flex items-center gap-2" style={{ color: 'var(--fg-primary)' }}>
                 Cloud API URL

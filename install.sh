@@ -6,6 +6,10 @@
 # Downloads the airglow host binary for this platform from the Airglow CDN,
 # installs it to ~/.airglow/bin/airglow, and runs `airglow install`
 # (registers the Chrome native-messaging host + seeds the workspace).
+#
+# airglow.dev/install.sh redirects to this file on the main branch (raw
+# GitHub; see vercel.json in the landing repo) — pushing to main publishes
+# edits live within ~5 minutes. There is no separate deployed copy.
 set -eu
 
 case "$(uname -s)-$(uname -m)" in
@@ -44,8 +48,7 @@ echo
 "$bin_dir/airglow" install
 
 echo
-echo "Next step: install the Airglow extension and open its side panel —"
-echo "  https://chromewebstore.google.com/detail/angbnggmaccjdinfebjoibdklmckinfb"
-echo "(Already installed? It connects automatically within a few seconds.)"
+echo "Start your agent in ~/.airglow and make an app:"
 echo
-echo "Optional: add the CLI to your PATH:  export PATH=\"\$HOME/.airglow/bin:\$PATH\""
+echo "  cd ~/.airglow && claude"
+echo "  > Create an app that hides YouTube Shorts"

@@ -213,7 +213,5 @@ export async function runInstall(argv: string[]): Promise<void> {
   console.log(`\nworkspace: ${AIRGLOW_HOME}`);
   // Chrome reads NM manifests per connection attempt and the extension
   // retries every few seconds — no browser restart needed in either install
-  // order. Keep a fallback hint for the rare stuck case.
-  console.log('If Chrome with the Airglow extension is running, it connects automatically within a few seconds.');
-  console.log('(Not connecting? Fully quitting and reopening Chrome always resolves it.)');
+  // order, so no connect hint is printed (install.sh owns the closing copy).
 }

@@ -67,6 +67,14 @@ export const DAEMON_DISABLED_KEY = '__daemon_disabled';
 // re-fetch when the manifest's _hash actually changes. Lets the extension
 // re-register userscripts on SW restart while the source is offline.
 const APP_SOURCE_CACHE_KEY = '__app_sources_cache';
+// The cached local snapshot only replays for this long after the daemon stops
+// answering. Within the window brief daemon restarts (dev takeover, machine
+// boot) don't flap apps; past it the host is considered off — local apps drop
+// out of the merged list (cards disappear, userscripts unregister) and a
+// same-id cloud app takes over. Anchored to the first failed poll, not the
+// last success, so a browser started after days offline still gets the window.
+const LOCAL_CACHE_GRACE_MS = 60_000;
+const LOCAL_OFFLINE_SINCE_KEY = '__local_offline_since';
 
 interface AppSourceCacheEntry {
   hash: string;
@@ -153,14 +161,19 @@ export interface LoadResult {
 // edits; per-account cloud listings only change on install/uninstall/publish,
 // so reuse the last cloud response between polls. Install paths force-refresh.
 const CLOUD_MANIFESTS_TTL_MS = 60_000;
-let cloudManifestsCache: { at: number; manifests: AppManifest[] } | null = null;
+// Keyed by gateway URL + user so an account or prod↔local gateway switch
+// within the TTL can't serve the previous identity's app list.
+let cloudManifestsCache: { at: number; key: string; manifests: AppManifest[] } | null = null;
 
 async function fetchCloudManifests(source: AppSource, force: boolean): Promise<AppManifest[] | null> {
-  if (!force && cloudManifestsCache && Date.now() - cloudManifestsCache.at < CLOUD_MANIFESTS_TTL_MS) {
+  const session = await getStoredSession();
+  const key = `${source.url}|${session?.userId || ''}`;
+  if (!force && cloudManifestsCache && cloudManifestsCache.key === key
+      && Date.now() - cloudManifestsCache.at < CLOUD_MANIFESTS_TTL_MS) {
     return cloudManifestsCache.manifests;
   }
   const manifests = await fetchSourceManifests(source);
-  if (manifests) cloudManifestsCache = { at: Date.now(), manifests };
+  if (manifests) cloudManifestsCache = { at: Date.now(), key, manifests };
   return manifests;
 }
 
@@ -168,26 +181,42 @@ async function fetchCloudManifests(source: AppSource, force: boolean): Promise<A
  * Load manifests from both sources — the local daemon and the cloud catalog
  * tier — and merge them, daemon winning per appId (a local copy of an app
  * shadows the cloud-published one). Each source falls back to its cached
- * snapshot when unreachable so userscripts keep working across SW restarts.
+ * snapshot when unreachable so userscripts keep working across SW restarts —
+ * the local fallback only within LOCAL_CACHE_GRACE_MS of the daemon going
+ * quiet, the cloud one indefinitely (network blips shouldn't kill catalog
+ * apps; a live cloud response that omits an app is what removes it).
  */
 export async function loadAppManifests(opts?: { forceCloud?: boolean }): Promise<LoadResult> {
   const localSource = await getLocalSource();
   const cloudSource = await getCloudSource();
-  const daemonDisabled = Boolean(
-    (await chrome.storage.local.get(DAEMON_DISABLED_KEY))[DAEMON_DISABLED_KEY],
-  );
+  const stored = await chrome.storage.local.get([DAEMON_DISABLED_KEY, LOCAL_OFFLINE_SINCE_KEY]);
+  const daemonDisabled = Boolean(stored[DAEMON_DISABLED_KEY]);
+  const offlineSince = typeof stored[LOCAL_OFFLINE_SINCE_KEY] === 'number'
+    ? (stored[LOCAL_OFFLINE_SINCE_KEY] as number)
+    : null;
   const [localManifests, cloudManifests] = await Promise.all([
     daemonDisabled ? Promise.resolve(null) : fetchSourceManifests(localSource),
     cloudSource ? fetchCloudManifests(cloudSource, opts?.forceCloud ?? false) : Promise.resolve(null),
   ]);
 
   let usedCachedLocalManifests = false;
+  let localExpired = false;
   let local: SourcedManifest[];
   if (localManifests) {
     local = resolveAppManifests(localSource, localManifests);
+    if (offlineSince !== null) await chrome.storage.local.remove(LOCAL_OFFLINE_SINCE_KEY);
   } else if (daemonDisabled) {
     local = [];
+    if (offlineSince !== null) await chrome.storage.local.remove(LOCAL_OFFLINE_SINCE_KEY);
+  } else if (offlineSince !== null && Date.now() - offlineSince > LOCAL_CACHE_GRACE_MS) {
+    // Host off past the grace window: stop replaying the cached snapshot so
+    // local apps disappear instead of lingering as stale cards.
+    local = [];
+    localExpired = true;
   } else {
+    if (offlineSince === null) {
+      await chrome.storage.local.set({ [LOCAL_OFFLINE_SINCE_KEY]: Date.now() });
+    }
     local = resolveAppManifests(localSource, await getCachedManifests('local'));
     usedCachedLocalManifests = local.length > 0;
   }
@@ -208,7 +237,10 @@ export async function loadAppManifests(opts?: { forceCloud?: boolean }): Promise
 
   const anySource = Boolean(localManifests) || usedCachedLocalManifests
     || Boolean(cloudManifests) || usedCachedCloudManifests;
-  if (anySource) {
+  // Persist on expiry too, even with no source data at all — the stored
+  // snapshot must shed the expired local entries or the dashboard's
+  // storage-fallback (and the next replay) would resurrect them.
+  if (anySource || localExpired) {
     await setChangedStorageValues({
       [APP_SOURCES_KEY]: buildSourceMap(allManifests),
       [APP_MANIFESTS_KEY]: allManifests,
@@ -310,23 +342,21 @@ async function fetchUserscriptSource(manifest: SourcedManifest, file: string): P
 /**
  * Register all userscripts from all installed apps via chrome.userScripts API.
  *
- * Serialized: the body awaits per-file source fetches between unregister()
- * and register(), so two overlapping calls (boot-time cached replay racing the
- * fresh daemon load) interleave as unregister/unregister/register/register and
- * the second register throws "Duplicate script ID". The chain runs callers one
- * at a time; each caller still sees its own call's result/error.
+ * Serialized: the body reads the current registration (getScripts) and then
+ * conditionally swaps it (unregister + register), so two overlapping calls
+ * (boot-time cached replay racing the fresh daemon load) could both decide to
+ * swap and the second register throws "Duplicate script ID". The chain runs
+ * callers one at a time; each caller still sees its own call's result/error.
  */
 let registerChain: Promise<void> = Promise.resolve();
 
-export function registerAllUserscripts(manifests: SourcedManifest[], changedAppIds?: string[], opts?: { skipReload?: boolean }): Promise<void> {
-  const run = registerChain.then(() => doRegisterAllUserscripts(manifests, changedAppIds, opts));
+export function registerAllUserscripts(manifests: SourcedManifest[]): Promise<void> {
+  const run = registerChain.then(() => doRegisterAllUserscripts(manifests));
   registerChain = run.catch(() => {});
   return run;
 }
 
-async function doRegisterAllUserscripts(manifests: SourcedManifest[], changedAppIds?: string[], opts?: { skipReload?: boolean }): Promise<void> {
-  await chrome.userScripts.unregister();
-
+async function doRegisterAllUserscripts(manifests: SourcedManifest[]): Promise<void> {
   const scripts: chrome.userScripts.RegisteredUserScript[] = [];
   const worldIds = new Set<string>();
   const unreachableSources = new Set<string>();
@@ -345,7 +375,6 @@ async function doRegisterAllUserscripts(manifests: SourcedManifest[], changedApp
 
     const sdkCode = buildSdkCode(manifest.id, 'userscript');
     const worldId = `airglow:${manifest.id}`;
-    worldIds.add(worldId);
 
     for (const us of manifest.userscripts) {
       if (unreachableSources.has(manifest._source.url)) continue outer;
@@ -355,14 +384,19 @@ async function doRegisterAllUserscripts(manifests: SourcedManifest[], changedApp
         // start with "airglow-app://...", letting the SDK distinguish app
         // errors from host-page noise (e.g. Outlook's ResizeObserver loop).
         const sourceUrl = `//# sourceURL=airglow-app://${manifest.id}/${us.file}\n`;
+        // A MAIN-world script runs in the page's own realm — the only way to
+        // patch page globals (window.fetch, WebSocket, …) and the one path that
+        // survives a strict page CSP. It gets NO `airglow.*` bridge (that lives
+        // in the isolated world), so the SDK prelude and worldId are omitted.
+        const mainWorld = us.world === 'MAIN';
+        if (!mainWorld) worldIds.add(worldId);
         scripts.push({
           id: `${manifest.id}__${us.file.replace(/[\/\.]/g, '_')}`,
           matches: us.matches,
           allFrames: us.allFrames ?? false,
-          js: [{ code: sourceUrl + sdkCode + appCode }],
+          js: [{ code: sourceUrl + (mainWorld ? '' : sdkCode) + appCode }],
           runAt: (us.runAt || 'document_idle') as 'document_start' | 'document_end' | 'document_idle',
-          world: 'USER_SCRIPT',
-          worldId,
+          ...(mainWorld ? { world: 'MAIN' as const } : { world: 'USER_SCRIPT' as const, worldId }),
         });
       } catch (e: any) {
         if (e instanceof SourceUnreachableError) {
@@ -383,41 +417,39 @@ async function doRegisterAllUserscripts(manifests: SourcedManifest[], changedApp
     logger.warn('airglow', `trackAppsRegistered failed: ${e instanceof Error ? e.message : String(e)}`),
   );
 
-  if (scripts.length > 0) {
-    for (const worldId of worldIds) {
-      await chrome.userScripts.configureWorld({
-        worldId,
-        // 'unsafe-eval' lets the app's own isolated world run new Function/eval.
-        // Required for `eval --app <id>` (background's evalBody wraps code in
-        // `new Function`): the world is locked at instantiation, so widening its
-        // CSP later (evalInAppWorld) is ignored once the userscript has run on a
-        // tab. Scope is the app's own USER_SCRIPT world — isolated from the page
-        // and from other apps — so this does not relax the host page's CSP.
-        csp: "script-src 'self' 'unsafe-eval'",
-        messaging: true,
-      });
-    }
-    await chrome.userScripts.register(scripts);
-    logger.info('airglow', `registered ${scripts.length} userscript(s)`);
+  // Swap only when the desired set differs from what's already registered.
+  // Sources were fetched above, before unregister(), so a page loading
+  // mid-call never hits an empty-registration window; identical sets
+  // (offline cache replay, forced no-change loads) skip the churn entirely.
+  const scriptKey = (s: chrome.userScripts.RegisteredUserScript) =>
+    JSON.stringify([s.matches, s.allFrames ?? false, s.runAt, s.world, s.worldId, s.js?.map((j) => j.code)]);
+  const currentScripts = await chrome.userScripts.getScripts().catch(() => []);
+  const unchanged = currentScripts.length === scripts.length
+    && (() => {
+      const current = new Map(currentScripts.map((s) => [s.id, scriptKey(s)]));
+      return scripts.every((s) => current.get(s.id!) === scriptKey(s));
+    })();
 
-    if (!opts?.skipReload) {
-      const reloadScripts = changedAppIds
-        ? scripts.filter((s) => changedAppIds.some((id) => s.id.startsWith(id + '__')))
-        : scripts;
-      const reloadMatches = reloadScripts.flatMap((s) => s.matches ?? []);
-      if (reloadMatches.length > 0) {
-        const tabs = await chrome.tabs.query({});
-        let reloaded = 0;
-        for (const tab of tabs) {
-          if (!tab.url || !tab.id) continue;
-          const matches = reloadMatches.some((p) => {
-            const re = new RegExp('^' + p.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$');
-            return re.test(tab.url!);
-          });
-          if (matches) { chrome.tabs.reload(tab.id); reloaded++; }
-        }
-        if (reloaded > 0) logger.info('airglow', `reloaded ${reloaded} tab(s) for userscript injection`);
+  if (!unchanged) {
+    await chrome.userScripts.unregister();
+    if (scripts.length > 0) {
+      for (const worldId of worldIds) {
+        await chrome.userScripts.configureWorld({
+          worldId,
+          // 'unsafe-eval' lets the app's own isolated world run new Function/eval.
+          // Required for `eval --app <id>` (background's evalBody wraps code in
+          // `new Function`): the world is locked at instantiation, so widening its
+          // CSP later (evalInAppWorld) is ignored once the userscript has run on a
+          // tab. Scope is the app's own USER_SCRIPT world — isolated from the page
+          // and from other apps — so this does not relax the host page's CSP.
+          csp: "script-src 'self' 'unsafe-eval'",
+          messaging: true,
+        });
       }
+      await chrome.userScripts.register(scripts);
+      logger.info('airglow', `registered ${scripts.length} userscript(s)`);
+      // Registrations take effect on the next navigation. Open tabs are never
+      // auto-reloaded — the user refreshes when they want the new code.
     }
   }
 

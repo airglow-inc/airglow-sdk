@@ -71,7 +71,7 @@ Editing `package.json` by hand also works — run `bun install` after; nothing i
 | `visibility` | `"public"` \| `"hidden"` | `hidden` apps are skipped entirely. Default `"public"`. |
 | `defaultEnabled` | boolean | First-encounter default. `false` starts the app disabled the first time this `id` is seen; the user's toggle is authoritative after. Default `true`. |
 | `startup` | string | Path to a startup script; runs once per extension boot. |
-| `userscripts[]` | array | `{ file, matches, allFrames?, runAt? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns); `runAt` defaults to `"document_idle"`. |
+| `userscripts[]` | array | `{ file, matches, allFrames?, runAt?, world? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns); `runAt` defaults to `"document_idle"`; `world` defaults to `"USER_SCRIPT"` (`"MAIN"` runs in the page realm — see Userscripts below). |
 | `secrets` | object | Client-scoped secrets. Each entry `{ label, description? }`. Surfaced in the Secrets UI and as "Client keys" callouts; read via `airglow.storage.get('KEY')`. |
 | `server_env` | object | Server-scoped env vars. Each entry `{ label, description? }`. Missing keys are reported by the daemon and prompted per app; read via `process.env.KEY` in `server/*.ts` only. Declarative — not enforced. |
 
@@ -86,6 +86,10 @@ Files under `manifest.userscripts[]`, registered via `chrome.userScripts.registe
 const titles = document.querySelectorAll('.titleline > a');
 // call airglow.fetch / airglow.storage / airglow.rpc
 ```
+
+### `world: "MAIN"`
+
+`"world": "MAIN"` runs a userscript in the page's own realm — needed to patch page globals (`window.fetch`, `WebSocket`, event handlers) or to run under a strict CSP that blocks injected scripts. A MAIN-world script has **no `airglow.*`** and shares the page's globals, so keep DOM/UI/SDK work in a separate default-world script.
 
 ---
 

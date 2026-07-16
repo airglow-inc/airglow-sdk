@@ -24,7 +24,10 @@ export default defineConfig({
     // (the dashboard and side panel) — host_permissions can't match that scheme, so
     // chrome.scripting/userScripts are flatly refused there. Normal http(s)
     // pages keep the scripting path (no debugger infobar).
-    permissions: ['storage', 'tabs', 'userScripts', 'declarativeNetRequest', 'scripting', 'webNavigation', 'nativeMessaging', 'identity', 'identity.email', 'offscreen', 'sidePanel', 'debugger', 'alarms', 'cookies'],
+    // 'unlimitedStorage' (warning-free): the userscript source cache keeps
+    // full app code in chrome.storage.local; at the default 10MB quota even
+    // small writes (e.g. the __disabled_apps flag) start failing.
+    permissions: ['storage', 'unlimitedStorage', 'tabs', 'userScripts', 'declarativeNetRequest', 'scripting', 'webNavigation', 'nativeMessaging', 'identity', 'identity.email', 'offscreen', 'sidePanel', 'debugger', 'alarms', 'cookies'],
     host_permissions: ['<all_urls>'],
     // Pinned public key → deterministic extension ID: comikpjjijckpjkobpkkpnnhlcpmagic
     key: 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA9FHeG+dnrLhRUck2ePMNCSv6cdemPh2AvKYRnGeMLCXA4cWa80uxRGp3inkhl8kTH5Q3ctLJ2GGqf9YwLEoqDPYdbQ+q7U2l6oEInTzz5ZdDnxOh47SiuyrsQSmEODRPSiScIdv9f3BD5YPtLeDxbx6qjGoQ3oqemPTthDir+b/b4V2jGhcrZrh2NYpk2jGrHqkVdq2L5sYLy0SEQoApsOOOaU22s3i8eVA0KBEQL46r07ItpfJm2373TZrWOhE/DIBGhWGSoQIJtGchW9KU8TALuTsWNV14waeDrE8PH0pnbmqoQJJGRyrZaUl1KB0K85+X7x+ue5Ns3lrC/dEnugIDAQAB',
