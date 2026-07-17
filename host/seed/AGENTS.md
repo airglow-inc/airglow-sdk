@@ -22,9 +22,9 @@ The daemon runs silently — bundle failures, missing files, RPC errors, uncaugh
 Clean logs are not proof the change works — they only mean nothing crashed. Before claiming success, exercise the server side from the terminal:
 
 - **Server / RPC** — call the affected function for real and check its actual return: `curl … /rpc/<fn>` (see `docs/browser-debugging.md`). If localhost `curl` is blocked by the shell sandbox, use `airglow browser eval --app <id> 'await airglow.rpc("<fn>", {…})'` instead of skipping the RPC check.
-- **UI / userscript** — the type-check and error logs above are the standard verification. **Do not open browser tabs or windows to test unless the user explicitly asks** — surprise windows are disruptive. When the user does ask, `airglow browser open --app <id>` opens the UI fully wired (`airglow.*` live) as a top-level tab; see `docs/browser-debugging.md`.
+- **UI / userscript** — the type-check and error logs above are necessary, not sufficient. A userscript only runs on a live matching page, so verify it on one: check `airglow browser tabs` first — reuse your own matching tab if you have one; a matching user tab may be read (`html`/`shot`/`logs`) to confirm the script took effect, but anything interactive needs your own copy; if no matching tab exists, open the target page in your agent window (`airglow browser open <url>`) and confirm the script's real effect on the DOM. For UIs, `airglow browser open --app <id>` opens the app page fully wired (`airglow.*` live) as a top-level tab; see `docs/browser-debugging.md`.
 
-Reading logs is not testing for server code. A server change you didn't exercise is not done — if you genuinely can't test something, say so explicitly at the end.
+Reading logs is not testing. A change you didn't exercise is not done — and once the implementation is complete, test the app end-to-end as the user would experience it: the userscript doing its job on its live target page, the UI's main flow, each RPC returning real data. If you genuinely can't test something, say so explicitly at the end.
 
 ## Interaction behavior (hard rules)
 
@@ -35,6 +35,7 @@ The browser belongs to the user; their open tabs are their workspace, not yours.
 - **Your tabs live in your own window.** Your first `open` creates a dedicated, unfocused window; every later `open` reuses it. In `tabs`, that window is `role: agent` — `agent-other` is another agent's window (off-limits) and `user` is the user's. Never open into a window you don't own.
 - A tab runs un-throttled only while it's the active tab in its window; the tools activate your own tab before acting on it (without bringing the window to the front), so you don't need to manage focus — just work one tab at a time.
 - `shot` captures in place (no focus change). Screenshot your own tabs; a user tab only when the task requires it.
+- **Never let a tab play sound.** Your agent window is unfocused but audible. Prefer routes that make no noise (`airglow fetch`, a page without media); if a page you open autoplays audio or unmuted video, immediately mute and pause it: `airglow browser eval --tab N 'document.querySelectorAll("video,audio").forEach(m=>{m.muted=true;m.pause()})'`.
 - **Close your test tabs** (`close --tab N`) when you're done. Never close tabs you didn't open. You cannot launch browsers; use the existing one. There is no reload command — the platform reloads matching tabs when you change app source.
 
 ## Docs
@@ -75,7 +76,7 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 
 ## Best practices
 
-- **Test server code from the terminal** — `curl` the RPC endpoints and check the actual returns. Don't open browser tabs or windows unless the user explicitly asks for browser testing.
+- **Test server code from the terminal** — `curl` the RPC endpoints and check the actual returns; the browser is for verifying userscripts and UIs, not for probing server code.
 - **Verify the underlying API before wiring it in** — call it directly (script/`curl`/CLI), then the RPC.
 - **Make React UIs test-driveable** — `data-testid` on interactive elements. `button.click()` works; `input.value = x` does NOT update React state, so expose a `window.__test` object and call it with `airglow browser eval --main`:
   ```tsx
@@ -91,4 +92,5 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 - `manifest.json` valid; `id` == directory; every referenced file exists.
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No keys/tokens hardcoded in `userscripts/` or `ui/`.
-- Affected server functions exercised via `curl`/RPC with real returns checked. No browser windows opened unless the user asked.
+- Affected server functions exercised via `curl`/RPC with real returns checked.
+- The app tested end-to-end: userscript verified on its live target page (reuse an open matching tab, else open one in your agent window), UI flow exercised. No tab left playing audio or unmuted video.

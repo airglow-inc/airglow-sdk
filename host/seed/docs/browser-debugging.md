@@ -1,6 +1,6 @@
 # Browser debugging
 
-`airglow browser` drives the user's real Chrome (Airglow extension loaded) through the daemon — no CDP, no separate browser process, and you cannot launch one. Verify external APIs and RPCs from the terminal first; reach for the browser only when a problem can't be diagnosed there, or the user asks for browser testing.
+`airglow browser` drives the user's real Chrome (Airglow extension loaded) through the daemon — no CDP, no separate browser process, and you cannot launch one. Verify external APIs and RPCs from the terminal first; userscripts and UIs are verified in the browser — a userscript only runs on a live matching page, so check `airglow browser tabs` for one before opening it yourself. Never let a tab play sound: mute and pause any autoplaying media (`eval 'document.querySelectorAll("video,audio").forEach(m=>{m.muted=true;m.pause()})'`).
 
 CLI is at `~/.airglow/bin/airglow` and the installer puts it on PATH; if `command -v airglow` is empty, add it for this session: `export PATH="$HOME/.airglow/bin:$PATH"`. Editing app code reloads matching tabs automatically (no reload command).
 

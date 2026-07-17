@@ -43,13 +43,13 @@ export function promptRuntimeContext(opts: {
   const newAppHint = opts.apps.length
     ? `Create new apps as siblings of the existing ones (same parent directory pattern).`
     : `Create new apps under apps/<id>/.`;
-  // When the user asks for browser verification of an app UI, `airglow browser
-  // open --app <id>` opens it fully wired (airglow.* live) as a top-level tab,
-  // so eval/html/shot read it directly — no --frame. (The bare
+  // To verify an app UI in the browser, `airglow browser open --app <id>`
+  // opens it fully wired (airglow.* live) as a top-level tab, so
+  // eval/html/shot read it directly — no --frame. (The bare
   // ${opts.daemonOrigin}/api/apps/<id>/ui URL is unwired; the dashboard's
   // chrome-extension:// page can't be scripted into.)
   const dashboardLine = opts.extensionId
-    ? `\n- Dashboard (what the user sees): chrome-extension://${opts.extensionId}/dashboard.html — when the user asks for browser verification of an app UI, \`airglow browser open --app <id>\` opens it wired + scriptable`
+    ? `\n- Dashboard (what the user sees): chrome-extension://${opts.extensionId}/dashboard.html — to verify an app UI in the browser, \`airglow browser open --app <id>\` opens it wired + scriptable`
     : '';
   return `
 # Environment

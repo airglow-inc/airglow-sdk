@@ -68,6 +68,7 @@ Editing `package.json` by hand also works — run `bun install` after; nothing i
 |---|---|---|
 | `id` | string | Unique app id; must equal the directory name. Namespaces storage and URL routing. |
 | `name`, `version`, `description` | string | Shown in the dashboard. |
+| `website` | string | Display label for where the app runs (e.g. `"Google"`), shown on the catalog card. Absent → derived from userscript match patterns. |
 | `visibility` | `"public"` \| `"hidden"` | `hidden` apps are skipped entirely. Default `"public"`. |
 | `defaultEnabled` | boolean | First-encounter default. `false` starts the app disabled the first time this `id` is seen; the user's toggle is authoritative after. Default `true`. |
 | `startup` | string | Path to a startup script; runs once per extension boot. |
