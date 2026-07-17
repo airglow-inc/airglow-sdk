@@ -116,6 +116,24 @@ export async function performUpdate(workspace?: string): Promise<{ updatingTo: s
   const staging = join(dirname(target), `.airglow.update.${process.pid}`);
   await Bun.write(staging, bytes);
   chmodSync(staging, 0o755);
+
+  // On macOS the daemon usually descends from Chrome (Chrome → connector →
+  // daemon), and Chrome's file-quarantine flag propagates to every file this
+  // process writes. Executing a quarantined, non-notarized binary gets it
+  // SIGKILLed by Gatekeeper AND moved to the Trash — deleting the install.
+  // Strip the xattr before the binary ever runs.
+  if (process.platform === 'darwin') {
+    Bun.spawnSync(['/usr/bin/xattr', '-d', 'com.apple.quarantine', staging]);
+  }
+
+  // Preflight: never swap in a binary that can't run here (Gatekeeper kill,
+  // wrong arch, truncated download past the checksum, …).
+  const probe = Bun.spawnSync([staging, '--version'], { stdin: 'ignore', stdout: 'pipe', stderr: 'pipe' });
+  if (probe.exitCode !== 0) {
+    try { unlinkSync(staging); } catch {}
+    throw new Error(`downloaded binary failed preflight (exit ${probe.exitCode ?? 'signal'}); keeping v${HOST_VERSION}`);
+  }
+
   try {
     renameSync(staging, target);
   } catch (e) {
