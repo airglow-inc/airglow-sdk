@@ -16,8 +16,10 @@ export default defineConfig({
     ],
   }),
   manifest: {
-    name: 'Airglow',
-    description: 'Dynamic tool injection platform — AI-powered integrations on any page',
+    // CWS title; manifest name is capped at 45 chars ("browser to" didn't fit)
+    name: 'Airglow - customize any website using AI',
+    short_name: 'Airglow',
+    description: 'Edit any website on the internet. Ask Claude or Codex to add features to any website — changes persist, everything runs locally.',
     // 'tabs' exposes url/title for chrome:// and other-extension pages in
     // tabs.query (no new install warning — <all_urls> already covers it).
     // 'debugger' is used only to drive our OWN chrome-extension:// pages
