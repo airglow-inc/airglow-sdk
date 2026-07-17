@@ -16,8 +16,23 @@ See more examples at [airglow.dev](https://airglow.dev)
 
 ## Quickstart
 
-Install the **Airglow extension** from the Chrome Web Store:
-[chromewebstore.google.com/detail/airglow](https://chromewebstore.google.com/detail/airglow/angbnggmaccjdinfebjoibdklmckinfb)
+1. Install the **Airglow extension** from the Chrome Web Store:
+   [chromewebstore.google.com/detail/airglow](https://chromewebstore.google.com/detail/airglow/angbnggmaccjdinfebjoibdklmckinfb)
+
+   Ready-made apps install straight from the extension's **Catalog** tab — no terminal needed.
+
+2. To build your own apps, install the **Airglow host** (daemon + `airglow` CLI):
+
+   ```bash
+   curl -fsSL https://airglow.dev/install.sh | bash
+   ```
+
+   Then start your coding agent in the workspace it creates:
+
+   ```bash
+   cd ~/.airglow && claude
+   > Create an app that hides YouTube Shorts
+   ```
 
 ## Structure
 

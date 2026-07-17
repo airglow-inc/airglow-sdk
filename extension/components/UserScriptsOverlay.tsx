@@ -32,20 +32,9 @@ function useUserScriptsEnabled(): { loaded: boolean; enabled: boolean } {
   return s;
 }
 
-// Opens this extension's chrome://extensions detail page as a centered popup
-// window (rather than a tab) so the gate's instructions stay visible behind it.
-async function openExtensionSettingsPopup() {
-  const url = `chrome://extensions/?id=${chrome.runtime.id}`;
-  const width = 780;
-  const height = 860;
-  try {
-    const current = await chrome.windows.getCurrent();
-    const left = Math.max(0, (current.left ?? 0) + Math.round(((current.width ?? width) - width) / 2));
-    const top = Math.max(0, (current.top ?? 0) + Math.round(((current.height ?? height) - height) / 2));
-    await chrome.windows.create({ url, type: 'popup', width, height, left, top });
-  } catch {
-    await chrome.tabs.create({ url });
-  }
+// Opens this extension's chrome://extensions detail page in a new tab.
+async function openExtensionSettings() {
+  await chrome.tabs.create({ url: `chrome://extensions/?id=${chrome.runtime.id}` });
 }
 
 export function UserScriptsOverlay() {
@@ -94,7 +83,7 @@ export function UserScriptsCard() {
               Open
               <button
                 type="button"
-                onClick={() => void openExtensionSettingsPopup()}
+                onClick={() => void openExtensionSettings()}
                 className="inline-flex items-center gap-1 px-2 py-0.5 rounded-sm border font-medium cursor-pointer"
                 style={{ color: 'color-mix(in srgb, var(--sky) 65%, var(--fg-primary))', borderColor: 'color-mix(in srgb, var(--sky) 55%, var(--border-tertiary))', background: 'color-mix(in srgb, var(--sky) 14%, var(--bg-white))' }}
                 onMouseEnter={(e) => { e.currentTarget.style.background = 'color-mix(in srgb, var(--sky) 26%, var(--bg-white))'; }}

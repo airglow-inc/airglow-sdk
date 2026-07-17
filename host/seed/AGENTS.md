@@ -19,12 +19,12 @@ The daemon runs silently — bundle failures, missing files, RPC errors, uncaugh
 - `npx tsc --noEmit 2>&1 | grep apps/<id>/` — type-check your app (the check spans the whole workspace; scope it to your app). Don't silence it with `declare const airglow: any` — the SDK global is already typed via `airglow.d.ts`. See `docs/browser-debugging.md`.
 - `airglow browser logs --level error -n 50` — merges both streams (browser: userscript/UI/startup runtime errors; daemon: bundle/RPC/startup errors), newest last. Drop `--level error` for info/warn; `--source <app-id>` filters to one app, `--source daemon` to the daemon log.
 
-Clean logs are not proof the change works — they only mean nothing crashed. Before claiming success, exercise what you changed end-to-end, **both layers**:
+Clean logs are not proof the change works — they only mean nothing crashed. Before claiming success, exercise the server side from the terminal:
 
-- **Server / RPC** — call the affected function for real and check its actual return: `curl … /rpc/<fn>` (see `docs/browser-debugging.md`) or `airglow browser eval --app <id> 'await airglow.rpc("<fn>", {…})'`. If localhost `curl` is blocked by the shell sandbox, prefer the `airglow browser eval --app` path instead of skipping the RPC check.
-- **UI / userscript** — drive it in the real browser, then `airglow browser shot` and **read** the screenshot — confirm the new behavior, not just that the page loads. Test an app **UI** with `airglow browser open --app <id>` — it opens the UI fully wired (`airglow.*` live, via the `app-ui-bridge` content script) as a top-level tab, so `eval`/`html`/`shot` read it directly (no `--frame`). Don't `curl` that URL (unwired outside the extension — render-gated UIs hang) or test via the dashboard `chrome-extension://` page (its app iframe is cross-origin; `eval --frame` can't reach it). See `docs/browser-debugging.md`.
+- **Server / RPC** — call the affected function for real and check its actual return: `curl … /rpc/<fn>` (see `docs/browser-debugging.md`). If localhost `curl` is blocked by the shell sandbox, use `airglow browser eval --app <id> 'await airglow.rpc("<fn>", {…})'` instead of skipping the RPC check.
+- **UI / userscript** — the type-check and error logs above are the standard verification. **Do not open browser tabs or windows to test unless the user explicitly asks** — surprise windows are disruptive. When the user does ask, `airglow browser open --app <id>` opens the UI fully wired (`airglow.*` live) as a top-level tab; see `docs/browser-debugging.md`.
 
-Reading logs is not testing. A change you didn't exercise is not done — if you genuinely can't test something, say so explicitly at the end.
+Reading logs is not testing for server code. A server change you didn't exercise is not done — if you genuinely can't test something, say so explicitly at the end.
 
 ## Interaction behavior (hard rules)
 
@@ -75,8 +75,8 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 
 ## Best practices
 
-- **Test end-to-end against a real browser** — untested code is not done. Drive it with `airglow browser` (see `docs/browser-debugging.md`). If you can't test something, say so at the end.
-- **Verify the underlying API before wiring it in** — call it directly (script/`curl`/CLI), then the RPC, then the browser.
+- **Test server code from the terminal** — `curl` the RPC endpoints and check the actual returns. Don't open browser tabs or windows unless the user explicitly asks for browser testing.
+- **Verify the underlying API before wiring it in** — call it directly (script/`curl`/CLI), then the RPC.
 - **Make React UIs test-driveable** — `data-testid` on interactive elements. `button.click()` works; `input.value = x` does NOT update React state, so expose a `window.__test` object and call it with `airglow browser eval --main`:
   ```tsx
   useEffect(() => {
@@ -91,5 +91,4 @@ import { AppPage, SettingsSection, SettingField } from '@shared/components';
 - `manifest.json` valid; `id` == directory; every referenced file exists.
 - Every `airglow.rpc('foo', ...)` has a matching default export in `server/foo.ts`.
 - No keys/tokens hardcoded in `userscripts/` or `ui/`.
-- Tested in the real browser, not just `curl`.
-- **Screenshot the rendered page** (`airglow browser shot`) and scan for layout bugs: overflow/clipping (especially the preview in the narrow rail), text spilling, a preview that doesn't match the real widget. A clean bundle with a wrong-looking page is still wrong.
+- Affected server functions exercised via `curl`/RPC with real returns checked. No browser windows opened unless the user asked.

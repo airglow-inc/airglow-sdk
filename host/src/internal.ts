@@ -68,6 +68,28 @@ function dedupeReactPlugin(): import('bun').BunPlugin {
   };
 }
 
+// Resolve the workspace `@shared/*` alias in the bundler itself instead of
+// leaning on the root tsconfig's `paths`. tsconfig.json is SEED_IF_ABSENT, so
+// a stale user copy survives upgrades forever — and Bun (unlike tsc) ignores
+// `paths` entirely when `baseUrl` is missing, which broke every @shared import
+// on workspaces carrying a pre-relaunch tsconfig. The Tailwind build already
+// resolves the alias itself for the same reason (apps.ts runTailwind).
+function sharedAliasPlugin(): import('bun').BunPlugin {
+  const root = process.cwd();
+  return {
+    name: 'airglow-shared-alias',
+    setup(build) {
+      build.onResolve({ filter: /^@shared\// }, (args) => {
+        try {
+          return { path: Bun.resolveSync('./' + args.path.slice(1), root) };
+        } catch {
+          return undefined; // shared file genuinely missing — let Bun report it
+        }
+      });
+    },
+  };
+}
+
 // { entrypoint, format } → { ok, code } | { ok: false, stderr }
 export async function runInternalBuild(): Promise<void> {
   try {
@@ -77,7 +99,7 @@ export async function runInternalBuild(): Promise<void> {
       target: 'browser',
       format: req.format === 'esm' ? 'esm' : 'iife',
       loader: { '.svg': 'text', '.txt': 'text', '.md': 'text' },
-      plugins: [dedupeReactPlugin()],
+      plugins: [dedupeReactPlugin(), sharedAliasPlugin()],
       throw: false,
     });
     if (!result.success) {

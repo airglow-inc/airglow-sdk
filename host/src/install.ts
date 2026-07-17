@@ -210,8 +210,14 @@ export async function runInstall(argv: string[]): Promise<void> {
       console.error(`failed for ${name} at ${dir}: ${e?.message ?? e}`);
     }
   }
-  console.log(`\nworkspace: ${AIRGLOW_HOME}`);
+  const yellow = (s: string) => (process.stdout.isTTY ? `\x1b[1;33m${s}\x1b[0m` : s);
+  console.log(`\n\n${yellow('Setup notes:')}\n`);
+  console.log(`workspace: ${AIRGLOW_HOME}`);
+  console.log('\nStart your agent in ~/.airglow and make an app:');
+  console.log('\n  cd ~/.airglow && claude');
+  console.log('  > Create an app that hides YouTube Shorts');
   // Chrome reads NM manifests per connection attempt and the extension
   // retries every few seconds — no browser restart needed in either install
-  // order, so no connect hint is printed (install.sh owns the closing copy).
+  // order, so no connect hint is printed. The binary owns the whole closing
+  // copy (not install.sh) so it shows for `airglow install` too.
 }

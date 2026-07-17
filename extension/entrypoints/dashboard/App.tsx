@@ -2139,15 +2139,15 @@ export default function App() {
             >
               <X size={18} />
             </button>
-            <div className="text-[19px] font-semibold flex items-center gap-2 pr-8" style={{ color: 'var(--fg-primary)' }}>
-              <Code size={22} style={{ color: 'var(--clay)' }} />
+            <div className="text-[21px] font-semibold flex items-center gap-2 pr-8" style={{ color: 'var(--fg-primary)' }}>
+              <Code size={24} style={{ color: 'var(--clay)' }} />
               Develop your own apps
             </div>
             {/* Offline moves this line below the install command; Windows
                 drops it (no workspace will ever be created there). */}
             {devIssue === null && (
-              <div className="mt-2 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
-                Your workspace is at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>~/.airglow</code>; it contains instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>AGENTS.md</code> to use Airglow.
+              <div className="mt-2 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+                Your workspace is at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow</code>; it contains instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>AGENTS.md</code> to use Airglow.
               </div>
             )}
             {/* Problem callout — mirrors the warning icon on the sidebar's
@@ -2163,11 +2163,11 @@ export default function App() {
                 }}
                 data-testid="dev-guide-windows-unsupported"
               >
-                <div className="inline-flex items-center gap-2 text-[16px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
-                  <TriangleAlert size={17} className="shrink-0" style={{ color: 'var(--error)' }} />
+                <div className="inline-flex items-center gap-2 text-[18px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
+                  <TriangleAlert size={19} className="shrink-0" style={{ color: 'var(--error)' }} />
                   Developing apps on Windows is not supported
                 </div>
-                <div className="mt-1 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                <div className="mt-1 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
                   Airglow apps can only be developed on Mac or Linux.
                 </div>
               </div>
@@ -2181,11 +2181,11 @@ export default function App() {
                 }}
                 data-testid="dev-guide-offline"
               >
-                <div className="inline-flex items-center gap-2 text-[16px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
-                  <TriangleAlert size={17} className="shrink-0" style={{ color: 'var(--error)' }} />
+                <div className="inline-flex items-center gap-2 text-[18px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
+                  <TriangleAlert size={19} className="shrink-0" style={{ color: 'var(--error)' }} />
                   Local server is offline
                 </div>
-                <div className="mt-1 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
+                <div className="mt-1 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
                   Run this command in a terminal to install Airglow workspace:
                 </div>
                 <div className="mt-2.5 flex items-stretch gap-2">
@@ -2198,17 +2198,17 @@ export default function App() {
                   >
                     {guideCopied === 'install' ? <Check size={15} /> : <Copy size={15} />}
                   </button>
-                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[14px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[15px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
                     {HOST_INSTALL_CMD}
                   </pre>
                 </div>
-                <div className="mt-2.5 text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
-                  It creates your <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>~/.airglow</code> workspace with instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>AGENTS.md</code> to use Airglow.
+                <div className="mt-2.5 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+                  It creates your <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow</code> workspace with instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>AGENTS.md</code> to use Airglow.
                 </div>
               </div>
             )}
             {devIssue === null && (
-            <div className="mt-4 flex flex-col gap-4 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+            <div className="mt-4 flex flex-col gap-4 text-[17px]" style={{ color: 'var(--fg-secondary)' }}>
               <div>
                 <div className="flex items-center gap-2.5" style={{ color: 'var(--fg-primary)' }}>
                   <GuideStep n={1} />
@@ -2224,7 +2224,7 @@ export default function App() {
                   >
                     {guideCopied === 'cmd' ? <Check size={15} /> : <Copy size={15} />}
                   </button>
-                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[14px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[15px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
                     {DEV_GUIDE_AGENT_CMD}
                   </pre>
                 </div>
@@ -2244,13 +2244,13 @@ export default function App() {
                   >
                     {guideCopied === 'prompt' ? <Check size={15} /> : <Copy size={15} />}
                   </button>
-                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[14px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
+                  <pre className="flex-1 min-w-0 p-2.5 rounded-sm text-[15px] overflow-x-auto" style={{ background: 'var(--gray-150)', border: '1px solid var(--border-tertiary)', fontFamily: 'var(--font-mono)', color: 'var(--fg-primary)' }}>
                     {DEV_GUIDE_EXAMPLE_PROMPT}
                   </pre>
                 </div>
               </div>
-              <div className="text-[15px]" style={{ color: 'var(--fg-secondary)' }}>
-                Apps are saved at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '13.5px' }}>~/.airglow/apps</code> and hot-reload into the extension.
+              <div className="text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+                Apps are saved at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow/apps</code> and hot-reload into the extension.
               </div>
             </div>
             )}

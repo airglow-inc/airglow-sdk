@@ -595,6 +595,9 @@ function diagnoseBundleError(stderr: string): string | null {
   const missing = stderr.match(/Could not resolve[:]? "([^"]+)"/i);
   if (missing) {
     const pkg = missing[1];
+    if (pkg.startsWith('@shared/')) {
+      return `"${pkg}" maps to <workspace>/${pkg.slice(1)} — that file doesn't exist.\n\nCheck the import path against the workspace shared/ directory.`;
+    }
     if (pkg.startsWith('.') || pkg.startsWith('/')) {
       return `Missing local file: ${pkg}\n\nCheck the import path against your filesystem.`;
     }

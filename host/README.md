@@ -13,7 +13,7 @@ One Bun-compiled binary, four modes (dispatched on argv):
 curl -fsSL https://airglow.dev/install.sh | bash
 ```
 
-Downloads the platform binary from the latest `host-v*` GitHub release into `~/.airglow/bin/airglow` and runs `airglow install`, which registers the native messaging host for every Chromium variant and seeds the workspace:
+Downloads the platform binary (gzipped, ~21 MB) from the Airglow CDN (`api.airglow.dev/host` → public Blob store) into `~/.airglow/bin/airglow` and runs `airglow install`, which registers the native messaging host for every Chromium variant and seeds the workspace:
 
 - `apps/` — user space, never touched
 - `shared/`, `docs/`, `AGENTS.md`, `airglow.d.ts` — vendored, force-overwritten on update
@@ -34,7 +34,7 @@ bun run build:release               # → dist/airglow-{darwin-arm64,darwin-x64,
 
 After `install`, fully restart Chrome so it picks up the native messaging manifest; the connector then auto-spawns the daemon. A daemon you started manually with `--workspace` wins — connectors attach to it instead.
 
-**Releasing:** bump `package.json`, `bun run build:release`, then publish the three binaries on a `host-vX.Y.Z` GitHub release. `install.sh` picks the newest release carrying the platform asset, so extension (`vX.Y.Z`) and host releases can interleave.
+**Releasing:** `bun run bump <version>` bumps `package.json`, commits, and tags `host-vX.Y.Z`; pushing the tag triggers CI (`.github/workflows/host-release.yml`), which cross-compiles all three platforms, gzips them, and uploads to the Blob store `install.sh` reads. `bun run release` does the same build + upload locally (needs the Blob token).
 
 ## State
 

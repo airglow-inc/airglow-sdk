@@ -45,10 +45,6 @@ trap - EXIT
 echo "installed $bin_dir/airglow ($("$bin_dir/airglow" --version))"
 echo
 
+# The binary prints the closing copy (workspace path + agent quick-start).
 "$bin_dir/airglow" install
-
 echo
-echo "Start your agent in ~/.airglow and make an app:"
-echo
-echo "  cd ~/.airglow && claude"
-echo "  > Create an app that hides YouTube Shorts"
