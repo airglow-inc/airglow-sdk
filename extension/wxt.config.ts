@@ -17,7 +17,7 @@ export default defineConfig({
   }),
   manifest: {
     // CWS title; manifest name is capped at 45 chars ("browser to" didn't fit)
-    name: 'Airglow - customize any website using AI',
+    name: 'Airglow - Customize any website using AI',
     short_name: 'Airglow',
     description: 'Edit any website on the internet. Ask Claude or Codex to add features to any website — changes persist, everything runs locally.',
     // 'tabs' exposes url/title for chrome:// and other-extension pages in

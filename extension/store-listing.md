@@ -6,7 +6,7 @@ paste it into the CWS listing manually (plain text, no markdown).
 
 ## Title (manifest name, 45-char limit)
 
-Airglow - customize any website using AI
+Airglow - Customize any website using AI
 
 ## Summary (manifest description)
 

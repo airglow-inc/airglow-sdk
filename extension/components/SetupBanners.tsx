@@ -13,8 +13,8 @@
 // (components/UserScriptsOverlay.tsx) — not in this ordered list.
 //
 // State is polled (chrome.action exposes no change event), so a banner clears
-// on its own once satisfied — no sidepanel reload needed. Append
-// ?debug-banners=1 (or pass `force`) to render every banner for design.
+// on its own once satisfied — no sidepanel reload needed. Pass `force`
+// (planmock) to render every banner for design.
 
 import { useEffect, useState, type ReactElement } from 'react';
 import { Check, Copy, LogIn, Pin } from 'lucide-react';
@@ -235,7 +235,7 @@ export function SetupBanners({
   const reported = force ? null : active;
   useEffect(() => { onActiveChange?.(reported); }, [reported, onActiveChange]);
 
-  // Design preview (?debug-banners=1 / planmock): render every owned banner.
+  // Design preview (planmock): render every owned banner.
   if (force) {
     return <>{steps.map((step) => <div key={step}>{renderers[step]()}</div>)}</>;
   }

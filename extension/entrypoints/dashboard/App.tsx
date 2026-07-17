@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, Power, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code } from 'lucide-react';
+import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code } from 'lucide-react';
 
 // GitHub mark (lucide deprecated its brand icons).
 function GithubLogo({ size }: { size: number }) {
@@ -69,6 +69,9 @@ interface AppManifest {
 }
 
 // One app in the cloud catalog index (GET <cloud>/api/catalog).
+// SCHEMA SYNC: the cloud relay whitelists fields — a new field must also be
+// added in airglow-catalog/scripts/build-catalog.mjs (writer) and
+// airglow-cloud/lib/catalog/feed.ts (interface + normalize).
 interface CatalogApp {
   id: string;
   name: string;
@@ -78,6 +81,9 @@ interface CatalogApp {
   // Card media (absolute URLs into the catalog repo): hover-play video + its
   // poster frame. Optional — apps without media render a monogram placeholder.
   media?: { video?: string; thumbnail?: string } | null;
+  // Display label for where the app runs ("Google"), from manifest.website.
+  // Absent → derived from match patterns (siteWord).
+  website?: string;
   // Userscript match patterns, so the catalog card can show the same site list
   // as the installed gallery. Absent on older feeds → no site row.
   matches?: string[];
@@ -325,6 +331,30 @@ function ActionButton({
   );
 }
 
+// The app on/off control: a switch shows current state (olive = on, gray =
+// off) and affords the flip in one element, so there is no Enable/Disable
+// label whose color must be decoded against the card's own state colors.
+function ToggleSwitch({ on, onToggle, testid, title }: { on: boolean; onToggle: () => void; testid?: string; title?: string }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={title}
+      title={title}
+      data-testid={testid}
+      onClick={onToggle}
+      className="relative shrink-0 rounded-full cursor-pointer"
+      style={{ width: 44, height: 24, background: on ? 'var(--success)' : 'var(--gray-300)', border: 'none', padding: 0, transition: 'background 180ms ease' }}
+    >
+      <span
+        className="absolute rounded-full"
+        style={{ width: 18, height: 18, top: 3, left: 3, background: 'var(--bg-white)', transform: on ? 'translateX(20px)' : 'none', boxShadow: '0 1px 2px rgba(0,0,0,0.25)', transition: 'transform 180ms ease' }}
+      />
+    </button>
+  );
+}
+
 // The catalog card's button for an up-to-date installed app: a green
 // "✓ Installed" at rest that swaps to a red "Uninstall" on hover, so the card
 // gets an uninstall affordance without a second destructive button.
@@ -359,13 +389,15 @@ function SiteList({ sites, testid }: { sites: NonNullable<ReturnType<typeof appS
 // `pills` and `actions` slots. `onOpen`/`href` make the title + description a
 // link (gallery always; catalog only when installed). `drag` carries the DnD.
 function AppListCard({
-  name, description, sites, sitesTestid, pills, actions, note, onOpen, href, draggable, drag, testid,
+  name, description, sites, sitesTestid, control, pills, metaPills, actions, note, onOpen, href, draggable, drag, testid, dimmed,
 }: {
   name: string;
   description?: string;
   sites: ReturnType<typeof appSites>;
   sitesTestid?: string;
+  control?: React.ReactNode;
   pills?: React.ReactNode;
+  metaPills?: React.ReactNode;
   actions?: React.ReactNode;
   note?: React.ReactNode;
   onOpen?: () => void;
@@ -373,26 +405,41 @@ function AppListCard({
   draggable?: boolean;
   drag?: React.HTMLAttributes<HTMLDivElement>;
   testid?: string;
+  dimmed?: boolean;
 }) {
   const open = onOpen ? (e: React.MouseEvent) => { e.preventDefault(); onOpen(); } : undefined;
+  // Dimmed (disabled app): muted background, dashed border, no shadow, faded
+  // content — but status pills and actions stay full-strength so the state
+  // badge and the Enable button remain the loudest things on the card.
+  const fade = dimmed ? { opacity: 0.75 } : undefined;
   return (
     <div
       {...drag}
       draggable={draggable}
       data-testid={testid}
       className="rounded-[var(--radius-md)] p-5 transition-all border"
-      style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', boxShadow: 'var(--shadow-card)', cursor: draggable ? 'grab' : undefined }}
+      style={{
+        background: dimmed ? 'var(--bg-tertiary)' : 'var(--bg-white)',
+        borderColor: dimmed ? 'var(--border-secondary)' : 'var(--border-tertiary)',
+        borderStyle: dimmed ? 'dashed' : 'solid',
+        boxShadow: dimmed ? 'none' : 'var(--shadow-card)',
+        cursor: draggable ? 'grab' : undefined,
+      }}
     >
-      <div className="text-xl font-semibold mb-3 flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-primary)' }}>
-        {open
-          ? <a href={href ?? '#'} onClick={open} className="no-underline cursor-pointer" style={{ color: 'inherit' }}>{name}</a>
-          : name}
-        {pills}
+      <div className="flex items-start justify-between gap-2 mb-3">
+        <div className="text-xl font-semibold flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-primary)' }}>
+          {control}
+          {open
+            ? <a href={href ?? '#'} onClick={open} className="no-underline cursor-pointer" style={{ color: 'inherit', ...fade }}>{name}</a>
+            : <span style={fade}>{name}</span>}
+          {pills}
+        </div>
+        {metaPills && <div className="flex items-center gap-1.5 flex-wrap justify-end shrink-0 pt-0.5" style={fade}>{metaPills}</div>}
       </div>
       {description && (open
-        ? <a href={href ?? '#'} onClick={open} className="block text-base leading-relaxed no-underline cursor-pointer" style={{ color: 'var(--fg-secondary)' }}>{description}</a>
-        : <div className="text-base leading-relaxed" style={{ color: 'var(--fg-secondary)' }}>{description}</div>)}
-      {sites && <SiteList sites={sites} testid={sitesTestid} />}
+        ? <a href={href ?? '#'} onClick={open} className="block text-base leading-relaxed no-underline cursor-pointer" style={{ color: 'var(--fg-secondary)', ...fade }}>{description}</a>
+        : <div className="text-base leading-relaxed" style={{ color: 'var(--fg-secondary)', ...fade }}>{description}</div>)}
+      {sites && <div style={fade}><SiteList sites={sites} testid={sitesTestid} /></div>}
       {note}
       {actions && <div className="flex items-center gap-2 mt-4">{actions}</div>}
     </div>
@@ -583,8 +630,8 @@ export default function App() {
   useEffect(() => {
     chrome.runtime.getPlatformInfo((info) => setIsWindows(info.os === 'win'));
   }, []);
-  // Design preview (mirrors SetupBanners' ?debug-banners): ?debug-offline=1
-  // forces the offline state, ?debug-offline=win the Windows variant.
+  // Design preview: ?debug-offline=1 forces the offline state,
+  // ?debug-offline=win the Windows variant.
   const debugOffline = new URLSearchParams(window.location.search).get('debug-offline');
   // Dev-guide popup. Auto-opens on startup — offline, Windows, and online
   // alike — until closed once (persisted); the sidebar button reopens it.
@@ -1185,6 +1232,26 @@ export default function App() {
     });
   }, [settingsOpen]);
 
+  // Surface host updates in the sidebar without opening Settings: check when
+  // the dashboard opens (and when the daemon comes online), then re-check
+  // hourly while the page stays open.
+  useEffect(() => {
+    if (!localOnline) return;
+    let cancelled = false;
+    const check = async () => {
+      const origin = await daemonOrigin();
+      if (!origin || cancelled) return;
+      try {
+        const res = await fetch(`${origin}/api/daemon/update-check`);
+        const body = await res.json();
+        if (!cancelled && body?.ok) setHostUpdate(body);
+      } catch {}
+    };
+    void check();
+    const t = setInterval(check, 60 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [localOnline]);
+
   async function updateHost() {
     const origin = await daemonOrigin();
     if (!origin || !hostUpdate?.latest) return;
@@ -1328,11 +1395,17 @@ export default function App() {
   // Unsaved input present?
   const secretsChanged = Object.values(envInputs).some((v) => v.trim());
 
-  function Badge({ children, color, hoverable }: { children: React.ReactNode; color: string; hoverable?: boolean }) {
+  // `solid` renders a filled pill (white text on the tone color) for states
+  // that must read at a glance even on a dimmed card — e.g. Disabled.
+  function Badge({ children, color, hoverable, solid }: { children: React.ReactNode; color: string; hoverable?: boolean; solid?: boolean }) {
     return (
       <span
         className={`text-sm font-medium px-1.5 py-0.5 rounded${hoverable ? ' cursor-help' : ''}`}
-        style={{
+        style={solid ? {
+          background: color,
+          color: 'var(--bg-white)',
+          border: `1px solid ${color}`,
+        } : {
           background: `color-mix(in srgb, ${color} 12%, transparent)`,
           color,
           border: `1px solid color-mix(in srgb, ${color} 55%, transparent)`,
@@ -1408,6 +1481,8 @@ export default function App() {
         description={app.description}
         sites={sites}
         sitesTestid={`app-sites-${app.id}`}
+        dimmed={disabled}
+        control={<ToggleSwitch on={!disabled} onToggle={() => toggleApp(app.id)} title={disabled ? 'Enable' : 'Disable'} testid={`app-toggle-${app.id}`} />}
         onOpen={() => openApp(app.id)}
         href={appUrl(app.id)}
         draggable={isDraggable}
@@ -1418,11 +1493,11 @@ export default function App() {
           onDragOver: (e) => e.preventDefault(),
         } : undefined}
         pills={<>
-          {disabled && <Badge color={PILL.error}>Disabled</Badge>}
+          {disabled && <Badge color={PILL.error} solid>Disabled</Badge>}
           {!disabled && missing.length > 0 && (
             <span onClick={() => openSecrets(app.id)} className="cursor-pointer" data-testid={`app-missing-secrets-${app.id}`}>
               <Tooltip content={<span><strong>Missing secrets — click to set:</strong><br/>{missing.map(m => <span key={m}>&nbsp;&bull; {m}<br/></span>)}</span>}>
-                <Badge color={PILL.error} hoverable>
+                <Badge color={PILL.error} hoverable solid>
                   {missing.length} secret{missing.length > 1 ? 's' : ''} missing
                 </Badge>
               </Tooltip>
@@ -1433,6 +1508,8 @@ export default function App() {
               <Badge color={PILL.error} hoverable>Server down</Badge>
             </Tooltip>
           )}
+        </>}
+        metaPills={<>
           {prov || app._sourceType === 'cloud' ? (
             <Tooltip content={<span>Installed from the catalog{app.version ? ` (v${app.version})` : ''}.</span>}>
               <Badge color={PILL.catalog} hoverable>Catalog{app.version ? ` · v${app.version}` : ''}</Badge>
@@ -1454,14 +1531,11 @@ export default function App() {
           )}
         </>}
         actions={<>
-          <ActionButton tone={disabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(app.id)}>
-            {disabled ? 'Enable' : 'Disable'}
-          </ActionButton>
           <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={uninstalling === app.id} onClick={() => setConfirmUninstall(app)}>
             {uninstalling === app.id ? 'Removing…' : 'Uninstall'}
           </ActionButton>
           {hasSecrets && (
-            <ActionButton tone={missing.length > 0 ? 'danger' : 'neutral'} variant="outline" icon={KeyRound} onClick={() => openSecrets(app.id)} testid={`app-secrets-${app.id}`}>
+            <ActionButton tone="neutral" variant="outline" icon={KeyRound} onClick={() => openSecrets(app.id)} testid={`app-secrets-${app.id}`}>
               Secrets
             </ActionButton>
           )}
@@ -1555,6 +1629,7 @@ export default function App() {
         {sorted.map((c) => {
           const f = catalogFlags(c);
           const open = () => openCatalogApp(c.id);
+          const site = c.website ?? siteWord(c.matches);
           return (
             <div key={c.id} data-testid={`catalog-card-${c.id}`} style={f.hostMissing ? { opacity: 0.6 } : undefined}>
               <MediaThumb media={c.media} name={c.name} onClick={open} testid={`catalog-thumb-${c.id}`} />
@@ -1569,10 +1644,10 @@ export default function App() {
                     {c.name}
                   </a>
                   <div className="text-[15px] line-clamp-2" style={{ color: 'var(--fg-secondary)' }}>{c.description}</div>
-                  {siteWord(c.matches) && (
+                  {site && (
                     <div className="flex items-center gap-1.5 text-sm mt-0.5" style={{ color: 'var(--fg-tertiary)' }} data-testid={`catalog-sites-${c.id}`}>
                       <Globe size={14} />
-                      {siteWord(c.matches)}
+                      {site}
                     </div>
                   )}
                 </div>
@@ -1600,9 +1675,9 @@ export default function App() {
       <div className="-m-8 flex flex-col" style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }} data-testid="catalog-detail-header">
           <nav className="inline-flex items-center gap-1.5 mb-5 text-base" style={{ color: 'var(--fg-tertiary)' }} data-testid="catalog-detail-breadcrumb">
-            <button type="button" onClick={() => openCatalogApp(null)} className="bg-transparent border-0 p-0 text-xl font-medium cursor-pointer" style={{ color: 'var(--fg-tertiary)' }}>Catalog</button>
+            <button type="button" onClick={() => openCatalogApp(null)} className="bg-transparent border-0 p-0 text-[22px] font-medium cursor-pointer" style={{ color: 'var(--fg-tertiary)' }}>Catalog</button>
             <ChevronRight size={17} style={{ opacity: 0.6 }} />
-            <span className="font-medium truncate" style={{ color: 'var(--fg-secondary)' }}>{c.name}</span>
+            <span className="text-[22px] font-medium truncate" style={{ color: 'var(--fg-secondary)' }}>{c.name}</span>
           </nav>
           <div className="flex items-start gap-8">
             <div className="flex-1 min-w-0">
@@ -1623,9 +1698,7 @@ export default function App() {
               <div className="flex items-center gap-2 mt-4">
                 {f.installedDone ? (<>
                   <ActionButton tone="green" onClick={() => openApp(c.id)} testid="catalog-detail-open">Open app</ActionButton>
-                  <ActionButton tone={appDisabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(c.id)}>
-                    {appDisabled ? 'Enable' : 'Disable'}
-                  </ActionButton>
+                  <ToggleSwitch on={!appDisabled} onToggle={() => toggleApp(c.id)} title={appDisabled ? 'Enable' : 'Disable'} />
                   <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={uninstalling === c.id} onClick={() => f.installedApp && setConfirmUninstall(f.installedApp)}>
                     {uninstalling === c.id ? 'Removing…' : 'Uninstall'}
                   </ActionButton>
@@ -1686,7 +1759,6 @@ export default function App() {
     const app = local.find((a) => a.id === appId);
     const disabled = disabledApps.has(appId);
     const prov = provenance[appId];
-    const missing = getMissingSecrets({ id: appId });
     const hasSecrets = (envApps.find((a) => a.appId === appId)?.keys.length ?? 0) > 0;
     const sites = appSites(app);
     const name = app?.name ?? appId;
@@ -1694,13 +1766,12 @@ export default function App() {
       <div className="-m-8 flex flex-col" style={{ minHeight: '100vh', background: 'var(--bg-primary)' }}>
         <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }} data-testid="app-view-header">
           <nav className="inline-flex items-center gap-1.5 mb-5 text-base" style={{ color: 'var(--fg-tertiary)' }} data-testid="app-breadcrumb">
-            <button type="button" onClick={() => openApp(null)} className="bg-transparent border-0 p-0 text-xl font-medium cursor-pointer" style={{ color: 'var(--fg-tertiary)' }}>Apps</button>
-            <ChevronRight size={17} style={{ opacity: 0.6 }} />
-            <span className="font-medium truncate" style={{ color: 'var(--fg-secondary)' }}>{name}</span>
+            <button type="button" onClick={() => openApp(null)} className="bg-transparent border-0 p-0 text-[22px] font-medium cursor-pointer" style={{ color: 'var(--fg-tertiary)' }}>Apps</button>
           </nav>
           <div className="flex items-center gap-2.5 flex-wrap">
+            <ToggleSwitch on={!disabled} onToggle={() => toggleApp(appId)} title={disabled ? 'Enable' : 'Disable'} testid="app-toggle" />
             <h1 className="text-2xl font-semibold tracking-tight" style={{ color: 'var(--fg-primary)' }} data-testid="app-page-title">{name}</h1>
-            {disabled && <Badge color={PILL.error}>Disabled</Badge>}
+            {disabled && <Badge color={PILL.error} solid>Disabled</Badge>}
             {prov || app?._sourceType === 'cloud'
               ? <Badge color={PILL.catalog}>Catalog{app?.version ? ` · v${app.version}` : ''}</Badge>
               : <Badge color={PILL.local}>Local</Badge>}
@@ -1709,14 +1780,11 @@ export default function App() {
           {app?.description && <p className="mt-1.5 text-[15px] leading-relaxed max-w-2xl" style={{ color: 'var(--fg-secondary)' }}>{app.description}</p>}
           {sites && <SiteList sites={sites} testid="app-sites" />}
           <div className="flex items-center gap-2 mt-4">
-            <ActionButton tone={disabled ? 'green' : 'clay'} icon={Power} onClick={() => toggleApp(appId)} testid="app-toggle">
-              {disabled ? 'Enable' : 'Disable'}
-            </ActionButton>
             <ActionButton tone="danger" variant="outline" icon={Trash2} onClick={() => app && setConfirmUninstall(app)} testid="app-uninstall">
               Uninstall
             </ActionButton>
             {hasSecrets && (
-              <ActionButton tone={missing.length > 0 ? 'danger' : 'neutral'} variant="outline" icon={KeyRound} onClick={() => openSecrets(appId)} testid="app-secrets">
+              <ActionButton tone="neutral" variant="outline" icon={KeyRound} onClick={() => openSecrets(appId)} testid="app-secrets">
                 Secrets
               </ActionButton>
             )}
@@ -1914,8 +1982,9 @@ export default function App() {
                 {cloudOnline === false && <span style={{ color: 'var(--error)' }}> — unreachable</span>}
               </div>
             )}
-            <div className="px-2 pt-1 flex items-center gap-2 flex-wrap" style={{ color: 'var(--fg-tertiary)', fontSize: '12px' }}>
-              <span>v{chrome.runtime.getManifest().version}{hostVersion ? ` (host v${hostVersion})` : ''}</span>
+            <div className="px-2 pt-1" style={{ color: 'var(--fg-tertiary)', fontSize: '12px' }}>
+              <div>v{chrome.runtime.getManifest().version}{hostVersion ? ` (host v${hostVersion})` : ''}</div>
+              <div className="flex items-center gap-2 pt-1">
               {extUpdate && (
                 <button
                   type="button"
@@ -1941,8 +2010,23 @@ export default function App() {
                 <GithubLogo size={15} />
                 Github
               </button>
+              </div>
             </div>
           </div>
+          {hostUpdate?.updateAvailable && hostUpdate.mode === 'binary' && (
+            <button
+              type="button"
+              onClick={updateHost}
+              disabled={hostUpdating}
+              className="flex items-center gap-2 w-fit mx-auto mt-2 h-10 px-4 rounded-lg text-base font-semibold cursor-pointer border"
+              style={{ background: 'var(--olive)', color: 'var(--bg-white)', borderColor: 'rgba(0, 0, 0, 0.3)', boxShadow: 'var(--shadow-card)', opacity: hostUpdating ? 0.6 : 1 }}
+              title={hostUpdateError ?? `Update host to v${hostUpdate.latest}`}
+              data-testid="sidebar-host-update-button"
+            >
+              <Download size={17} className="shrink-0" />
+              {hostUpdating ? 'Updating…' : 'Update Airglow'}
+            </button>
+          )}
         </div>
 
         {/* Tagline */}
@@ -2015,22 +2099,19 @@ export default function App() {
         <div className="-m-8 flex flex-col" style={{ minHeight: '100vh' }}>
           <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }}>
             <div className="flex items-center gap-1.5 text-base" data-testid="dashboard-breadcrumb">
-              <span className="text-xl font-medium" style={{ color: 'var(--fg-primary)' }}>{activeTab === 'catalog' ? 'Catalog' : 'Installed Apps'}</span>
-              {activeTab === 'catalog' && catalogApps && (
-                <span className="text-lg" style={{ color: 'var(--fg-tertiary)' }}>{catalogApps.length}</span>
-              )}
+              <span className="text-[22px] font-medium" style={{ color: 'var(--fg-tertiary)' }}>{activeTab === 'catalog' ? 'Catalog' : 'Apps'}</span>
               {activeTab === 'catalog' && (
                 <button
                   type="button"
                   onClick={() => chrome.tabs.create({ url: 'https://github.com/airglow-inc/airglow-catalog' })}
-                  className="ml-3 h-8 px-3 rounded-lg text-sm font-medium cursor-pointer transition-colors border inline-flex items-center gap-1.5"
+                  className="ml-3 h-9 px-3 rounded-lg text-base font-medium cursor-pointer transition-colors border inline-flex items-center gap-1.5"
                   style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-white)' }}
                   onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
                   onMouseLeave={(e) => { e.currentTarget.style.background = 'var(--bg-white)'; }}
                   title="Catalog source on GitHub"
                   data-testid="catalog-github-button"
                 >
-                  <GithubLogo size={14} />
+                  <GithubLogo size={16} />
                   Source
                 </button>
               )}
@@ -2062,8 +2143,11 @@ export default function App() {
                 </div>
               ) : (
                 <div className="flex flex-col gap-4">
+                  {/* Function call, not JSX — same remount-avoidance rule as
+                      AppView/CatalogView, so the toggle's CSS transition (and
+                      any card DOM state) survives App re-renders. */}
                   {sortByOrder(local, 'local').map((app, i) => (
-                    <AppCard key={app.id} app={app} section="local" index={i} list={local} />
+                    <Fragment key={app.id}>{AppCard({ app, section: 'local', index: i, list: local })}</Fragment>
                   ))}
                 </div>
               )}
@@ -2147,7 +2231,7 @@ export default function App() {
                 drops it (no workspace will ever be created there). */}
             {devIssue === null && (
               <div className="mt-2 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
-                Your workspace is at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow</code>; it contains instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>AGENTS.md</code> to use Airglow.
+                Your workspace is at <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow</code>. It contains <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>AGENTS.md</code> — agent instructions on how to use Airglow.
               </div>
             )}
             {/* Problem callout — mirrors the warning icon on the sidebar's
@@ -2173,19 +2257,19 @@ export default function App() {
               </div>
             )}
             {devIssue === 'offline' && (
-              <div
-                className="mt-4 p-4 rounded-lg border"
-                style={{
-                  background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))',
-                  borderColor: 'color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
-                }}
-                data-testid="dev-guide-offline"
-              >
-                <div className="inline-flex items-center gap-2 text-[18px] font-semibold" style={{ color: 'var(--fg-primary)' }}>
+              <div className="mt-4" data-testid="dev-guide-offline">
+                <div
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md text-[18px] font-semibold"
+                  style={{
+                    color: 'var(--fg-primary)',
+                    background: 'color-mix(in srgb, var(--error) 7%, var(--bg-white))',
+                    border: '1px solid color-mix(in srgb, var(--error) 30%, var(--border-tertiary))',
+                  }}
+                >
                   <TriangleAlert size={19} className="shrink-0" style={{ color: 'var(--error)' }} />
-                  Local server is offline
+                  Local daemon is offline
                 </div>
-                <div className="mt-1 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+                <div className="mt-3.5 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
                   Run this command in a terminal to install Airglow workspace:
                 </div>
                 <div className="mt-2.5 flex items-stretch gap-2">
@@ -2202,8 +2286,8 @@ export default function App() {
                     {HOST_INSTALL_CMD}
                   </pre>
                 </div>
-                <div className="mt-2.5 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
-                  It creates your <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow</code> workspace with instructions <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>AGENTS.md</code> to use Airglow.
+                <div className="mt-3.5 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+                  It creates your <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>~/.airglow</code> workspace containing <code style={{ fontFamily: 'var(--font-mono)', fontSize: '14.5px' }}>AGENTS.md</code> — agent instructions on how to use Airglow.
                 </div>
               </div>
             )}
@@ -2600,27 +2684,25 @@ export default function App() {
                 data-testid="settings-gateway-url-input"
               />
             </div>
-            <div className="py-2 flex items-center justify-between gap-4" data-testid="settings-host-version-row">
-              <div>
-                <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Airglow</div>
-                <div className="text-sm mt-0.5 flex flex-col gap-0.5" style={{ color: 'var(--fg-tertiary)' }}>
-                  <span>Extension: v{chrome.runtime.getManifest().version}</span>
-                  <span style={{ color: hostUpdateError ? 'var(--error)' : undefined }}>
-                    Host: {hostUpdateError ? hostUpdateError
-                      : !hostUpdate ? 'not connected'
-                      : hostUpdate.mode === 'source' ? (import.meta.env.DEV ? `v${hostUpdate.current} — running from source` : `v${hostUpdate.current}`)
-                      : hostUpdating ? `updating to v${hostUpdate.latest}…`
-                      : hostUpdate.updateAvailable ? `v${hostUpdate.current} — v${hostUpdate.latest} available`
-                      : `v${hostUpdate.current}`}
-                  </span>
-                </div>
+            <div className="py-2" data-testid="settings-host-version-row">
+              <div className="text-lg font-medium" style={{ color: 'var(--fg-primary)' }}>Airglow</div>
+              <div className="text-sm mt-0.5 flex flex-col gap-0.5" style={{ color: 'var(--fg-tertiary)' }}>
+                <span>Extension: v{chrome.runtime.getManifest().version}</span>
+                <span style={{ color: hostUpdateError ? 'var(--error)' : undefined }}>
+                  Host: {hostUpdateError ? hostUpdateError
+                    : !hostUpdate ? 'not connected'
+                    : hostUpdate.mode === 'source' ? (import.meta.env.DEV ? `v${hostUpdate.current} — running from source` : `v${hostUpdate.current}`)
+                    : hostUpdating ? `updating to v${hostUpdate.latest}…`
+                    : hostUpdate.updateAvailable ? `v${hostUpdate.current} — v${hostUpdate.latest} available`
+                    : `v${hostUpdate.current}`}
+                </span>
               </div>
               {hostUpdate?.updateAvailable && hostUpdate.mode === 'binary' && (
                 <button
                   type="button"
                   onClick={updateHost}
                   disabled={hostUpdating}
-                  className="shrink-0 h-9 px-4 text-base font-medium rounded-sm cursor-pointer border-0"
+                  className="h-8 px-3 mt-2 text-[15px] font-medium rounded-sm cursor-pointer border-0"
                   style={{
                     background: 'var(--olive)',
                     color: 'var(--bg-white)',
@@ -2698,10 +2780,10 @@ export default function App() {
           >
             <div className="mb-5">
               <h3 className="text-2xl font-bold" style={{ color: 'var(--fg-primary)' }}>
-                {envApps.find((a) => a.appId === secretsApp)?.name ?? 'App'} · Secrets
+                {envApps.find((a) => a.appId === secretsApp)?.name ?? 'App'}
               </h3>
-              <p className="text-sm mt-1" style={{ color: 'var(--fg-tertiary)' }}>
-                Stored on this machine. Values never leave the Airglow daemon.
+              <p className="mt-2 text-[16px]" style={{ color: 'var(--fg-secondary)' }}>
+                Secrets are stored on this machine. Values never leave the Airglow daemon.
               </p>
             </div>
             {envError ? (
