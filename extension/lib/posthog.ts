@@ -88,6 +88,23 @@ export async function getOS(): Promise<string> {
   return osCache;
 }
 
+// Running daemon version for the $identify person properties — lets PostHog
+// split the user base by host version (who's stranded on an old host). Best
+// effort: null when the daemon is offline, in which case the person keeps the
+// last value it reported.
+async function fetchHostVersion(): Promise<string | null> {
+  try {
+    const r = await chrome.storage.local.get('__daemon_origin');
+    const stored = r['__daemon_origin'];
+    const origin = typeof stored === 'string' && stored ? stored : 'http://127.0.0.1:3222';
+    const res = await fetch(`${origin}/api/healthz`, { signal: AbortSignal.timeout(3000) });
+    const body = await res.json();
+    return typeof body?.version === 'string' ? body.version : null;
+  } catch {
+    return null;
+  }
+}
+
 const MAX_PROP_LEN = 500;
 const EMAIL_RE = /[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi;
 const JWT_RE = /eyJ[\w-]+\.[\w-]+\.[\w-]+/g;
@@ -202,6 +219,9 @@ export async function identify(extra: Record<string, PropertyValue> = {}): Promi
     const traits: Record<string, PropertyValue> = { ...sanitizeProperties(extra) };
     if (identity.email) traits.email = identity.email;
     traits.os = await getOS();
+    traits.extension_version = chrome.runtime.getManifest().version;
+    const hostVersion = await fetchHostVersion();
+    if (hostVersion) traits.host_version = hostVersion;
     await postEvent({
       event: '$identify',
       distinct_id: identity.distinctId,
