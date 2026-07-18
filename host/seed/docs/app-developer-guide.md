@@ -59,7 +59,7 @@ Editing `package.json` by hand also works — run `bun install` after; nothing i
     { "file": "userscripts/hn.ts", "matches": ["*://news.ycombinator.com/*"] }
   ],
   "server_env": {
-    "ANTHROPIC_API_KEY": { "label": "Anthropic API Key" }
+    "OPENROUTER_API_KEY": { "label": "OpenRouter API Key" }
   }
 }
 ```
@@ -145,7 +145,7 @@ The default export of `server/<name>.ts` is an RPC endpoint, callable via `airgl
 ```ts
 // server/tag.ts
 export default async function (body: { titles: string[] }) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY;
   return { tags: [/* ... */] };
 }
 ```
@@ -165,7 +165,7 @@ Declare keys in `manifest.server_env`. Missing keys are reported by the daemon a
 
 ```bash
 # apps/<id>/.env — developer fallback
-ANTHROPIC_API_KEY=sk-ant-...
+OPENROUTER_API_KEY=sk-or-...
 ```
 
 Never hardcode keys; never read or print secret values. To check which keys exist, list names only:
