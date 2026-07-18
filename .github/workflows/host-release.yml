@@ -1,12 +1,14 @@
 name: host-release
 
-# Push a host-vX.Y.Z tag (via `bun run bump` in host/) to ship. Bun cross-
-# compiles all three platforms from this single Linux runner, gzips them, and
-# uploads to the public Vercel Blob store (airglow-host) that install.sh reads.
+# DISABLED for tag pushes: macOS binaries must be signed + notarized, and the
+# Developer ID cert lives only on the maintainer's Mac. Releases are built
+# there (host/scripts/build-release.sh signs + notarizes) and uploaded to Blob
+# via `bun run scripts/upload-blob.ts <version>`. Re-enable the tag trigger
+# once signing credentials land in CI secrets — until then this Linux runner
+# would clobber Blob with unsigned darwin binaries (Gatekeeper kills those
+# when downloaded by a browser).
 on:
-  push:
-    tags:
-      - 'host-v*'
+  workflow_dispatch:
 
 permissions:
   contents: read
