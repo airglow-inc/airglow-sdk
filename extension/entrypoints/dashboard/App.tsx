@@ -388,13 +388,23 @@ function InstalledUninstallButton({ busy, onUninstall, testid }: { busy?: boolea
 }
 
 // The globe + interpunct-separated host list under an app's description.
+// Long lists (e.g. every google.* TLD) are elided after the first two hosts;
+// the full list is in the hover title.
 function SiteList({ sites, testid }: { sites: NonNullable<ReturnType<typeof appSites>>; testid?: string }) {
+  const shown = sites.hosts.slice(0, 2);
+  const elided = sites.hosts.length > shown.length;
   return (
-    <div className="mt-2 flex items-center gap-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }} data-testid={testid}>
+    <div
+      className="mt-2 flex items-center gap-1.5 text-sm"
+      style={{ color: 'var(--fg-tertiary)' }}
+      title={elided ? sites.hosts.join(' · ') : undefined}
+      data-testid={testid}
+    >
       <Globe size={15} />
       {sites.anyWebsite ? <span>Any website</span> : (
         <span className="truncate">
-          {sites.hosts.map((h, i) => (<Fragment key={h}>{i > 0 && <span style={{ opacity: 0.45 }}>{' · '}</span>}{h}</Fragment>))}
+          {shown.map((h, i) => (<Fragment key={h}>{i > 0 && <span style={{ opacity: 0.45 }}>{' · '}</span>}{h}</Fragment>))}
+          {elided && <><span style={{ opacity: 0.45 }}>{' · '}</span>…</>}
         </span>
       )}
     </div>
