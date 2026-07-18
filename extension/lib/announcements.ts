@@ -23,7 +23,9 @@ export interface Announcement {
   // Optional: only show when the installed native host's version is <= this
   // (dotted numeric). The recovery channel for hosts with a broken self-update:
   // the host binary can't be reached remotely, but the extension can tell its
-  // user what to run. Skipped when the daemon is offline (host version unknown).
+  // user what to run. Matched against the live daemon version, or the last one
+  // it ever reported when it's offline (a bricked host must still match).
+  // Hidden only when no host was ever seen.
   maxHostVersion?: string;
   // Optional epoch ms; hidden once now >= expiresAt.
   expiresAt?: number;

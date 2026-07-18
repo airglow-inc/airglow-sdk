@@ -17,7 +17,7 @@ import {
   pickAnnouncement,
   type Announcement,
 } from '../lib/announcements';
-import { fetchHostVersion } from '../lib/host-probe';
+import { fetchHostVersionOrLast } from '../lib/host-probe';
 
 // Inline-styled markdown so the banner renders identically in any entrypoint
 // without depending on a page-level `.md` stylesheet. Restricted to text/link
@@ -49,7 +49,7 @@ export function AnnouncementBanner({ override, compact }: { override?: Announcem
       const version = chrome.runtime.getManifest().version;
       // Only probe the daemon when some announcement actually gates on host
       // version — the common no-announcements path stays fetch-free.
-      const hostVersion = list.some((a) => a?.maxHostVersion) ? await fetchHostVersion() : null;
+      const hostVersion = list.some((a) => a?.maxHostVersion) ? await fetchHostVersionOrLast() : null;
       if (cancelled) return;
       setActive(pickAnnouncement(list, { installedAt, dismissed, version, now: Date.now(), hostVersion }));
     };
