@@ -643,12 +643,27 @@ export default function App() {
     const p = new URLSearchParams(window.location.search).get('page');
     return p === 'logs' ? 'logs' : 'apps';
   });
+  // In-page navigations push real history entries so the browser Back button
+  // walks dashboard views instead of leaving the page. Click handlers chain
+  // navigation calls (e.g. openApp(null); setTab('installed')), so URL writes
+  // coalesce per tick: the first pushes, the rest replace — one entry per click.
+  const urlPushedThisTick = useRef(false);
+  function commitUrl(url: URL) {
+    const href = url.toString();
+    if (href === window.location.href) return;
+    if (urlPushedThisTick.current) history.replaceState(null, '', href);
+    else {
+      history.pushState(null, '', href);
+      urlPushedThisTick.current = true;
+      queueMicrotask(() => { urlPushedThisTick.current = false; });
+    }
+  }
   function setPage(p: 'apps' | 'logs') {
     _setPage(p);
     const url = new URL(window.location.href);
     if (p === 'apps') url.searchParams.delete('page');
     else url.searchParams.set('page', p);
-    history.replaceState(null, '', url.toString());
+    commitUrl(url);
   }
   const [apps, setApps] = useState<AppManifest[] | null>(null);
   const [error, setError] = useState(false);
@@ -806,7 +821,7 @@ export default function App() {
     url.searchParams.delete('catalogApp');
     if (appId) url.searchParams.set('app', appId);
     else url.searchParams.delete('app');
-    history.replaceState(null, '', url.toString());
+    commitUrl(url);
   }
 
   // Switch the Installed/Catalog/Archive tab, stamped in the URL (?page=).
@@ -815,7 +830,7 @@ export default function App() {
     const url = new URL(window.location.href);
     if (tab === 'installed') url.searchParams.delete('page');
     else url.searchParams.set('page', tab);
-    history.replaceState(null, '', url.toString());
+    commitUrl(url);
   }
 
   // Open/close the catalog detail page, mirrored in the URL (?catalogApp=).
@@ -824,7 +839,7 @@ export default function App() {
     const url = new URL(window.location.href);
     if (id) url.searchParams.set('catalogApp', id);
     else url.searchParams.delete('catalogApp');
-    history.replaceState(null, '', url.toString());
+    commitUrl(url);
   }
 
   // Honor ?page= for cross-surface navigation from an app page's sidebar
@@ -833,6 +848,23 @@ export default function App() {
     const p = new URLSearchParams(window.location.search).get('page');
     if (p === 'catalog') { void loadCatalog(); }
     else if (p === 'settings') { setSettingsOpen(true); }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Browser Back/Forward: re-derive the whole view from the restored URL.
+  useEffect(() => {
+    const onPop = () => {
+      const q = new URLSearchParams(window.location.search);
+      const p = q.get('page');
+      _setPage(p === 'logs' ? 'logs' : 'apps');
+      setActiveTab(p === 'catalog' || p === 'archive' ? p : 'installed');
+      setCatalogOpenId(q.get('catalogApp'));
+      setOpenAppId(q.get('app'));
+      setAppPage(q.get('appPage'));
+      if (p === 'catalog') void loadCatalog();
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
