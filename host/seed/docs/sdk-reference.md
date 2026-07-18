@@ -120,7 +120,7 @@ const res = await airglow.llm.chat({
 const text = res.choices[0].message.content;
 ```
 
-Web search / fetch: add [server tools](https://openrouter.ai/docs/guides/features/plugins/web-search) — `tools: [{ type: 'openrouter:web_search' }, { type: 'openrouter:web_fetch' }]` — and the model searches agentically (0–N times, choosing its own queries) and fetches full pages, executed server-side. Citations arrive in `message.annotations`; searches bill to the weekly budget (`usage.server_tool_use_details` reports counts). Options: `{ type: 'openrouter:web_search', parameters: { max_results?, allowed_domains? } }`. Alternative: `plugins: [{ id: 'web' }]` runs one search up front on every call (the model has no say). Either form gets a longer timeout.
+Web search / fetch: add [server tools](https://openrouter.ai/docs/guides/features/plugins/web-search) — `tools: [{ type: 'openrouter:web_search' }, { type: 'openrouter:web_fetch' }]` — and the model searches agentically (0–N times, choosing its own queries) and fetches full pages, executed server-side. Citations arrive in `message.annotations`; searches bill to the weekly budget (`usage.server_tool_use_details` reports counts). Options: `{ type: 'openrouter:web_search', parameters: { max_results?, allowed_domains? } }`. Calls carrying these tools get a longer timeout.
 
 Tools: standard OpenAI `tools` / `tool_choice`; the model returns `message.tool_calls`, you run them and send `role: "tool"` messages back on the next call.
 

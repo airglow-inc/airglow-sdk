@@ -115,8 +115,7 @@ interface AirglowLlm {
    * 'openrouter:web_search' }, { type: 'openrouter:web_fetch' }]` — and the
    * model searches (0-N times, choosing its own queries) and fetches URLs as
    * it sees fit, server-side. Citations arrive in `message.annotations`.
-   * Alternative: `plugins: [{ id: 'web' }]` runs one search up front on every
-   * call (the model has no say). Either form gets a longer timeout.
+   * Calls carrying these tools get a longer timeout.
    *
    * Tools: standard OpenAI `tools` / `tool_choice`; the model returns
    * `message.tool_calls`, you run them and send `role: 'tool'` messages back
@@ -136,7 +135,6 @@ interface AirglowLlm {
   chat(payload: Record<string, any> & {
     model?: string;
     messages: { role: string; content: any; [key: string]: any }[];
-    plugins?: Record<string, any>[];
   }, opts?: {
     /** Called with each raw stream chunk as the call streams. */
     onEvent?: (chunk: Record<string, any>) => void;
