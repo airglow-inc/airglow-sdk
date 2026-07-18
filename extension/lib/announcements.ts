@@ -20,6 +20,11 @@ export interface Announcement {
   audience?: 'existing' | 'all';
   // Optional: only show on extension versions >= this (dotted numeric).
   minVersion?: string;
+  // Optional: only show when the installed native host's version is <= this
+  // (dotted numeric). The recovery channel for hosts with a broken self-update:
+  // the host binary can't be reached remotely, but the extension can tell its
+  // user what to run. Skipped when the daemon is offline (host version unknown).
+  maxHostVersion?: string;
   // Optional epoch ms; hidden once now >= expiresAt.
   expiresAt?: number;
 }
@@ -44,14 +49,16 @@ function versionGte(a: string, b: string): boolean {
 // (for `existing` audience) ones that predate this install, then take newest.
 export function pickAnnouncement(
   list: Announcement[],
-  opts: { installedAt: number; dismissed: string[]; version: string; now: number },
+  opts: { installedAt: number; dismissed: string[]; version: string; now: number; hostVersion?: string | null },
 ): Announcement | null {
-  const { installedAt, dismissed, version, now } = opts;
+  const { installedAt, dismissed, version, now, hostVersion } = opts;
   const eligible = (Array.isArray(list) ? list : []).filter((a) => {
     if (!a || typeof a.id !== 'string' || typeof a.publishedAt !== 'number') return false;
     if (dismissed.includes(a.id)) return false;
     if (typeof a.expiresAt === 'number' && now >= a.expiresAt) return false;
     if (a.minVersion && !versionGte(version, a.minVersion)) return false;
+    // host <= max ⇔ max >= host. Unknown host (daemon offline) → not shown.
+    if (a.maxHostVersion && !(hostVersion && versionGte(a.maxHostVersion, hostVersion))) return false;
     const audience = a.audience ?? 'existing';
     if (audience !== 'all' && !(a.publishedAt > installedAt)) return false;
     return true;

@@ -17,6 +17,7 @@ import {
   pickAnnouncement,
   type Announcement,
 } from '../lib/announcements';
+import { fetchHostVersion } from '../lib/host-probe';
 
 // Inline-styled markdown so the banner renders identically in any entrypoint
 // without depending on a page-level `.md` stylesheet. Restricted to text/link
@@ -46,7 +47,11 @@ export function AnnouncementBanner({ override, compact }: { override?: Announcem
       const dismissed: string[] = Array.isArray(r[ANNOUNCEMENTS_DISMISSED_KEY]) ? r[ANNOUNCEMENTS_DISMISSED_KEY] : [];
       const installedAt: number = typeof r[INSTALLED_AT_KEY] === 'number' ? r[INSTALLED_AT_KEY] : 0;
       const version = chrome.runtime.getManifest().version;
-      setActive(pickAnnouncement(list, { installedAt, dismissed, version, now: Date.now() }));
+      // Only probe the daemon when some announcement actually gates on host
+      // version — the common no-announcements path stays fetch-free.
+      const hostVersion = list.some((a) => a?.maxHostVersion) ? await fetchHostVersion() : null;
+      if (cancelled) return;
+      setActive(pickAnnouncement(list, { installedAt, dismissed, version, now: Date.now(), hostVersion }));
     };
     void recompute();
     const onChange = (changes: Record<string, chrome.storage.StorageChange>) => {

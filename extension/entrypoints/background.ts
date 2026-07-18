@@ -9,7 +9,8 @@ import * as posthog from '../lib/posthog';
 import { USER_EMAIL_KEY, ensureIdentity, normalizeUserEmail } from '../lib/airglow-identity';
 import { AUTH_SESSION_KEY, ensureSession, getStoredSession, signInWithGoogle } from '../lib/airglow-auth';
 import { CLOUD_API_URL_OVERRIDE_KEY, getCloudApiOverride, getCloudApiUrl } from '../lib/cloud-api';
-import { ANNOUNCEMENTS_CACHE_KEY, ANNOUNCEMENTS_DISMISSED_KEY, INSTALLED_AT_KEY, pickAnnouncement } from '../lib/announcements';
+import { ANNOUNCEMENTS_CACHE_KEY, ANNOUNCEMENTS_DISMISSED_KEY, INSTALLED_AT_KEY, pickAnnouncement, type Announcement } from '../lib/announcements';
+import { fetchHostVersion } from '../lib/host-probe';
 import { EXT_UPDATE_KEY, checkForExtUpdate } from '../lib/ext-update';
 
 export default defineBackground(() => {
@@ -1576,7 +1577,8 @@ ${code}
       const list = Array.isArray(r[ANNOUNCEMENTS_CACHE_KEY]) ? r[ANNOUNCEMENTS_CACHE_KEY] : [];
       const dismissed = Array.isArray(r[ANNOUNCEMENTS_DISMISSED_KEY]) ? r[ANNOUNCEMENTS_DISMISSED_KEY] : [];
       const installedAt = typeof r[INSTALLED_AT_KEY] === 'number' ? r[INSTALLED_AT_KEY] : 0;
-      const active = pickAnnouncement(list, { installedAt, dismissed, version: chrome.runtime.getManifest().version, now: Date.now() });
+      const hostVersion = list.some((a: Announcement | null) => a?.maxHostVersion) ? await fetchHostVersion() : null;
+      const active = pickAnnouncement(list, { installedAt, dismissed, version: chrome.runtime.getManifest().version, now: Date.now(), hostVersion });
       if (active) {
         await chrome.action.setBadgeText({ text: '!' });
         await chrome.action.setBadgeBackgroundColor({ color: '#DC2626' });

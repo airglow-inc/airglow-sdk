@@ -1,6 +1,7 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle } from 'lucide-react';
+import { AnnouncementBanner } from '../../components/AnnouncementBanner';
 
 // GitHub mark (lucide deprecated its brand icons).
 function GithubLogo({ size }: { size: number }) {
@@ -2083,6 +2084,9 @@ export default function App() {
 
       {/* Main content */}
       <main className="ml-[240px] flex-1 p-8 min-w-0 overflow-x-hidden">
+        {/* Server-driven announcement (Edge Config → /api/announcement →
+            background poll → storage cache). Renders nothing when inactive. */}
+        <AnnouncementBanner />
         {!identityLoaded ? (
           <div className="p-5 rounded-[var(--radius-md)] border text-base" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', color: 'var(--fg-secondary)', boxShadow: 'var(--shadow-card)' }}>
             Loading Airglow setup…
