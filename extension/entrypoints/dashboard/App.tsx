@@ -721,6 +721,9 @@ export default function App() {
   } | null>(null);
   const [hostUpdating, setHostUpdating] = useState(false);
   const [hostUpdateError, setHostUpdateError] = useState<string | null>(null);
+  // Version just installed via the Update button — shows a brief confirmation
+  // where the button was (it otherwise vanishes with no feedback).
+  const [hostUpdated, setHostUpdated] = useState<string | null>(null);
 
   // Connected accounts (third-party tool connections, scoped per app).
   // Loaded from the daemon when Settings opens.
@@ -1272,6 +1275,11 @@ export default function App() {
           if (s?.version === target) {
             setHostUpdate({ current: target, latest: target, updateAvailable: false, mode: 'binary' });
             setHostUpdating(false);
+            setHostUpdated(target);
+            setTimeout(() => setHostUpdated(null), 12_000);
+            // Poke useHostVersion so the sidebar version line refreshes now
+            // instead of on its 15s poll.
+            void chrome.storage.local.set({ __host_version_poke: Date.now() });
             return;
           }
         } catch {}
@@ -2026,6 +2034,16 @@ export default function App() {
               <Download size={17} className="shrink-0" />
               {hostUpdating ? 'Updating…' : 'Update Airglow'}
             </button>
+          )}
+          {hostUpdated && !hostUpdate?.updateAvailable && (
+            <div
+              className="flex items-center gap-2 w-fit mx-auto mt-2 h-10 px-4 rounded-lg text-base font-semibold"
+              style={{ color: 'var(--olive)' }}
+              data-testid="sidebar-host-updated"
+            >
+              <Check size={17} className="shrink-0" />
+              Updated to v{hostUpdated}
+            </div>
           )}
         </div>
 

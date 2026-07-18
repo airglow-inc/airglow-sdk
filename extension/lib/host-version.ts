@@ -28,7 +28,7 @@ export function useHostVersion(): string | null {
     void probe();
     const id = setInterval(() => { void probe(); }, 15000);
     const onChange = (c: Record<string, chrome.storage.StorageChange>) => {
-      if (DAEMON_ORIGIN_KEY in c || '__native_host_connected' in c) void probe();
+      if (DAEMON_ORIGIN_KEY in c || '__native_host_connected' in c || '__host_version_poke' in c) void probe();
     };
     chrome.storage.local.onChanged.addListener(onChange);
     return () => { alive = false; clearInterval(id); chrome.storage.local.onChanged.removeListener(onChange); };
