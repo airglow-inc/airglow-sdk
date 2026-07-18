@@ -1376,6 +1376,8 @@ export default function App() {
     setArchivedApps((prev) => new Set(prev).add(appId));
     setDisabledApps((prev) => new Set(prev).add(appId));
     chrome.runtime.sendMessage({ type: 'airglow:set-app-archived', appId, archived: true });
+    // Archived apps have no page — archiving the open app returns to the gallery.
+    if (openAppId === appId) openApp(null);
   }
 
   function unarchiveApp(appId: string) {
@@ -1531,10 +1533,51 @@ export default function App() {
     );
   }
 
+  // RULE: every per-app action button (Uninstall, Secrets, Edit locally,
+  // Archive, and any future one) is defined here and ONLY here. Both surfaces
+  // that show an installed app — the gallery card (AppCard) and the app page
+  // header (AppView) — render this same row, so a button added to one can
+  // never be missing from the other. Do not inline action buttons in either.
+  function AppActions({ app }: { app: AppManifest }) {
+    const hasSecrets = (envApps.find((a) => a.appId === app.id)?.keys.length ?? 0) > 0;
+    return (
+      <>
+        <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={uninstalling === app.id} onClick={() => setConfirmUninstall(app)} testid={`app-uninstall-${app.id}`}>
+          {uninstalling === app.id ? 'Removing…' : 'Uninstall'}
+        </ActionButton>
+        {hasSecrets && (
+          <ActionButton tone="neutral" variant="outline" icon={KeyRound} onClick={() => openSecrets(app.id)} testid={`app-secrets-${app.id}`}>
+            Secrets
+          </ActionButton>
+        )}
+        {app._sourceType === 'cloud' && localOnline && (
+          <Tooltip content={<span>Copies the source into ~/.airglow/apps — your local copy then serves the app.</span>}>
+            <ActionButton
+              tone="neutral"
+              variant="outline"
+              icon={Download}
+              disabled={installing === app.id}
+              onClick={() => installCatalogApp(app.id, { daemon: true })}
+              testid={`edit-locally-${app.id}`}
+            >
+              Edit locally
+            </ActionButton>
+          </Tooltip>
+        )}
+        <span className="ml-auto">
+          <Tooltip content={<span>Disable and move to the Archive section.</span>}>
+            <ActionButton tone="neutral" variant="outline" icon={Archive} onClick={() => archiveApp(app.id)} testid={`app-archive-${app.id}`}>
+              Archive
+            </ActionButton>
+          </Tooltip>
+        </span>
+      </>
+    );
+  }
+
   function AppCard({ app, section, index, list }: { app: AppManifest; section?: string; index?: number; list?: AppManifest[] }) {
     const disabled = disabledApps.has(app.id);
     const missing = getMissingSecrets(app);
-    const hasSecrets = (envApps.find((a) => a.appId === app.id)?.keys.length ?? 0) > 0;
     const sites = appSites(app);
     const prov = provenance[app.id];
     const catalogEntry = catalogApps?.find((c) => c.id === app.id);
@@ -1595,37 +1638,7 @@ export default function App() {
             </Tooltip>
           )}
         </>}
-        actions={<>
-          <ActionButton tone="danger" variant="outline" icon={Trash2} disabled={uninstalling === app.id} onClick={() => setConfirmUninstall(app)}>
-            {uninstalling === app.id ? 'Removing…' : 'Uninstall'}
-          </ActionButton>
-          {hasSecrets && (
-            <ActionButton tone="neutral" variant="outline" icon={KeyRound} onClick={() => openSecrets(app.id)} testid={`app-secrets-${app.id}`}>
-              Secrets
-            </ActionButton>
-          )}
-          {app._sourceType === 'cloud' && localOnline && (
-            <Tooltip content={<span>Copies the source into ~/.airglow/apps — your local copy then serves the app.</span>}>
-              <ActionButton
-                tone="neutral"
-                variant="outline"
-                icon={Download}
-                disabled={installing === app.id}
-                onClick={() => installCatalogApp(app.id, { daemon: true })}
-                testid={`edit-locally-${app.id}`}
-              >
-                Edit locally
-              </ActionButton>
-            </Tooltip>
-          )}
-          <span className="ml-auto">
-            <Tooltip content={<span>Disable and move to the Archive section.</span>}>
-              <ActionButton tone="neutral" variant="outline" icon={Archive} onClick={() => archiveApp(app.id)} testid={`app-archive-${app.id}`}>
-                Archive
-              </ActionButton>
-            </Tooltip>
-          </span>
-        </>}
+        actions={AppActions({ app })}
       />
     );
   }
@@ -1860,7 +1873,6 @@ export default function App() {
     const app = local.find((a) => a.id === appId);
     const disabled = disabledApps.has(appId);
     const prov = provenance[appId];
-    const hasSecrets = (envApps.find((a) => a.appId === appId)?.keys.length ?? 0) > 0;
     const sites = appSites(app);
     const name = app?.name ?? appId;
     return (
@@ -1880,16 +1892,9 @@ export default function App() {
           </div>
           {app?.description && <p className="mt-1.5 text-[15px] leading-relaxed max-w-2xl" style={{ color: 'var(--fg-secondary)' }}>{app.description}</p>}
           {sites && <SiteList sites={sites} testid="app-sites" />}
-          <div className="flex items-center gap-2 mt-4">
-            <ActionButton tone="danger" variant="outline" icon={Trash2} onClick={() => app && setConfirmUninstall(app)} testid="app-uninstall">
-              Uninstall
-            </ActionButton>
-            {hasSecrets && (
-              <ActionButton tone="neutral" variant="outline" icon={KeyRound} onClick={() => openSecrets(appId)} testid="app-secrets">
-                Secrets
-              </ActionButton>
-            )}
-          </div>
+          {/* Same shared action row as the gallery card — see the RULE on
+              AppActions before adding any button here. */}
+          {app && <div className="flex items-center gap-2 mt-4">{AppActions({ app })}</div>}
         </header>
         {(app?._source?.url ?? daemonOriginUrl)
           ? <AppFrame appId={appId} origin={app?._source?.url ?? daemonOriginUrl!} page={appPage} autoHeight />
