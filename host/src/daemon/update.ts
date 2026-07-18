@@ -40,6 +40,9 @@ export interface UpdateCheck {
   current: string;
   latest: string | null;
   updateAvailable: boolean;
+  // An update is being downloaded/swapped right now (or awaiting takeover) —
+  // lets a freshly-loaded dashboard resume showing "Updating…".
+  updating: boolean;
   // 'source' runs can't self-update; 'unsupported' = no binary for platform.
   mode: 'binary' | 'source' | 'unsupported';
   tag?: string;
@@ -48,7 +51,7 @@ export interface UpdateCheck {
 }
 
 export async function checkForUpdate(): Promise<UpdateCheck> {
-  const base: UpdateCheck = { current: HOST_VERSION, latest: null, updateAvailable: false, mode: 'binary' };
+  const base: UpdateCheck = { current: HOST_VERSION, latest: null, updateAvailable: false, updating: updateState !== 'idle', mode: 'binary' };
   if (!isCompiledBinary()) return { ...base, mode: 'source' };
   const asset = platformAsset();
   if (!asset) return { ...base, mode: 'unsupported' };
@@ -118,7 +121,10 @@ async function doPerformUpdate(workspace?: string): Promise<{ updatingTo: string
   const check = await checkForUpdate();
   if (check.mode === 'source') throw new Error('running from source — update with git, not self-update');
   if (check.mode === 'unsupported') throw new Error(`no release binary for ${process.platform}/${process.arch}`);
-  if (!check.updateAvailable || !check.assetUrl || !check.latest) {
+  // Freshness via isNewer directly — check.updateAvailable is gated on
+  // updateState being idle, which it never is here (performUpdate set it to
+  // 'updating' before calling us).
+  if (!check.latest || !check.assetUrl || !isNewer(check.latest, HOST_VERSION)) {
     throw new Error(`already up to date (v${HOST_VERSION})`);
   }
 
