@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle, Archive, ArchiveRestore } from 'lucide-react';
+import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, CalendarClock, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle, Archive, ArchiveRestore } from 'lucide-react';
 import { AnnouncementBanner } from '../../components/AnnouncementBanner';
 import type { Announcement } from '../../lib/announcements';
 
@@ -33,6 +33,7 @@ import logoUrl from '../../lib/branding/icon.svg';
 // Chrome's "Extensions" toolbar icon — Material Symbols "extension" (outlined).
 // (Apache 2.0, https://fonts.google.com/icons?icon.query=extension)
 import LogsPage from './LogsPage';
+import JobsPage from './JobsPage';
 import { FeedbackModal } from '../../components/FeedbackModal';
 import { SetupBanners, type SetupStep } from '../../components/SetupBanners';
 import { UserScriptsOverlay } from '../../components/UserScriptsOverlay';
@@ -639,9 +640,9 @@ function AppFrame({ appId, origin, page, autoHeight }: { appId: string; origin: 
 }
 
 export default function App() {
-  const [page, _setPage] = useState<'apps' | 'logs'>(() => {
+  const [page, _setPage] = useState<'apps' | 'logs' | 'jobs'>(() => {
     const p = new URLSearchParams(window.location.search).get('page');
-    return p === 'logs' ? 'logs' : 'apps';
+    return p === 'logs' || p === 'jobs' ? p : 'apps';
   });
   // In-page navigations push real history entries so the browser Back button
   // walks dashboard views instead of leaving the page. Click handlers chain
@@ -658,7 +659,7 @@ export default function App() {
       queueMicrotask(() => { urlPushedThisTick.current = false; });
     }
   }
-  function setPage(p: 'apps' | 'logs') {
+  function setPage(p: 'apps' | 'logs' | 'jobs') {
     _setPage(p);
     const url = new URL(window.location.href);
     if (p === 'apps') url.searchParams.delete('page');
@@ -856,7 +857,7 @@ export default function App() {
     const onPop = () => {
       const q = new URLSearchParams(window.location.search);
       const p = q.get('page');
-      _setPage(p === 'logs' ? 'logs' : 'apps');
+      _setPage(p === 'logs' || p === 'jobs' ? p : 'apps');
       setActiveTab(p === 'catalog' || p === 'archive' ? p : 'installed');
       setCatalogOpenId(q.get('catalogApp'));
       setOpenAppId(q.get('app'));
@@ -2106,6 +2107,22 @@ export default function App() {
                   </span>
                 )}
               </button>
+              <button
+                type="button"
+                onClick={() => { openApp(null); setPage('jobs'); }}
+                className="w-full h-10 px-3 rounded-lg text-base font-medium cursor-pointer transition-colors border flex items-center gap-2"
+                style={{
+                  color: page === 'jobs' ? 'var(--fg-primary)' : 'var(--fg-secondary)',
+                  borderColor: 'var(--border-secondary)',
+                  background: page === 'jobs' ? 'var(--bg-tertiary)' : 'var(--bg-primary)',
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'var(--bg-tertiary)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = page === 'jobs' ? 'var(--bg-tertiary)' : 'var(--bg-primary)'; }}
+                data-testid="nav-jobs"
+              >
+                <CalendarClock size={16} />
+                Jobs
+              </button>
               {/* Dev-only shortcut to the component mock gallery (planmock.html). */}
               {import.meta.env.DEV && (
                 <button
@@ -2269,6 +2286,8 @@ export default function App() {
           </div>
         ) : page === 'logs' ? (
           <LogsPage />
+        ) : page === 'jobs' ? (
+          <JobsPage />
         ) : openAppId ? (
           // Invoke AppView as a function rather than <AppView/>. AppView is
           // defined inside App, so as a JSX element its type changes every

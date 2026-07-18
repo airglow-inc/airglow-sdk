@@ -24,6 +24,7 @@ import { SessionManager, stripImagesForTransport, type EventSink, type UserImage
 import type { AgentEvent } from '../agent/types';
 import type { AgentIdentity } from '../agent/api';
 import { AppServer } from './apps';
+import { JobScheduler } from './jobs';
 import { CatalogService } from './catalog';
 import { reportApps, reportInstalls, type AppMeta } from './telemetry';
 import { dedupeWorkspaceApps } from './dedupe-deps';
@@ -273,6 +274,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
   // singleton bundles twice → "Invalid hook call" at render. See dedupe-deps.ts.
   dedupeWorkspaceApps(workspace);
   const apps = new AppServer(workspace);
+  const jobs = new JobScheduler(workspace, apps);
   const catalog = new CatalogService(workspace, apps);
   const bridge = new BrowserBridge();
   const connectors = new ConnectorService(workspace);
@@ -897,6 +899,28 @@ export async function runDaemon(argv: string[]): Promise<void> {
         return respondJson(404, { error: 'unknown connectors endpoint' });
       }
 
+      // Scheduled jobs (manifest `jobs`): list, run history, run-now.
+      if (pathname === '/api/jobs' && req.method === 'GET') {
+        return respondJson(200, { ok: true, jobs: await jobs.listJobs() });
+      }
+      if (pathname === '/api/jobs/runs' && req.method === 'GET') {
+        const limit = Number(url.searchParams.get('limit') || 50);
+        const runs = jobs.listRuns(
+          url.searchParams.get('appId') || undefined,
+          url.searchParams.get('jobId') || undefined,
+          Number.isFinite(limit) ? limit : 50,
+        );
+        return respondJson(200, { ok: true, runs });
+      }
+      if (pathname === '/api/jobs/run' && req.method === 'POST') {
+        const body: any = await req.json().catch(() => null);
+        if (typeof body?.appId !== 'string' || typeof body?.jobId !== 'string') {
+          return respondJson(400, { error: 'expected { appId, jobId }' });
+        }
+        const result = await jobs.runNow(body.appId, body.jobId);
+        return result.ok ? respondJson(200, result) : respondJson(409, { error: result.error });
+      }
+
       // Browser bridge: POST /api/browser/<cmd> with JSON args.
       const browserMatch = pathname.match(/^\/api\/browser\/([a-z]+)$/);
       if (browserMatch && req.method === 'POST') {
@@ -1015,6 +1039,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
   }
 
   apps.daemonOrigin = () => `http://127.0.0.1:${server.port}`;
+  jobs.start();
 
   const record: DaemonRecord = {
     pid: process.pid,
@@ -1031,6 +1056,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
   try { chmodSync(DAEMON_RECORD_PATH, 0o600); } catch {}
 
   const cleanup = () => {
+    jobs.stop();
     try {
       const rec = readDaemonRecord();
       if (rec?.pid === process.pid) unlinkSync(DAEMON_RECORD_PATH);

@@ -75,6 +75,7 @@ Editing `package.json` by hand also works — run `bun install` after; nothing i
 | `userscripts[]` | array | `{ file, matches, allFrames?, runAt?, world? }`. `matches` uses [Chrome match patterns](https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns); `runAt` defaults to `"document_idle"`; `world` defaults to `"USER_SCRIPT"` (`"MAIN"` runs in the page realm — see Userscripts below). |
 | `secrets` | object | Client-scoped secrets. Each entry `{ label, description? }`. Surfaced in the Secrets UI and as "Client keys" callouts; read via `airglow.storage.get('KEY')`. |
 | `server_env` | object | Server-scoped env vars. Each entry `{ label, description? }`. Missing keys are reported by the daemon and prompted per app; read via `process.env.KEY` in `server/*.ts` only. Declarative — not enforced. |
+| `jobs[]` | array | Scheduled jobs: `{ id, title?, schedule, entry, runsOn?, config? }`. See Scheduled jobs below. |
 
 ---
 
@@ -91,6 +92,49 @@ const titles = document.querySelectorAll('.titleline > a');
 ### `world: "MAIN"`
 
 `"world": "MAIN"` runs a userscript in the page's own realm — needed to patch page globals (`window.fetch`, `WebSocket`, event handlers) or to run under a strict CSP that blocks injected scripts. A MAIN-world script has **no `airglow.*`** and shares the page's globals, so keep DOM/UI/SDK work in a separate default-world script.
+
+---
+
+## Scheduled jobs
+
+Jobs run on a timer with no browser interaction — e.g. a daily email. Declare them in the manifest:
+
+```json
+"jobs": [
+  { "id": "send-daily-email", "title": "Send daily email",
+    "schedule": "daily", "entry": "jobs/send-email.ts",
+    "config": { "to": "team@example.com" } }
+]
+```
+
+| Field | Purpose |
+|---|---|
+| `id` | Unique within the app (`[\w-]+`). |
+| `title` | Shown in the dashboard Jobs tab. Default: the id. |
+| `schedule` | `"hourly"` \| `"daily"` \| `"weekly"`. |
+| `entry` | Path (app-relative) to the job file. |
+| `runsOn` | `"daemon"` (default) — runs on the user's machine; `"cloud"` — runs on Airglow's backend, works without the native host. |
+| `config` | Static JSON passed to the entry as its argument. |
+
+The entry default-exports an async function. Its return value becomes the run's summary in the dashboard; a throw marks the run failed; `console.*` output is captured into the run record:
+
+```ts
+// jobs/send-email.ts
+export default async function run(config: { to: string }) {
+  const r = await airglow.connectors.execute('GMAIL_SEND_EMAIL', {
+    recipient_email: config.to, subject: 'Daily update', body: '…',
+  });
+  if (!r.successful) throw new Error(r.error ?? 'send failed');
+  return `sent to ${config.to}`;
+}
+```
+
+Scheduling is interval-since-last-run, not wall-clock cron: a job runs when its interval has elapsed since the previous run, catches up after sleep/downtime, and a newly installed job runs within a minute (instant feedback). Runs appear in the dashboard **Jobs** tab, where every job also has a **Run now** button — use it while developing instead of waiting for the schedule.
+
+- `runsOn: "daemon"` — the entry runs like a server function: `airglow.connectors` / `airglow.llm` / `airglow.log` available, `process.env` from the app's secrets. Requires the user's machine to be awake.
+- `runsOn: "cloud"` — for jobs needing no local state; runs even when the user's machine is off. Cloud jobs are **connectors-only** for now (no `airglow.llm`, no filesystem, no daemon APIs) and only run for catalog-published apps. Locally, **Run now** still executes them on the daemon for testing.
+
+From the terminal: `curl "http://127.0.0.1:$port/api/jobs"` lists jobs with last-run status; `curl -X POST "http://127.0.0.1:$port/api/jobs/run" -d '{"appId":"<id>","jobId":"<job>"}'` runs one; `curl "http://127.0.0.1:$port/api/jobs/runs?appId=<id>"` shows run history (including captured console output).
 
 ---
 

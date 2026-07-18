@@ -489,6 +489,60 @@ export class AppServer {
     return [200, res.result];
   }
 
+  // Run an arbitrary app entry file (scheduled-job entries) through the same
+  // fresh-subprocess path as server functions. Unlike handleRpc it returns the
+  // captured console output (the runner rebinds console to stderr) so the
+  // caller can attach it to a run record.
+  async execServerEntry(
+    appId: string,
+    entryRel: string,
+    body: any,
+  ): Promise<{ ok: boolean; result?: any; error?: string; log: string }> {
+    if (entryRel.includes('..') || entryRel.startsWith('/')) {
+      return { ok: false, error: 'invalid entry path', log: '' };
+    }
+    const appRoot = await this.resolveAppDir(appId);
+    if (!appRoot) return { ok: false, error: `app ${appId} not found`, log: '' };
+    let entryPath = '';
+    for (const candidate of [entryRel, `${entryRel}.ts`, `${entryRel}.js`]) {
+      const p = join(appRoot, candidate);
+      if (existsSync(p)) { entryPath = p; break; }
+    }
+    if (!entryPath) return { ok: false, error: `entry '${entryRel}' not found`, log: '' };
+
+    const proc = Bun.spawn(selfCommand('internal-rpc'), {
+      cwd: appRoot,
+      env: {
+        ...process.env,
+        AIRGLOW_APP_ID: appId,
+        ...(this.daemonOrigin ? { AIRGLOW_DAEMON_ORIGIN: this.daemonOrigin() } : {}),
+      },
+      stdin: new Blob([JSON.stringify({
+        entryPath,
+        functionName: 'default',
+        body,
+        envFiles: [this.uiSecretsPath(appId), join(appRoot, '.env')],
+      })]),
+      stdout: 'pipe',
+      stderr: 'pipe',
+      timeout: 120_000,
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]);
+    const log = stderr.trim();
+    if (exitCode !== 0) return { ok: false, error: `job crashed (exit ${exitCode})`, log };
+    try {
+      const res = parseLastJsonLine(stdout);
+      if (!res.ok) return { ok: false, error: String(res.error ?? 'job failed'), log };
+      return { ok: true, result: res.result, log };
+    } catch (e: any) {
+      return { ok: false, error: String(e?.message ?? e), log };
+    }
+  }
+
   // UI-entered secrets live in a daemon-owned per-app file, outside the app
   // directory — they survive app re-downloads and the agent never touches
   // state/. Highest precedence in env resolution.

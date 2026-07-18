@@ -163,6 +163,7 @@ export class CatalogService {
       rmSync(target, { recursive: true, force: true });                                  // the app folder
       rmSync(this.sidecarPath(appId), { force: true });                                  // catalog provenance
       rmSync(join(this.workspace, 'state', 'secrets', `${appId}.env`), { force: true }); // UI-entered secrets
+      rmSync(join(this.workspace, 'state', 'jobs', `${appId}.jsonl`), { force: true });  // job run records
       await this.apps.scanManifests(); // drop it from the served list immediately
       return { ok: true };
     } catch (e) {
