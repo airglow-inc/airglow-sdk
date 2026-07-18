@@ -1538,7 +1538,9 @@ export default function App() {
   // that show an installed app — the gallery card (AppCard) and the app page
   // header (AppView) — render this same row, so a button added to one can
   // never be missing from the other. Do not inline action buttons in either.
-  function AppActions({ app }: { app: AppManifest }) {
+  // archiveInline: cards push Archive to the far right (ml-auto); the app page
+  // header is full-width, so there it sits inline with the other buttons.
+  function AppActions({ app, archiveInline }: { app: AppManifest; archiveInline?: boolean }) {
     const hasSecrets = (envApps.find((a) => a.appId === app.id)?.keys.length ?? 0) > 0;
     return (
       <>
@@ -1564,7 +1566,7 @@ export default function App() {
             </ActionButton>
           </Tooltip>
         )}
-        <span className="ml-auto">
+        <span className={archiveInline ? undefined : 'ml-auto'}>
           <Tooltip content={<span>Disable and move to the Archive section.</span>}>
             <ActionButton tone="neutral" variant="outline" icon={Archive} onClick={() => archiveApp(app.id)} testid={`app-archive-${app.id}`}>
               Archive
@@ -1894,7 +1896,7 @@ export default function App() {
           {sites && <SiteList sites={sites} testid="app-sites" />}
           {/* Same shared action row as the gallery card — see the RULE on
               AppActions before adding any button here. */}
-          {app && <div className="flex items-center gap-2 mt-4">{AppActions({ app })}</div>}
+          {app && <div className="flex items-center gap-2 mt-4">{AppActions({ app, archiveInline: true })}</div>}
         </header>
         {(app?._source?.url ?? daemonOriginUrl)
           ? <AppFrame appId={appId} origin={app?._source?.url ?? daemonOriginUrl!} page={appPage} autoHeight />
