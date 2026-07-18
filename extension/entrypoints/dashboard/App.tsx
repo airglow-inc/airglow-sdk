@@ -2102,8 +2102,12 @@ export default function App() {
       {/* Main content */}
       <main className="ml-[240px] flex-1 p-8 min-w-0 overflow-x-hidden">
         {/* Server-driven announcement (Edge Config → /api/announcement →
-            background poll → storage cache). Renders nothing when inactive. */}
-        <AnnouncementBanner override={debugAnnouncement ? DEBUG_ANNOUNCEMENT : undefined} />
+            background poll → storage cache). Renders nothing when inactive.
+            Width matches the app-card column (max-w-3xl) so it doesn't span
+            the full main area on wide screens. */}
+        <div className="max-w-3xl">
+          <AnnouncementBanner override={debugAnnouncement ? DEBUG_ANNOUNCEMENT : undefined} />
+        </div>
         {!identityLoaded ? (
           <div className="p-5 rounded-[var(--radius-md)] border text-base" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', color: 'var(--fg-secondary)', boxShadow: 'var(--shadow-card)' }}>
             Loading Airglow setup…
