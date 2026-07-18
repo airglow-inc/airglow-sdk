@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code } from 'lucide-react';
+import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle } from 'lucide-react';
 
 // GitHub mark (lucide deprecated its brand icons).
 function GithubLogo({ size }: { size: number }) {
@@ -717,7 +717,7 @@ export default function App() {
   const [gatewayUrlInput, setGatewayUrlInput] = useState('');
   // Host self-update state (Settings modal). null = not yet checked.
   const [hostUpdate, setHostUpdate] = useState<{
-    current: string; latest: string | null; updateAvailable: boolean; mode: string;
+    current: string; latest: string | null; updateAvailable: boolean; mode: string; updating?: boolean;
   } | null>(null);
   const [hostUpdating, setHostUpdating] = useState(false);
   const [hostUpdateError, setHostUpdateError] = useState<string | null>(null);
@@ -1247,13 +1247,48 @@ export default function App() {
       try {
         const res = await fetch(`${origin}/api/daemon/update-check`);
         const body = await res.json();
-        if (!cancelled && body?.ok) setHostUpdate(body);
+        if (!cancelled && body?.ok) {
+          setHostUpdate(body);
+          // An update started before this page loaded (e.g. the user refreshed
+          // mid-"Updating…") — resume the waiting UI instead of showing nothing.
+          if (body.updating && body.latest) {
+            setHostUpdating(true);
+            awaitHostUpdated(body.latest, origin).catch((e) => {
+              setHostUpdateError(e instanceof Error ? e.message : String(e));
+              setHostUpdating(false);
+            });
+          }
+        }
       } catch {}
     };
     void check();
     const t = setInterval(check, 60 * 60 * 1000);
     return () => { cancelled = true; clearInterval(t); };
   }, [localOnline]);
+
+  // The daemon swaps its binary and restarts; poll until the new version
+  // answers (the port may change across the restart, so re-read origin), then
+  // flip the UI to "updated". Throws if it never comes back.
+  async function awaitHostUpdated(target: string, origin: string) {
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      try {
+        const o = (await daemonOrigin()) ?? origin;
+        const s = await fetch(`${o}/api/healthz`).then((r) => r.json());
+        if (s?.version === target) {
+          setHostUpdate({ current: target, latest: target, updateAvailable: false, mode: 'binary' });
+          setHostUpdating(false);
+          setHostUpdated(target);
+          setTimeout(() => setHostUpdated(null), 12_000);
+          // Poke useHostVersion so the sidebar version line refreshes now
+          // instead of on its 15s poll.
+          void chrome.storage.local.set({ __host_version_poke: Date.now() });
+          return;
+        }
+      } catch {}
+    }
+    throw new Error('daemon did not come back — check state/daemon.log');
+  }
 
   async function updateHost() {
     const origin = await daemonOrigin();
@@ -1264,27 +1299,7 @@ export default function App() {
       const res = await fetch(`${origin}/api/daemon/update`, { method: 'POST' });
       const body = await res.json();
       if (!body?.ok) throw new Error(String(body?.error ?? `daemon responded ${res.status}`));
-      // The daemon swaps its binary and restarts; poll until the new version
-      // answers (the port may change across the restart, so re-read origin).
-      const target = body.updatingTo;
-      for (let i = 0; i < 40; i++) {
-        await new Promise((r) => setTimeout(r, 1500));
-        try {
-          const o = (await daemonOrigin()) ?? origin;
-          const s = await fetch(`${o}/api/healthz`).then((r) => r.json());
-          if (s?.version === target) {
-            setHostUpdate({ current: target, latest: target, updateAvailable: false, mode: 'binary' });
-            setHostUpdating(false);
-            setHostUpdated(target);
-            setTimeout(() => setHostUpdated(null), 12_000);
-            // Poke useHostVersion so the sidebar version line refreshes now
-            // instead of on its 15s poll.
-            void chrome.storage.local.set({ __host_version_poke: Date.now() });
-            return;
-          }
-        } catch {}
-      }
-      throw new Error('daemon did not come back — check state/daemon.log');
+      await awaitHostUpdated(body.updatingTo, origin);
     } catch (e) {
       setHostUpdateError(e instanceof Error ? e.message : String(e));
       setHostUpdating(false);
@@ -2031,9 +2046,20 @@ export default function App() {
               title={hostUpdateError ?? `Update host to v${hostUpdate.latest}`}
               data-testid="sidebar-host-update-button"
             >
-              <Download size={17} className="shrink-0" />
+              {hostUpdating
+                ? <LoaderCircle size={17} className="shrink-0 animate-spin" />
+                : <Download size={17} className="shrink-0" />}
               {hostUpdating ? 'Updating…' : 'Update Airglow'}
             </button>
+          )}
+          {hostUpdateError && !hostUpdating && (
+            <div
+              className="w-fit max-w-[210px] mx-auto mt-1.5 text-center"
+              style={{ color: 'var(--error)', fontSize: '12.5px', lineHeight: '1.45' }}
+              data-testid="sidebar-host-update-error"
+            >
+              Update failed: {hostUpdateError}
+            </div>
           )}
           {hostUpdated && !hostUpdate?.updateAvailable && (
             <div
@@ -2042,7 +2068,7 @@ export default function App() {
               data-testid="sidebar-host-updated"
             >
               <Check size={17} className="shrink-0" />
-              Updated to v{hostUpdated}
+              Updated host to v{hostUpdated}
             </div>
           )}
         </div>
