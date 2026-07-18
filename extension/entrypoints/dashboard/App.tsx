@@ -2,6 +2,23 @@ import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle } from 'lucide-react';
 import { AnnouncementBanner } from '../../components/AnnouncementBanner';
+import type { Announcement } from '../../lib/announcements';
+
+// ?debug-announcement=1 renders this sample in place of the real (storage-fed)
+// announcement — preview the banner in the actual dashboard without publishing.
+const DEBUG_ANNOUNCEMENT: Announcement = {
+  id: 'debug-preview',
+  publishedAt: 0,
+  title: 'Airglow host needs a one-time reinstall',
+  body:
+    'Your installed host version has a broken self-updater and cannot update itself. ' +
+    'Run this once in a terminal to get the latest version:\n\n' +
+    '`curl -fsSL https://airglow.dev/install.sh | bash`\n\n' +
+    'Everything else keeps working in the meantime.',
+  severity: 'critical',
+  audience: 'all',
+};
+const debugAnnouncement = new URLSearchParams(window.location.search).has('debug-announcement');
 
 // GitHub mark (lucide deprecated its brand icons).
 function GithubLogo({ size }: { size: number }) {
@@ -2086,7 +2103,7 @@ export default function App() {
       <main className="ml-[240px] flex-1 p-8 min-w-0 overflow-x-hidden">
         {/* Server-driven announcement (Edge Config → /api/announcement →
             background poll → storage cache). Renders nothing when inactive. */}
-        <AnnouncementBanner />
+        <AnnouncementBanner override={debugAnnouncement ? DEBUG_ANNOUNCEMENT : undefined} />
         {!identityLoaded ? (
           <div className="p-5 rounded-[var(--radius-md)] border text-base" style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)', color: 'var(--fg-secondary)', boxShadow: 'var(--shadow-card)' }}>
             Loading Airglow setup…
