@@ -1,6 +1,6 @@
 import { Fragment, useState, useEffect, useRef, useLayoutEffect } from 'react';
 import { createPortal } from 'react-dom';
-import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle } from 'lucide-react';
+import { Trash2, Settings, KeyRound, AlertTriangle, Eye, EyeOff, TriangleAlert, ScrollText, MessageSquare, X, LayoutGrid, Store, ChevronRight, Globe, Copy, Check, Download, Play, Pause, Code, LoaderCircle, Archive, ArchiveRestore } from 'lucide-react';
 import { AnnouncementBanner } from '../../components/AnnouncementBanner';
 import type { Announcement } from '../../lib/announcements';
 
@@ -672,6 +672,9 @@ export default function App() {
     });
   }
   const [disabledApps, setDisabledApps] = useState<Set<string>>(new Set());
+  // Archived app ids (__archived_apps). Archived apps are force-disabled and
+  // listed in the sidebar's Archive section instead of the Apps gallery.
+  const [archivedApps, setArchivedApps] = useState<Set<string>>(new Set());
   const [localOnline, setLocalOnline] = useState<boolean | null>(null);
   // Problem surfaced on the sidebar dev button (red "Start Daemon" when the
   // daemon is offline) and explained inside its popup. Windows (host
@@ -694,12 +697,13 @@ export default function App() {
   const [unseenErrorCount, setUnseenErrorCount] = useState(0);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
 
-  // Apps view: Installed | Catalog
+  // Apps view: Installed | Catalog | Archive
   // Both the tab and the open detail page live in the URL (?page=catalog,
   // ?catalogApp=<id>) so F5 and copied links restore the same view.
-  const [activeTab, setActiveTab] = useState<'installed' | 'catalog'>(
-    () => new URLSearchParams(window.location.search).get('page') === 'catalog' ? 'catalog' : 'installed',
-  );
+  const [activeTab, setActiveTab] = useState<'installed' | 'catalog' | 'archive'>(() => {
+    const p = new URLSearchParams(window.location.search).get('page');
+    return p === 'catalog' || p === 'archive' ? p : 'installed';
+  });
   const [catalogApps, setCatalogApps] = useState<CatalogApp[] | null>(null);
   // Catalog detail page (card click) — an app id, or null for the grid.
   const [catalogOpenId, setCatalogOpenId] = useState<string | null>(
@@ -784,9 +788,9 @@ export default function App() {
     setCatalogOpenId(null);
     if (appId) _setPage('apps');
     const url = new URL(window.location.href);
-    // Keep ?page=catalog when closing an app back onto the catalog tab, so a
+    // Keep ?page=catalog/archive when closing an app back onto that tab, so a
     // reload still lands there; anything else (logs/settings) clears.
-    if (!appId && activeTab === 'catalog') url.searchParams.set('page', 'catalog');
+    if (!appId && (activeTab === 'catalog' || activeTab === 'archive')) url.searchParams.set('page', activeTab);
     else url.searchParams.delete('page');
     url.searchParams.delete('appPage');
     url.searchParams.delete('catalogApp');
@@ -795,12 +799,12 @@ export default function App() {
     history.replaceState(null, '', url.toString());
   }
 
-  // Switch the Installed/Catalog tab, stamped in the URL (?page=catalog).
-  function setTab(tab: 'installed' | 'catalog') {
+  // Switch the Installed/Catalog/Archive tab, stamped in the URL (?page=).
+  function setTab(tab: 'installed' | 'catalog' | 'archive') {
     setActiveTab(tab);
     const url = new URL(window.location.href);
-    if (tab === 'catalog') url.searchParams.set('page', 'catalog');
-    else url.searchParams.delete('page');
+    if (tab === 'installed') url.searchParams.delete('page');
+    else url.searchParams.set('page', tab);
     history.replaceState(null, '', url.toString());
   }
 
@@ -1074,10 +1078,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    chrome.storage.local.get(['__disabled_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY, DAEMON_DISABLED_KEY, DEV_GUIDE_SEEN_KEY], (result) => {
+    chrome.storage.local.get(['__disabled_apps', '__archived_apps', APP_ORDER_KEY, '__native_host_connected', SIDE_BUTTON_KEY, SIDEPANEL_KEY, CLOUD_API_URL_OVERRIDE_KEY, DAEMON_DISABLED_KEY, DEV_GUIDE_SEEN_KEY], (result) => {
       const nh = result['__native_host_connected'];
       setNativeHostConnected(nh === undefined ? null : (nh as boolean));
       setDisabledApps(new Set((result['__disabled_apps'] || []) as string[]));
+      setArchivedApps(new Set((result['__archived_apps'] || []) as string[]));
       if (result[APP_ORDER_KEY]) setAppOrder(result[APP_ORDER_KEY] as unknown as Record<string, string[]>);
       setSideButtonEnabled(!!result[SIDE_BUTTON_KEY]);
       setSidepanelEnabled(!!result[SIDEPANEL_KEY]);
@@ -1110,6 +1115,10 @@ export default function App() {
       if ('__disabled_apps' in changes) {
         const arr = (changes['__disabled_apps'].newValue as string[] | undefined) || [];
         setDisabledApps(new Set(arr));
+      }
+      if ('__archived_apps' in changes) {
+        const arr = (changes['__archived_apps'].newValue as string[] | undefined) || [];
+        setArchivedApps(new Set(arr));
       }
       if (SIDE_BUTTON_KEY in changes) {
         setSideButtonEnabled(!!changes[SIDE_BUTTON_KEY].newValue);
@@ -1360,6 +1369,21 @@ export default function App() {
     chrome.runtime.sendMessage({ type: 'airglow:toggle-app', appId });
   }
 
+  // Archive/unarchive delegate to the background (same pattern as toggleApp):
+  // it writes __archived_apps + __disabled_apps and unregisters scripts.
+  // Archiving force-disables; unarchiving leaves the app disabled.
+  function archiveApp(appId: string) {
+    setArchivedApps((prev) => new Set(prev).add(appId));
+    setDisabledApps((prev) => new Set(prev).add(appId));
+    chrome.runtime.sendMessage({ type: 'airglow:set-app-archived', appId, archived: true });
+  }
+
+  function unarchiveApp(appId: string) {
+    setArchivedApps((prev) => { const next = new Set(prev); next.delete(appId); return next; });
+    setDisabledApps((prev) => new Set(prev).add(appId));
+    chrome.runtime.sendMessage({ type: 'airglow:set-app-archived', appId, archived: false });
+  }
+
   function appUrl(appId: string) {
     // Single shell: an app's URL is the dashboard with that app selected.
     return chrome.runtime.getURL(`dashboard.html?app=${appId}`);
@@ -1594,7 +1618,40 @@ export default function App() {
               </ActionButton>
             </Tooltip>
           )}
+          <span className="ml-auto">
+            <Tooltip content={<span>Disable and move to the Archive section.</span>}>
+              <ActionButton tone="neutral" variant="outline" icon={Archive} onClick={() => archiveApp(app.id)} testid={`app-archive-${app.id}`}>
+                Archive
+              </ActionButton>
+            </Tooltip>
+          </span>
         </>}
+      />
+    );
+  }
+
+  // Archive-section card: inert — no toggle, no open link, no drag. The app is
+  // force-disabled while archived, so the only action is Unarchive (which
+  // returns it to the Apps gallery, still disabled).
+  function ArchivedAppCard({ app }: { app: AppManifest }) {
+    const prov = provenance[app.id];
+    return (
+      <AppListCard
+        name={app.name}
+        description={app.description}
+        sites={appSites(app)}
+        sitesTestid={`app-sites-${app.id}`}
+        dimmed
+        testid={`archived-card-${app.id}`}
+        pills={<Badge color={PILL.error} solid>Disabled</Badge>}
+        metaPills={prov || app._sourceType === 'cloud'
+          ? <Badge color={PILL.catalog}>Catalog{app.version ? ` · v${app.version}` : ''}</Badge>
+          : <Badge color={PILL.local}>Local</Badge>}
+        actions={
+          <ActionButton tone="neutral" variant="outline" icon={ArchiveRestore} onClick={() => unarchiveApp(app.id)} testid={`app-unarchive-${app.id}`}>
+            Unarchive
+          </ActionButton>
+        }
       />
     );
   }
@@ -1792,6 +1849,9 @@ export default function App() {
   }
 
   const local = apps || [];
+  // Archived apps leave the gallery + sidebar and live in the Archive tab.
+  const activeLocal = local.filter((a) => !archivedApps.has(a.id));
+  const archivedLocal = local.filter((a) => archivedApps.has(a.id));
 
   // The single-shell app view: native header (breadcrumb, title, badges, sites,
   // Enable/Disable, Uninstall, Secrets) over the app's own UI in a sandboxed
@@ -1882,8 +1942,8 @@ export default function App() {
           <div className="flex flex-col">
             {error && <div className="pl-[38px] pr-3 py-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }}>Apps server offline</div>}
             {!error && apps === null && <div className="pl-[38px] pr-3 py-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }}>Loading…</div>}
-            {!error && apps !== null && local.length === 0 && <div className="pl-[38px] pr-3 py-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }}>No apps installed</div>}
-            {sortByOrder(local, 'local').map((app) => (
+            {!error && apps !== null && activeLocal.length === 0 && <div className="pl-[38px] pr-3 py-1.5 text-sm" style={{ color: 'var(--fg-tertiary)' }}>No apps installed</div>}
+            {sortByOrder(activeLocal, 'local').map((app) => (
               <AppRow
                 key={app.id}
                 name={app.name}
@@ -1900,6 +1960,14 @@ export default function App() {
             onClick={() => { openApp(null); setPage('apps'); setTab('catalog'); void loadCatalog(); }}
             badge={catalogApps ? <span className="text-sm font-normal" style={{ color: 'var(--fg-tertiary)' }}>{catalogApps.length}</span> : null}
             testId="nav-catalog"
+          />
+          <NavRow
+            icon={Archive}
+            label="Archive"
+            active={page === 'apps' && !openAppId && activeTab === 'archive'}
+            onClick={() => { openApp(null); setPage('apps'); setTab('archive'); }}
+            badge={archivedApps.size > 0 ? <span className="text-sm font-normal" style={{ color: 'var(--fg-tertiary)' }}>{archivedApps.size}</span> : null}
+            testId="nav-archive"
           />
         </nav>
 
@@ -2168,7 +2236,7 @@ export default function App() {
         <div className="-m-8 flex flex-col" style={{ minHeight: '100vh' }}>
           <header className="shrink-0 px-8 pt-6 pb-6 border-b" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }}>
             <div className="flex items-center gap-1.5 text-base" data-testid="dashboard-breadcrumb">
-              <span className="text-[22px] font-medium" style={{ color: 'var(--fg-tertiary)' }}>{activeTab === 'catalog' ? 'Catalog' : 'Apps'}</span>
+              <span className="text-[22px] font-medium" style={{ color: 'var(--fg-tertiary)' }}>{activeTab === 'catalog' ? 'Catalog' : activeTab === 'archive' ? 'Archive' : 'Apps'}</span>
               {activeTab === 'catalog' && (
                 <button
                   type="button"
@@ -2205,18 +2273,37 @@ export default function App() {
               {apps === null && (
                 <div className="text-base py-8 text-center" style={{ color: 'var(--fg-tertiary)' }}>Loading...</div>
               )}
-              {local.length === 0 && apps !== null ? (
+              {activeLocal.length === 0 && apps !== null ? (
                 <div className="text-base py-8 text-center rounded-[var(--radius-md)]" style={{ color: 'var(--fg-tertiary)', border: '1px dashed var(--border-secondary)' }}>
-                  No apps installed — browse the{' '}
-                  <button onClick={() => { setTab('catalog'); void loadCatalog(); }} className="underline cursor-pointer" style={{ color: 'var(--clay)' }}>Catalog</button>{' '}to add one.
+                  {archivedLocal.length > 0 ? (
+                    <>All apps are archived — see the{' '}
+                    <button onClick={() => setTab('archive')} className="underline cursor-pointer" style={{ color: 'var(--clay)' }}>Archive</button>{' '}section.</>
+                  ) : (
+                    <>No apps installed — browse the{' '}
+                    <button onClick={() => { setTab('catalog'); void loadCatalog(); }} className="underline cursor-pointer" style={{ color: 'var(--clay)' }}>Catalog</button>{' '}to add one.</>
+                  )}
                 </div>
               ) : (
                 <div className="flex flex-col gap-4">
                   {/* Function call, not JSX — same remount-avoidance rule as
                       AppView/CatalogView, so the toggle's CSS transition (and
                       any card DOM state) survives App re-renders. */}
-                  {sortByOrder(local, 'local').map((app, i) => (
-                    <Fragment key={app.id}>{AppCard({ app, section: 'local', index: i, list: local })}</Fragment>
+                  {sortByOrder(activeLocal, 'local').map((app, i) => (
+                    <Fragment key={app.id}>{AppCard({ app, section: 'local', index: i, list: activeLocal })}</Fragment>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : activeTab === 'archive' ? (
+            <>
+              {archivedLocal.length === 0 ? (
+                <div className="text-base py-8 text-center rounded-[var(--radius-md)]" style={{ color: 'var(--fg-tertiary)', border: '1px dashed var(--border-secondary)' }}>
+                  No archived apps — the Archive button on an app card moves it here.
+                </div>
+              ) : (
+                <div className="flex flex-col gap-4">
+                  {archivedLocal.map((app) => (
+                    <Fragment key={app.id}>{ArchivedAppCard({ app })}</Fragment>
                   ))}
                 </div>
               )}

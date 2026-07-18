@@ -80,6 +80,17 @@ export default defineBackground(() => {
     });
   }
 
+  // Archived app ids. An archived app is always also in __disabled_apps (the
+  // loader only consults the disabled set); the archive set is the dashboard's
+  // grouping — archived apps move to the Archive section and stay inert.
+  async function getArchivedApps(): Promise<Set<string>> {
+    return new Promise((resolve) => {
+      chrome.storage.local.get('__archived_apps', (result) => {
+        resolve(new Set((result['__archived_apps'] || []) as string[]));
+      });
+    });
+  }
+
   // __seen_apps records every app id we've ever loaded, so the
   // manifest.defaultEnabled hint is applied exactly once per id. After first
   // encounter, the user's __disabled_apps toggle is authoritative — the
@@ -1760,6 +1771,41 @@ ${code}
       return true;
     }
 
+    if (msg?.type === 'airglow:set-app-archived') {
+      // Archive/unarchive an app. Archiving force-disables it; unarchiving
+      // leaves it disabled — re-enabling is an explicit toggle afterwards.
+      const appId = msg.appId as string;
+      const archive = !!msg.archived;
+      Promise.all([getArchivedApps(), getDisabledApps()]).then(async ([archived, disabled]) => {
+        if (archive) archived.add(appId);
+        else archived.delete(appId);
+        disabled.add(appId);
+        await chrome.storage.local.set({
+          '__archived_apps': Array.from(archived),
+          '__disabled_apps': Array.from(disabled),
+        });
+        lastAppHashes.delete(appId);
+        // Same immediate-unregister as the disable toggle: don't wait for the
+        // serialized re-registration chain to take the app's scripts down.
+        if (archive) {
+          try {
+            const scripts = await chrome.userScripts.getScripts();
+            const ids = scripts.filter(s => s.id.startsWith(appId + '__')).map(s => s.id);
+            if (ids.length > 0) await chrome.userScripts.unregister({ ids });
+          } catch (e: any) {
+            logger.warn('airglow', `unregister scripts for ${appId} failed: ${e?.message ?? e}`);
+          }
+        }
+        try {
+          await loadAndRegisterApps(true);
+        } catch (e) {
+          logger.error('airglow', `re-register after archive change of ${appId} failed: ${e}`);
+        }
+        sendResponse({ ok: true, archived: archive });
+      }).catch(e => sendResponse({ error: e.message }));
+      return true;
+    }
+
     if (msg?.type === 'airglow:get-page-apps') {
       // Return apps matching a given URL (or a specific appId for an embedded app view), with disabled status
       const url = msg.url as string;
@@ -1767,7 +1813,7 @@ ${code}
       const senderTabId = _sender?.tab?.id;
       const errorsOnTab = senderTabId ? tabErrors.get(senderTabId) : undefined;
       const allManifests = getAppManifests();
-      Promise.all([getDisabledApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(async ([disabled, lastSeenRes]) => {
+      Promise.all([getDisabledApps(), getArchivedApps(), chrome.storage.local.get('__logs_last_seen_ts')]).then(async ([disabled, archived, lastSeenRes]) => {
         const lastSeen = (lastSeenRes['__logs_last_seen_ts'] as number | undefined) ?? 0;
         const hasError = (id: string) => {
           const ts = errorsOnTab?.get(id);
@@ -1776,6 +1822,9 @@ ${code}
         const matching: PageApp[] = [];
         const seen = new Set<string>();
         const addMatchingApp = (m: SourcedManifest) => {
+          // Archived apps are hidden from page surfaces entirely — listing
+          // them would offer an enable toggle that contradicts the archive.
+          if (archived.has(m.id)) return;
           const isDisabled = disabled.has(m.id);
           matching.push({
             id: m.id,
