@@ -31,6 +31,20 @@ const CRITICAL: Announcement = {
   audience: 'all',
 };
 
+const HOST_RECOVERY: Announcement = {
+  id: 'preview-host-recovery',
+  publishedAt: Date.now(),
+  title: 'Airglow host needs a one-time reinstall',
+  body:
+    'Your installed host version has a broken self-updater and cannot update itself. ' +
+    'Run this once in a terminal to get the latest version:\n\n' +
+    '`curl -fsSL https://airglow.dev/install.sh | bash`\n\n' +
+    'Everything else keeps working in the meantime.',
+  severity: 'critical',
+  audience: 'all',
+  maxHostVersion: '0.2.7',
+};
+
 // Renders the compact (sidepanel) variant inside a 384px panel-width column,
 // over the sidepanel surface color, so the preview matches where it actually
 // ships — pinned at the top of the agent sidepanel.
@@ -59,11 +73,17 @@ export default function App() {
           Announcement banner — preview
         </h1>
         <p className="text-base mb-8" style={{ color: 'var(--fg-secondary)' }}>
-          The compact variant as it ships: pinned at the top of the agent sidepanel. Dismiss is local-only here; in production these are served from Edge Config via <code>/api/announcement</code>.
+          Both shipped variants. Dismiss is local-only here; in production these are served from Edge Config via <code>/api/announcement</code>.
         </p>
+        <div className="mb-2 text-sm font-medium uppercase tracking-wide" style={{ color: 'var(--fg-tertiary)' }}>
+          dashboard (full) — host-recovery example (maxHostVersion: 0.2.7)
+        </div>
+        <div className="rounded-xl border p-8 mb-10" style={{ background: 'var(--bg-primary)', borderColor: 'var(--border-tertiary)' }}>
+          <AnnouncementBanner override={HOST_RECOVERY} />
+        </div>
         <div className="flex flex-wrap gap-10">
-          <Panel label="severity: info" a={INFO} />
-          <Panel label="severity: critical" a={CRITICAL} />
+          <Panel label="sidepanel (compact) — severity: info" a={INFO} />
+          <Panel label="sidepanel (compact) — severity: critical" a={CRITICAL} />
         </div>
       </div>
     </div>
