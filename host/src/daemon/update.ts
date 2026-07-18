@@ -70,7 +70,9 @@ export async function checkForUpdate(): Promise<UpdateCheck> {
       ...base,
       latest,
       tag,
-      updateAvailable: isNewer(latest, HOST_VERSION),
+      // After a swap this process is a zombie awaiting takeover — stop
+      // advertising the update so no UI invites another press.
+      updateAvailable: updateState === 'idle' && isNewer(latest, HOST_VERSION),
       assetUrl: String(bin.browser_download_url),
       sumsUrl: assets.find((a) => a?.name === 'SHA256SUMS')
         ? String(assets.find((a) => a?.name === 'SHA256SUMS').browser_download_url)
@@ -86,10 +88,33 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return hasher.digest('hex');
 }
 
+// Single-flight: the dashboard can be open in several views (tab, sidepanel),
+// each with its own Update button — concurrent presses must not each run a
+// download-and-swap. 'swapped' is terminal: once the binary on disk has been
+// replaced, retrying would re-download over it; if the replacement daemon
+// failed to take over, that needs a human, not another swap.
+let updateState: 'idle' | 'updating' | 'swapped' = 'idle';
+
 // Downloads + verifies + swaps the binary. With a workspace, also spawns the
 // replacement daemon, whose takeover evicts this process; without one (CLI
 // update with no daemon running) it just swaps and returns.
 export async function performUpdate(workspace?: string): Promise<{ updatingTo: string }> {
+  if (updateState === 'updating') throw new Error('an update is already in progress');
+  if (updateState === 'swapped') {
+    throw new Error('update already applied — waiting for the new daemon to take over; if it never does, reinstall via install.sh');
+  }
+  updateState = 'updating';
+  try {
+    const result = await doPerformUpdate(workspace);
+    updateState = 'swapped';
+    return result;
+  } catch (e) {
+    updateState = 'idle';
+    throw e;
+  }
+}
+
+async function doPerformUpdate(workspace?: string): Promise<{ updatingTo: string }> {
   const check = await checkForUpdate();
   if (check.mode === 'source') throw new Error('running from source — update with git, not self-update');
   if (check.mode === 'unsupported') throw new Error(`no release binary for ${process.platform}/${process.arch}`);
