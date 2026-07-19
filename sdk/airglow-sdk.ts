@@ -264,6 +264,24 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     },
   };
 
+  // One-shot scheduled runs of manifest-declared jobs. schedule() creates a
+  // pending task the platform executes at \`at\` (daemon or cloud, wherever the
+  // app is served); the run shows up in the dashboard Jobs tab.
+  const jobs = {
+    async schedule(jobId, opts) {
+      const at = opts && opts.at instanceof Date ? opts.at.getTime() : opts && opts.at;
+      const res = await sendMsg({ type: 'airglow:jobs:schedule', jobId, at, config: opts && opts.config });
+      return res?.task;
+    },
+    async cancel(taskId) {
+      await sendMsg({ type: 'airglow:jobs:cancel', taskId });
+    },
+    async list() {
+      const res = await sendMsg({ type: 'airglow:jobs:list' });
+      return res?.tasks || [];
+    },
+  };
+
   // Streaming transport: sendMsg is one-shot request/response on every path
   // (chrome.runtime.sendMessage and the dashboard postMessage bridge), so the
   // background can't push events to us. Instead it buffers SSE events per
@@ -445,6 +463,7 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
     rpc,
     llm,
     connectors,
+    jobs,
     platform,
     identity,
     captureTab,

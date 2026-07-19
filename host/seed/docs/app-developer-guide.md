@@ -111,7 +111,7 @@ Jobs run on a timer with no browser interaction — e.g. a daily email. Declare 
 |---|---|
 | `id` | Unique within the app (`[\w-]+`). |
 | `title` | Shown in the dashboard Jobs tab. Default: the id. |
-| `schedule` | `"hourly"` \| `"daily"` \| `"weekly"`. |
+| `schedule` | `"hourly"` \| `"daily"` \| `"weekly"`. Optional — omit for on-demand jobs that only run via `airglow.jobs.schedule()` or Run now. |
 | `entry` | Path (app-relative) to the job file. |
 | `runsOn` | `"daemon"` (default) — runs on the user's machine; `"cloud"` — runs on Airglow's backend, works without the native host. |
 | `config` | Static JSON passed to the entry as its argument. |
@@ -134,7 +134,17 @@ Scheduling is interval-since-last-run, not wall-clock cron: a job runs when its 
 - `runsOn: "daemon"` — the entry runs like a server function: `airglow.connectors` / `airglow.llm` / `airglow.log` available, `process.env` from the app's secrets. Requires the user's machine to be awake.
 - `runsOn: "cloud"` — for jobs needing no local state; runs even when the user's machine is off. Cloud jobs are **connectors-only** for now (no `airglow.llm`, no filesystem, no daemon APIs) and only run for catalog-published apps. Locally, **Run now** still executes them on the daemon for testing.
 
-From the terminal: `curl "http://127.0.0.1:$port/api/jobs"` lists jobs with last-run status; `curl -X POST "http://127.0.0.1:$port/api/jobs/run" -d '{"appId":"<id>","jobId":"<job>"}'` runs one; `curl "http://127.0.0.1:$port/api/jobs/runs?appId=<id>"` shows run history (including captured console output).
+### One-shot runs
+
+Beyond recurring schedules, app code can queue single future runs of any declared job with `airglow.jobs.schedule(jobId, { at, config? })` — e.g. a button that sends one email now and schedules two follow-ups. The per-task `config` replaces the manifest config for that run; pending tasks survive restarts, appear under the Jobs tab's **Scheduled** view (cancellable), and their runs land in **History**. See `airglow.jobs` in the SDK reference.
+
+```ts
+await sendEmail(config);                                      // now
+await airglow.jobs.schedule('send-email', { at: Date.now() + 2 * 86400e3 });  // +2 days
+await airglow.jobs.schedule('send-email', { at: Date.now() + 7 * 86400e3 });  // +7 days
+```
+
+From the terminal: `curl "http://127.0.0.1:$port/api/jobs"` lists jobs + pending tasks; `curl -X POST "http://127.0.0.1:$port/api/jobs/run" -d '{"appId":"<id>","jobId":"<job>"}'` runs one; `curl "http://127.0.0.1:$port/api/jobs/runs?appId=<id>"` shows run history (including captured console output).
 
 ---
 

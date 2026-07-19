@@ -174,6 +174,17 @@ function installServerSdk(): void {
       chat: (payload: Record<string, unknown>) =>
         call('/api/llm/v1/chat/completions', payload, 'llm'),
     },
+    jobs: {
+      schedule: (jobId: string, opts: { at: number | string | Date; config?: unknown }) => {
+        const at = opts?.at instanceof Date ? opts.at.getTime() : opts?.at;
+        return call('/api/jobs/schedule', { appId, jobId, at, config: opts?.config }, 'jobs schedule')
+          .then((d: any) => d.task);
+      },
+      cancel: (taskId: string) =>
+        call('/api/jobs/cancel', { appId, taskId }, 'jobs cancel').then(() => undefined),
+      list: () =>
+        call('/api/jobs/tasks', { appId }, 'jobs list').then((d: any) => d.tasks ?? []),
+    },
     log: { info: logAt('info'), warn: logAt('warn'), error: logAt('error') },
   };
 }

@@ -102,6 +102,24 @@ if (r.successful) render(r.data);
 
 ---
 
+## airglow.jobs
+
+One-shot scheduled runs of jobs declared in `manifest.jobs[]` (see the [app developer guide](app-developer-guide.md#scheduled-jobs); a job may omit `schedule` to be on-demand only). Tasks persist across restarts, catch up if the due time passes while the platform is down, and are visible/cancellable in the dashboard Jobs tab. Available everywhere, including server functions.
+
+```ts
+jobs.schedule(jobId, opts: { at: number | string | Date; config?: any }): Promise<AirglowJobTask>
+jobs.cancel(taskId: string): Promise<void>
+jobs.list(): Promise<AirglowJobTask[]>   // this app's pending tasks, soonest first
+```
+
+`at` is at most a year out; a past `at` runs on the next scheduler tick. `config` replaces the job's manifest `config` for that run. Max 50 pending tasks per app.
+
+```ts
+await airglow.jobs.schedule('send-email', { at: Date.now() + 86400e3, config: { to: 'a@b.com' } });
+```
+
+---
+
 ## airglow.llm.chat(payload, opts?)
 
 OpenAI chat-completions schema through the Airglow gateway (OpenRouter-backed) — no API key needed. Available everywhere, including server functions.

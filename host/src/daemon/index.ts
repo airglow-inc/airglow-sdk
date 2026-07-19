@@ -899,9 +899,31 @@ export async function runDaemon(argv: string[]): Promise<void> {
         return respondJson(404, { error: 'unknown connectors endpoint' });
       }
 
-      // Scheduled jobs (manifest `jobs`): list, run history, run-now.
+      // Scheduled jobs (manifest `jobs`): list, run history, run-now, one-shots.
       if (pathname === '/api/jobs' && req.method === 'GET') {
-        return respondJson(200, { ok: true, jobs: await jobs.listJobs() });
+        return respondJson(200, { ok: true, jobs: await jobs.listJobs(), tasks: jobs.listTasks() });
+      }
+      if (pathname === '/api/jobs/schedule' && req.method === 'POST') {
+        const body: any = await req.json().catch(() => null);
+        if (typeof body?.appId !== 'string' || typeof body?.jobId !== 'string') {
+          return respondJson(400, { error: 'expected { appId, jobId, at }' });
+        }
+        const at = typeof body.at === 'string' ? Date.parse(body.at) : Number(body.at);
+        const result = await jobs.schedule(body.appId, body.jobId, at, body.config);
+        return result.ok ? respondJson(200, result) : respondJson(result.status, { error: result.error });
+      }
+      if (pathname === '/api/jobs/cancel' && req.method === 'POST') {
+        const body: any = await req.json().catch(() => null);
+        if (typeof body?.taskId !== 'string') return respondJson(400, { error: 'expected { taskId }' });
+        return jobs.cancel(body.taskId)
+          ? respondJson(200, { ok: true })
+          : respondJson(404, { error: 'task not found' });
+      }
+      if (pathname === '/api/jobs/tasks' && (req.method === 'GET' || req.method === 'POST')) {
+        const appId = req.method === 'GET'
+          ? url.searchParams.get('appId') || undefined
+          : ((await req.json().catch(() => ({}))) as any)?.appId;
+        return respondJson(200, { ok: true, tasks: jobs.listTasks(typeof appId === 'string' ? appId : undefined) });
       }
       if (pathname === '/api/jobs/runs' && req.method === 'GET') {
         const limit = Number(url.searchParams.get('limit') || 50);

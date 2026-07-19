@@ -26,16 +26,29 @@ import { randomBytes } from 'node:crypto';
 import type { AppServer, AppManifest } from './apps';
 
 export type JobSchedule = 'hourly' | 'daily' | 'weekly';
-export type JobTrigger = 'scheduled' | 'catchup' | 'manual';
+export type JobTrigger = 'scheduled' | 'catchup' | 'manual' | 'once';
 
 export interface JobDef {
   appId: string;
   appName: string;
   jobId: string;
   title: string;
-  schedule: JobSchedule;
+  // null = on-demand only: no recurring runs; still runnable via run-now and
+  // one-shot tasks (airglow.jobs.schedule).
+  schedule: JobSchedule | null;
   entry: string;
   runsOn: 'daemon' | 'cloud';
+  config?: unknown;
+}
+
+// A one-shot future execution of a declared job. Pending only — executed or
+// cancelled tasks are deleted; the run record (trigger 'once') is the history.
+export interface JobTask {
+  taskId: string;
+  appId: string;
+  jobId: string;
+  runAt: number;
+  createdAt: number;
   config?: unknown;
 }
 
@@ -44,6 +57,7 @@ export interface JobRun {
   appId: string;
   jobId: string;
   trigger: JobTrigger;
+  taskId?: string;
   startedAt: number;
   finishedAt: number;
   status: 'ok' | 'error';
@@ -64,6 +78,7 @@ const LOG_CAP = 8_192;      // captured console output kept per run
 const SUMMARY_CAP = 2_000;
 const COMPACT_AT = 120;     // lines; rewrite keeping the newest KEEP_RUNS
 const KEEP_RUNS = 60;
+const MAX_TASKS_PER_APP = 50;
 
 const JOB_ID = /^[\w-]+$/;
 
@@ -77,9 +92,9 @@ export function collectJobs(manifests: AppManifest[]): JobDef[] {
       if (!j || typeof j !== 'object') continue;
       const jobId = typeof j.id === 'string' ? j.id : '';
       const entry = typeof j.entry === 'string' ? j.entry : '';
-      const schedule = j.schedule as JobSchedule;
-      if (!JOB_ID.test(jobId) || !entry || entry.includes('..') || !(schedule in INTERVALS)) {
-        console.error(`[jobs/${m.id}] skipping malformed job ${JSON.stringify(j?.id ?? j)} — need { id, schedule: hourly|daily|weekly, entry }`);
+      const schedule = j.schedule === undefined ? null : (j.schedule as JobSchedule);
+      if (!JOB_ID.test(jobId) || !entry || entry.includes('..') || (schedule !== null && !(schedule in INTERVALS))) {
+        console.error(`[jobs/${m.id}] skipping malformed job ${JSON.stringify(j?.id ?? j)} — need { id, entry, schedule?: hourly|daily|weekly }`);
         continue;
       }
       out.push({
@@ -131,8 +146,9 @@ export class JobScheduler {
 
   private async tick(): Promise<void> {
     const manifests = await this.apps.scanManifests();
-    for (const def of collectJobs(manifests)) {
-      if (def.runsOn !== 'daemon') continue;
+    const defs = collectJobs(manifests);
+    for (const def of defs) {
+      if (def.runsOn !== 'daemon' || def.schedule === null) continue;
       const key = `${def.appId}/${def.jobId}`;
       if (this.running.has(key)) continue;
       const last = this.lastRun(def.appId, def.jobId);
@@ -144,6 +160,23 @@ export class JobScheduler {
       // tick after a long sleep) shouldn't fork-bomb the box.
       await this.execute(def, trigger).catch(() => {});
     }
+    // One-shot tasks, due when runAt has passed. A task for a job the app no
+    // longer declares is dropped (with a warning) rather than retried forever.
+    for (const task of this.allTasks()) {
+      if (task.runAt > Date.now()) continue;
+      const key = `${task.appId}/${task.jobId}`;
+      if (this.running.has(key)) continue;
+      const def = defs.find((d) => d.appId === task.appId && d.jobId === task.jobId);
+      if (!def) {
+        console.error(`[jobs/${task.appId}/${task.jobId}] dropping task ${task.taskId} — job no longer declared`);
+        this.removeTask(task.taskId);
+        continue;
+      }
+      // Task config replaces the manifest config entirely when present.
+      const effective: JobDef = task.config !== undefined ? { ...def, config: task.config } : def;
+      await this.execute(effective, 'once', task.taskId).catch(() => {});
+      this.removeTask(task.taskId);
+    }
   }
 
   async runNow(appId: string, jobId: string): Promise<{ ok: true; run: JobRun } | { ok: false; error: string }> {
@@ -154,7 +187,7 @@ export class JobScheduler {
     return { ok: true, run: await this.execute(def, 'manual') };
   }
 
-  private async execute(def: JobDef, trigger: JobTrigger): Promise<JobRun> {
+  private async execute(def: JobDef, trigger: JobTrigger, taskId?: string): Promise<JobRun> {
     const key = `${def.appId}/${def.jobId}`;
     this.running.add(key);
     const startedAt = Date.now();
@@ -166,6 +199,7 @@ export class JobScheduler {
         appId: def.appId,
         jobId: def.jobId,
         trigger,
+        ...(taskId ? { taskId } : {}),
         startedAt,
         finishedAt: Date.now(),
         status: res.ok ? 'ok' : 'error',
@@ -192,11 +226,87 @@ export class JobScheduler {
         ...pub,
         running: this.running.has(`${def.appId}/${def.jobId}`),
         lastRun: last ? { ...last, log: undefined } : null,
-        nextDueAt: def.runsOn === 'daemon'
+        nextDueAt: def.runsOn === 'daemon' && def.schedule !== null
           ? (last ? last.startedAt + INTERVALS[def.schedule] : Date.now())
           : null,
       };
     });
+  }
+
+  // ── One-shot tasks ──
+
+  private tasks: Map<string, JobTask> | null = null;
+
+  private tasksPath(): string {
+    return join(this.runsDir(), 'pending.jsonl');
+  }
+
+  private allTasks(): JobTask[] {
+    if (!this.tasks) {
+      this.tasks = new Map();
+      let content = '';
+      try { content = readFileSync(this.tasksPath(), 'utf8'); } catch {}
+      for (const line of content.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const t = JSON.parse(line) as JobTask;
+          if (t.taskId) this.tasks.set(t.taskId, t);
+        } catch {}
+      }
+    }
+    return [...this.tasks.values()].sort((a, b) => a.runAt - b.runAt);
+  }
+
+  private saveTasks(): void {
+    try {
+      mkdirSync(this.runsDir(), { recursive: true });
+      const lines = [...(this.tasks?.values() ?? [])].map((t) => JSON.stringify(t));
+      writeFileSync(this.tasksPath(), lines.length ? lines.join('\n') + '\n' : '');
+    } catch (e: any) {
+      console.error(`[jobs] failed to persist pending tasks: ${e?.message ?? e}`);
+    }
+  }
+
+  private removeTask(taskId: string): void {
+    this.allTasks();
+    if (this.tasks!.delete(taskId)) this.saveTasks();
+  }
+
+  async schedule(appId: string, jobId: string, runAt: number, config?: unknown):
+    Promise<{ ok: true; task: JobTask } | { ok: false; error: string; status: number }> {
+    const manifests = await this.apps.scanManifests();
+    const def = collectJobs(manifests).find((d) => d.appId === appId && d.jobId === jobId);
+    if (!def) return { ok: false, error: `job '${appId}/${jobId}' not found`, status: 404 };
+    if (!Number.isFinite(runAt) || runAt > Date.now() + 366 * 24 * 60 * 60_000) {
+      return { ok: false, error: 'invalid runAt (ms epoch, at most a year out)', status: 400 };
+    }
+    const pending = this.allTasks().filter((t) => t.appId === appId);
+    if (pending.length >= MAX_TASKS_PER_APP) {
+      return { ok: false, error: `too many pending tasks for '${appId}' (max ${MAX_TASKS_PER_APP})`, status: 429 };
+    }
+    const task: JobTask = {
+      taskId: `${Date.now().toString(36)}-${randomBytes(4).toString('hex')}`,
+      appId,
+      jobId,
+      runAt,
+      createdAt: Date.now(),
+      ...(config !== undefined ? { config } : {}),
+    };
+    this.tasks!.set(task.taskId, task);
+    this.saveTasks();
+    console.log(`[jobs/${appId}/${jobId}] task ${task.taskId} scheduled for ${new Date(runAt).toISOString()}`);
+    return { ok: true, task };
+  }
+
+  cancel(taskId: string): boolean {
+    this.allTasks();
+    const existed = this.tasks!.delete(taskId);
+    if (existed) this.saveTasks();
+    return existed;
+  }
+
+  listTasks(appId?: string): JobTask[] {
+    return this.allTasks().filter((t) => !appId || t.appId === appId);
   }
 
   listRuns(appId?: string, jobId?: string, limit = 50): JobRun[] {

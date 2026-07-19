@@ -269,6 +269,28 @@ async function connectorsPost(appId: string, action: string, payload: Record<str
   return result;
 }
 
+// One-shot job tasks (airglow.jobs) — same per-app source routing as
+// connectors: the app's serving side (daemon or cloud) owns its tasks.
+async function jobsPost(appId: string, action: 'schedule' | 'cancel' | 'tasks', payload: Record<string, unknown>): Promise<any> {
+  const source = appSourceMap.get(appId);
+  if (!source) {
+    const e = new Error(`No source registered for app '${appId}'. Is the Airglow daemon running?`) as RemoteRpcError;
+    e.code = 'JOBS_SOURCE_NOT_REGISTERED';
+    throw e;
+  }
+  const identity = await getAirglowRpcIdentity();
+  const res = await fetchWithTimeout(`${source.url.replace(/\/+$/, '')}/api/jobs/${action}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...buildIdentityHeaders(identity) },
+    body: JSON.stringify({ appId, ...payload }),
+  }, CONNECTOR_TIMEOUT_MS);
+  const text = await res.text();
+  let result;
+  try { result = JSON.parse(text); } catch { result = text; }
+  if (!res.ok) throw parseErrorEnvelope(res, result, `jobs ${action} failed with HTTP ${res.status}`, 'JOBS_HTTP_ERROR');
+  return result;
+}
+
 function connectorErrorResponse(e: unknown): Record<string, unknown> {
   const err = e as RemoteRpcError;
   return {
@@ -1043,6 +1065,27 @@ function dispatchAirglowMessage(
 
     case 'airglow:connectors:execute': {
       connectorsPost(appId, 'execute', { tool: msg.tool, arguments: msg.arguments, account: msg.account })
+        .then(sendResponse)
+        .catch((e) => sendResponse(connectorErrorResponse(e)));
+      return true;
+    }
+
+    case 'airglow:jobs:schedule': {
+      jobsPost(appId, 'schedule', { jobId: msg.jobId, at: msg.at, config: msg.config })
+        .then(sendResponse)
+        .catch((e) => sendResponse(connectorErrorResponse(e)));
+      return true;
+    }
+
+    case 'airglow:jobs:cancel': {
+      jobsPost(appId, 'cancel', { taskId: msg.taskId })
+        .then(sendResponse)
+        .catch((e) => sendResponse(connectorErrorResponse(e)));
+      return true;
+    }
+
+    case 'airglow:jobs:list': {
+      jobsPost(appId, 'tasks', {})
         .then(sendResponse)
         .catch((e) => sendResponse(connectorErrorResponse(e)));
       return true;

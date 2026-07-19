@@ -69,6 +69,41 @@ interface AirglowConnectors {
   execute<T = any>(tool: string, args?: Record<string, any>, opts?: AirglowConnectorOptions): Promise<AirglowExecuteResult<T>>;
 }
 
+/** A pending one-shot execution of a manifest-declared job. */
+interface AirglowJobTask {
+  taskId: string;
+  appId: string;
+  jobId: string;
+  /** ms epoch when the task runs. */
+  runAt: number;
+  createdAt: number;
+  config?: any;
+}
+
+/**
+ * One-shot scheduled runs of jobs declared in `manifest.jobs[]`. schedule()
+ * queues a single future execution of a declared job (the job may omit
+ * `schedule` — then it only runs on demand). Tasks persist across restarts,
+ * catch up if the due time passes while the platform is down, and show in the
+ * dashboard Jobs tab. Available in every context, including server functions.
+ */
+interface AirglowJobs {
+  /**
+   * Queue one run of job `jobId` at `at` (Date, ms epoch, or ISO string; at
+   * most a year out). `config` replaces the job's manifest config for this
+   * run. Max 50 pending tasks per app.
+   *
+   *   await airglow.jobs.schedule('send-email', {
+   *     at: Date.now() + 24 * 3600e3, config: { to: 'a@b.com' },
+   *   });
+   */
+  schedule(jobId: string, opts: { at: number | string | Date; config?: any }): Promise<AirglowJobTask>;
+  /** Cancel a pending task. No-op if it already ran or was cancelled. */
+  cancel(taskId: string): Promise<void>;
+  /** Pending tasks for this app, soonest first. */
+  list(): Promise<AirglowJobTask[]>;
+}
+
 /** One choice of a chat-completions response. */
 interface AirglowLlmChoice {
   index: number;
@@ -147,6 +182,8 @@ interface Airglow {
   connectors: AirglowConnectors;
 
   llm: AirglowLlm;
+
+  jobs: AirglowJobs;
 
   fetch<T = any>(
     url: string,

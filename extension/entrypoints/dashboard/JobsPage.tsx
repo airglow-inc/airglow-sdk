@@ -2,10 +2,15 @@
 // plus locally-developed cloud jobs) and the cloud tier (runsOn: cloud for
 // daemonless installs). Daemon wins per (appId, jobId) so a locally-installed
 // app's jobs aren't shown twice.
+//
+// Two views: Scheduled (recurring jobs + pending one-shot tasks, merged and
+// sorted by next fire time) and History (flat run list across all jobs,
+// newest first — the per-job history also stays reachable by expanding a
+// recurring row in Scheduled).
 import { useState, useEffect, useRef } from 'react';
 import {
   RefreshCw, ChevronDown, Play, CheckCircle2, XCircle, LoaderCircle,
-  CalendarClock, Cloud, Minus,
+  CalendarClock, Cloud, Minus, Clock, X, Repeat,
 } from 'lucide-react';
 import { getCloudApiUrl } from '../../lib/cloud-api';
 import { getStoredSession } from '../../lib/airglow-auth';
@@ -16,7 +21,7 @@ interface JobRun {
   runId: string;
   appId: string;
   jobId: string;
-  trigger: 'scheduled' | 'catchup' | 'manual';
+  trigger: 'scheduled' | 'catchup' | 'manual' | 'once';
   startedAt: number;
   finishedAt: number;
   status: 'ok' | 'error';
@@ -30,11 +35,20 @@ interface JobInfo {
   appName: string;
   jobId: string;
   title: string;
-  schedule: 'hourly' | 'daily' | 'weekly';
+  schedule: 'hourly' | 'daily' | 'weekly' | null;
   runsOn: 'daemon' | 'cloud';
   running: boolean;
   lastRun: JobRun | null;
   nextDueAt: number | null;
+  _source: 'local' | 'cloud';
+}
+
+interface JobTask {
+  taskId: string;
+  appId: string;
+  jobId: string;
+  runAt: number;
+  createdAt: number;
   _source: 'local' | 'cloud';
 }
 
@@ -55,40 +69,67 @@ async function cloudHeaders(): Promise<Record<string, string> | null> {
   };
 }
 
+interface JobsData {
+  jobs: JobInfo[];
+  tasks: JobTask[];
+  anySourceUp: boolean;
+}
+
 // Both sources, tolerant of either being down; daemon wins per (appId, jobId).
-async function loadJobs(): Promise<{ jobs: JobInfo[]; anySourceUp: boolean }> {
+async function loadJobs(): Promise<JobsData> {
   const [local, cloud] = await Promise.all([
     (async () => {
       const res = await fetch(`${await daemonOrigin()}/api/jobs`, { signal: AbortSignal.timeout(5000) });
-      const data = await res.json();
-      return (data?.jobs ?? []) as JobInfo[];
+      return await res.json();
     })().catch(() => null),
     (async () => {
       const headers = await cloudHeaders();
-      if (!headers) return [] as JobInfo[];
+      if (!headers) return { jobs: [], tasks: [] };
       const res = await fetch(`${await getCloudApiUrl()}/api/jobs`, { headers, signal: AbortSignal.timeout(10000) });
-      const data = await res.json();
-      return (data?.jobs ?? []) as JobInfo[];
+      return await res.json();
     })().catch(() => null),
   ]);
-  const localJobs = (local ?? []).map((j) => ({ ...j, _source: 'local' as const }));
-  const localKeys = new Set(localJobs.map((j) => `${j.appId}/${j.jobId}`));
-  const cloudJobs = (cloud ?? [])
-    .filter((j) => !localKeys.has(`${j.appId}/${j.jobId}`))
-    .map((j) => ({ ...j, _source: 'cloud' as const }));
-  return { jobs: [...localJobs, ...cloudJobs], anySourceUp: local !== null || cloud !== null };
+  const tag = (data: any, source: 'local' | 'cloud') => ({
+    jobs: ((data?.jobs ?? []) as JobInfo[]).map((j) => ({ ...j, _source: source })),
+    tasks: ((data?.tasks ?? []) as JobTask[]).map((t) => ({ ...t, _source: source })),
+  });
+  const l = tag(local, 'local');
+  const c = tag(cloud, 'cloud');
+  const localJobKeys = new Set(l.jobs.map((j) => `${j.appId}/${j.jobId}`));
+  return {
+    jobs: [...l.jobs, ...c.jobs.filter((j) => !localJobKeys.has(`${j.appId}/${j.jobId}`))],
+    tasks: [...l.tasks, ...c.tasks],
+    anySourceUp: local !== null || cloud !== null,
+  };
 }
 
-async function loadRuns(job: JobInfo): Promise<JobRun[]> {
-  const base = job._source === 'local' ? await daemonOrigin() : await getCloudApiUrl();
-  const headers = job._source === 'cloud' ? await cloudHeaders() : null;
-  if (job._source === 'cloud' && !headers) return [];
-  const res = await fetch(
-    `${base}/api/jobs/runs?appId=${encodeURIComponent(job.appId)}&jobId=${encodeURIComponent(job.jobId)}&limit=20`,
-    { headers: headers ?? undefined, signal: AbortSignal.timeout(10000) },
-  );
-  const data = await res.json();
-  return (data?.runs ?? []) as JobRun[];
+async function loadRunsFrom(source: 'local' | 'cloud', params: string): Promise<JobRun[] | null> {
+  try {
+    const base = source === 'local' ? await daemonOrigin() : await getCloudApiUrl();
+    const headers = source === 'cloud' ? await cloudHeaders() : null;
+    if (source === 'cloud' && !headers) return [];
+    const res = await fetch(`${base}/api/jobs/runs?${params}`, {
+      headers: headers ?? undefined,
+      signal: AbortSignal.timeout(10000),
+    });
+    const data = await res.json();
+    return (data?.runs ?? []) as JobRun[];
+  } catch {
+    return null;
+  }
+}
+
+async function loadJobRuns(job: JobInfo): Promise<JobRun[]> {
+  const runs = await loadRunsFrom(job._source, `appId=${encodeURIComponent(job.appId)}&jobId=${encodeURIComponent(job.jobId)}&limit=20`);
+  return runs ?? [];
+}
+
+async function loadAllRuns(): Promise<JobRun[]> {
+  const [local, cloud] = await Promise.all([
+    loadRunsFrom('local', 'limit=100'),
+    loadRunsFrom('cloud', 'limit=100'),
+  ]);
+  return [...(local ?? []), ...(cloud ?? [])].sort((a, b) => b.startedAt - a.startedAt);
 }
 
 function fmtAgo(ts: number): string {
@@ -138,6 +179,12 @@ function Pill({ color, children, title }: { color: string; children: React.React
   );
 }
 
+const TRIGGER_PILL: Partial<Record<JobRun['trigger'], { color: string; label: string }>> = {
+  manual: { color: 'var(--olive)', label: 'manual' },
+  catchup: { color: 'var(--clay)', label: 'catch-up' },
+  once: { color: 'var(--sky)', label: 'one-time' },
+};
+
 function StatusIcon({ job }: { job: JobInfo }) {
   if (job.running) return <LoaderCircle size={17} className="shrink-0 animate-spin" style={{ color: 'var(--olive)' }} />;
   if (!job.lastRun) return <Minus size={17} className="shrink-0" style={{ color: 'var(--fg-tertiary)' }} />;
@@ -146,9 +193,67 @@ function StatusIcon({ job }: { job: JobInfo }) {
     : <XCircle size={17} className="shrink-0" style={{ color: 'var(--error)' }} />;
 }
 
+// One flat history row: status, when, app · job, trigger, duration, outcome.
+function RunRow({ run, label, indent, open, onToggle }: {
+  run: JobRun; label?: string; indent: boolean; open: boolean; onToggle: () => void;
+}) {
+  const hasDetail = Boolean(run.log || run.error);
+  const pill = TRIGGER_PILL[run.trigger];
+  return (
+    <div>
+      <div
+        className={`flex items-center gap-2.5 ${indent ? 'pl-12' : 'pl-4'} pr-4 py-2 text-sm`}
+        style={{ cursor: hasDetail ? 'pointer' : undefined }}
+        onClick={() => { if (hasDetail) onToggle(); }}
+        data-testid={`job-run-${run.runId}`}
+      >
+        {run.status === 'ok'
+          ? <CheckCircle2 size={14} className="shrink-0" style={{ color: 'var(--success)' }} />
+          : <XCircle size={14} className="shrink-0" style={{ color: 'var(--error)' }} />}
+        <span className="shrink-0 text-xs tabular-nums" title={fmtWhen(run.startedAt)} style={{ color: 'var(--fg-tertiary)', minWidth: '64px' }}>
+          {fmtAgo(run.startedAt)}
+        </span>
+        {label && (
+          <span className="shrink-0 text-xs truncate" style={{ color: 'var(--fg-secondary)', maxWidth: '220px' }}>
+            {label}
+          </span>
+        )}
+        <span className="shrink-0 text-xs tabular-nums" style={{ color: 'var(--fg-tertiary)', minWidth: '38px' }}>
+          {fmtDuration(run)}
+        </span>
+        {pill && <Pill color={pill.color}>{pill.label}</Pill>}
+        <span className="flex-1 truncate" style={{ color: run.status === 'ok' ? 'var(--fg-secondary)' : 'var(--error)' }}>
+          {run.status === 'ok' ? (run.summary || 'Completed') : (run.error || 'Failed')}
+        </span>
+        {hasDetail && (
+          <ChevronDown
+            size={15}
+            className="shrink-0 transition-transform"
+            style={{ color: 'var(--fg-tertiary)', transform: open ? 'rotate(180deg)' : undefined }}
+          />
+        )}
+      </div>
+      {open && hasDetail && (
+        <pre
+          className={`${indent ? 'mx-12' : 'mx-4'} mb-2 px-3 py-2 text-xs rounded border overflow-auto`}
+          style={{
+            color: 'var(--fg-primary)', background: 'var(--bg-white)',
+            borderColor: 'var(--border-tertiary)', whiteSpace: 'pre-wrap',
+            wordBreak: 'break-word', maxHeight: '240px',
+            fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
+          }}
+        >
+          {[run.error && `Error: ${run.error}`, run.log].filter(Boolean).join('\n\n')}
+        </pre>
+      )}
+    </div>
+  );
+}
+
 export default function JobsPage() {
-  const [jobs, setJobs] = useState<JobInfo[] | null>(null);
-  const [sourceUp, setSourceUp] = useState(true);
+  const [tab, setTab] = useState<'scheduled' | 'history'>('scheduled');
+  const [data, setData] = useState<JobsData | null>(null);
+  const [history, setHistory] = useState<JobRun[] | null>(null);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [runsByJob, setRunsByJob] = useState<Record<string, JobRun[]>>({});
   const [openRuns, setOpenRuns] = useState<Set<string>>(new Set());
@@ -156,23 +261,22 @@ export default function JobsPage() {
   const expandedRef = useRef(expanded);
   expandedRef.current = expanded;
 
-  async function refresh(withRuns = true) {
-    const { jobs: loaded, anySourceUp } = await loadJobs();
-    setJobs(loaded);
-    setSourceUp(anySourceUp);
-    if (!withRuns) return;
-    for (const job of loaded) {
-      if (expandedRef.current.has(`${job.appId}/${job.jobId}`)) void refreshRuns(job);
+  async function refresh() {
+    const [loaded, runs] = await Promise.all([loadJobs(), loadAllRuns()]);
+    setData(loaded);
+    setHistory(runs);
+    for (const job of loaded.jobs) {
+      if (expandedRef.current.has(`${job.appId}/${job.jobId}`)) void refreshJobRuns(job);
     }
   }
 
-  async function refreshRuns(job: JobInfo) {
-    const runs = await loadRuns(job).catch(() => [] as JobRun[]);
+  async function refreshJobRuns(job: JobInfo) {
+    const runs = await loadJobRuns(job);
     setRunsByJob((prev) => ({ ...prev, [`${job.appId}/${job.jobId}`]: runs }));
   }
 
   useEffect(() => {
-    void refresh(false);
+    void refresh();
     const id = setInterval(() => void refresh(), 10_000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -184,9 +288,17 @@ export default function JobsPage() {
     if (next.has(key)) next.delete(key);
     else {
       next.add(key);
-      if (!runsByJob[key]) void refreshRuns(job);
+      if (!runsByJob[key]) void refreshJobRuns(job);
     }
     setExpanded(next);
+  }
+
+  function toggleRun(runKey: string) {
+    setOpenRuns((prev) => {
+      const next = new Set(prev);
+      if (next.has(runKey)) next.delete(runKey); else next.add(runKey);
+      return next;
+    });
   }
 
   async function runNow(job: JobInfo) {
@@ -207,10 +319,37 @@ export default function JobsPage() {
       setRunningNow((prev) => { const n = new Set(prev); n.delete(key); return n; });
       // Show the outcome: expand the job and pull its fresh run list.
       setExpanded((prev) => new Set(prev).add(key));
-      void refresh(false);
-      void refreshRuns(job);
+      void refresh();
+      void refreshJobRuns(job);
     }
   }
+
+  async function cancelTask(task: JobTask) {
+    try {
+      const base = task._source === 'local' ? await daemonOrigin() : await getCloudApiUrl();
+      const headers = task._source === 'cloud' ? await cloudHeaders() : null;
+      await fetch(`${base}/api/jobs/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(headers ?? {}) },
+        body: JSON.stringify({ appId: task.appId, taskId: task.taskId }),
+        signal: AbortSignal.timeout(10000),
+      });
+    } catch {}
+    void refresh();
+  }
+
+  const jobs = data?.jobs ?? [];
+  const tasks = data?.tasks ?? [];
+  const jobByKey = new Map(jobs.map((j) => [`${j.appId}/${j.jobId}`, j]));
+
+  // One time-ordered list: pending one-shots + recurring jobs by next fire
+  // time; on-demand jobs (no schedule, no pending task) sink to the bottom.
+  const scheduledItems: Array<{ kind: 'job'; job: JobInfo; sort: number } | { kind: 'task'; task: JobTask; sort: number }> = [
+    ...tasks.map((task) => ({ kind: 'task' as const, task, sort: task.runAt })),
+    ...jobs.map((job) => ({ kind: 'job' as const, job, sort: job.nextDueAt ?? Number.MAX_SAFE_INTEGER })),
+  ].sort((a, b) => a.sort - b.sort);
+
+  const failedRuns = (history ?? []).filter((r) => r.status === 'error').length;
 
   return (
     <div className="flex flex-col" style={{ height: 'calc(100vh - 64px)' }}>
@@ -232,30 +371,140 @@ export default function JobsPage() {
         </button>
       </div>
 
-      {/* Job list */}
+      {/* Tabs */}
+      <div className="flex items-center gap-1.5 mb-3 shrink-0">
+        {([
+          { id: 'scheduled' as const, label: `Scheduled (${scheduledItems.length})` },
+          { id: 'history' as const, label: `History (${history?.length ?? 0})` },
+        ]).map(({ id, label }) => {
+          const active = tab === id;
+          return (
+            <button
+              key={id}
+              onClick={() => setTab(id)}
+              className="h-8 px-3 rounded-full text-sm font-medium cursor-pointer transition-all border"
+              style={{
+                color: active ? 'var(--bg-white)' : 'var(--fg-secondary)',
+                background: active ? 'var(--fg-secondary)' : 'var(--bg-primary)',
+                borderColor: active ? 'transparent' : 'var(--border-secondary)',
+              }}
+              data-testid={`jobs-tab-${id}`}
+            >
+              {label}
+            </button>
+          );
+        })}
+        {tab === 'history' && failedRuns > 0 && (
+          <span className="text-sm ml-1" style={{ color: 'var(--fg-tertiary)' }}>
+            {failedRuns} failed
+          </span>
+        )}
+      </div>
+
+      {/* Content */}
       <div
         className="flex-1 overflow-y-auto rounded-lg border min-h-0"
         style={{ background: 'var(--bg-white)', borderColor: 'var(--border-tertiary)' }}
         data-testid="jobs-container"
       >
-        {jobs === null ? (
+        {data === null ? (
           <div className="flex items-center justify-center h-48 text-base" style={{ color: 'var(--fg-tertiary)' }}>
             Loading…
           </div>
-        ) : jobs.length === 0 ? (
+        ) : tab === 'history' ? (
+          (history ?? []).length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-2 h-56 px-8 text-center">
+              <Clock size={28} style={{ color: 'var(--fg-tertiary)' }} />
+              <div className="text-base font-medium" style={{ color: 'var(--fg-secondary)' }}>No runs yet</div>
+              <div className="text-sm max-w-md" style={{ color: 'var(--fg-tertiary)' }}>
+                Every job run — scheduled, one-time, or manual — shows up here with its output.
+              </div>
+            </div>
+          ) : (
+            (history ?? []).map((run) => {
+              const job = jobByKey.get(`${run.appId}/${run.jobId}`);
+              const runKey = `history/${run.runId}`;
+              return (
+                <div key={runKey} className="border-b" style={{ borderColor: 'var(--border-tertiary)' }}>
+                  <RunRow
+                    run={run}
+                    label={job ? `${job.appName} · ${job.title}` : `${run.appId} · ${run.jobId}`}
+                    indent={false}
+                    open={openRuns.has(runKey)}
+                    onToggle={() => toggleRun(runKey)}
+                  />
+                </div>
+              );
+            })
+          )
+        ) : scheduledItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-2 h-56 px-8 text-center">
             <CalendarClock size={28} style={{ color: 'var(--fg-tertiary)' }} />
             <div className="text-base font-medium" style={{ color: 'var(--fg-secondary)' }}>
-              {sourceUp ? 'No scheduled jobs yet' : "Couldn't reach the host or the cloud"}
+              {data.anySourceUp ? 'Nothing scheduled yet' : "Couldn't reach the host or the cloud"}
             </div>
             <div className="text-sm max-w-md" style={{ color: 'var(--fg-tertiary)' }}>
-              {sourceUp
-                ? 'Apps declare jobs in their manifest to run on a schedule — hourly, daily, or weekly — even with no tab open.'
+              {data.anySourceUp
+                ? 'Apps declare recurring jobs in their manifest, or queue one-time runs from code — both show up here.'
                 : 'Start Chrome with the Airglow host installed, or sign in to see cloud jobs.'}
             </div>
           </div>
         ) : (
-          jobs.map((job) => {
+          scheduledItems.map((item) => {
+            if (item.kind === 'task') {
+              const { task } = item;
+              const job = jobByKey.get(`${task.appId}/${task.jobId}`);
+              return (
+                <div
+                  key={task.taskId}
+                  className="flex items-center gap-3 px-4 py-3 border-b"
+                  style={{ borderColor: 'var(--border-tertiary)' }}
+                  data-testid={`job-task-${task.taskId}`}
+                >
+                  <Clock size={17} className="shrink-0" style={{ color: 'var(--sky)' }} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base font-medium truncate" style={{ color: 'var(--fg-primary)' }}>
+                        {job?.title ?? task.jobId}
+                      </span>
+                      <Pill color="var(--sky)">one-time</Pill>
+                      {job?.runsOn === 'cloud' && task._source === 'cloud' && (
+                        <Pill color="var(--sky)" title="Runs on Airglow cloud — works while this machine is off">
+                          <Cloud size={11} /> cloud
+                        </Pill>
+                      )}
+                    </div>
+                    <div className="text-xs mt-0.5 truncate" style={{ color: 'var(--fg-tertiary)' }}>
+                      {job?.appName ?? task.appId} · {fmtWhen(task.runAt)}
+                    </div>
+                  </div>
+                  <span className="text-sm shrink-0 tabular-nums" style={{ color: 'var(--fg-secondary)' }}>
+                    {fmtIn(task.runAt)}
+                  </span>
+                  <button
+                    onClick={() => void cancelTask(task)}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-sm font-medium cursor-pointer transition-all border shrink-0"
+                    style={{ color: 'var(--fg-secondary)', borderColor: 'var(--border-secondary)', background: 'var(--bg-primary)' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.color = 'var(--error)';
+                      e.currentTarget.style.borderColor = 'color-mix(in srgb, var(--error) 55%, transparent)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.color = 'var(--fg-secondary)';
+                      e.currentTarget.style.borderColor = 'var(--border-secondary)';
+                    }}
+                    data-testid={`job-task-cancel-${task.taskId}`}
+                  >
+                    <X size={14} />
+                    Cancel
+                  </button>
+                  {/* spacer aligns with job rows' chevron column */}
+                  <span style={{ width: 18 }} className="shrink-0" />
+                </div>
+              );
+            }
+
+            const { job } = item;
             const key = `${job.appId}/${job.jobId}`;
             const isExpanded = expanded.has(key);
             const isRunning = job.running || runningNow.has(key);
@@ -275,7 +524,9 @@ export default function JobsPage() {
                       <span className="text-base font-medium truncate" style={{ color: 'var(--fg-primary)' }}>
                         {job.title}
                       </span>
-                      <Pill color="var(--fg-tertiary)">{job.schedule}</Pill>
+                      {job.schedule
+                        ? <Pill color="var(--fg-tertiary)"><Repeat size={11} /> {job.schedule}</Pill>
+                        : <Pill color="var(--fg-tertiary)" title="No recurring schedule — runs when the app queues it or via Run now">on demand</Pill>}
                       {job.runsOn === 'cloud' && (
                         <Pill color="var(--sky)" title="Runs on Airglow cloud — works while this machine is off">
                           <Cloud size={11} /> cloud
@@ -327,7 +578,7 @@ export default function JobsPage() {
                   />
                 </div>
 
-                {/* Run history */}
+                {/* Per-job run history */}
                 {isExpanded && (
                   <div className="border-t" style={{ borderColor: 'var(--border-tertiary)', background: 'var(--bg-secondary)' }}>
                     {runs === undefined ? (
@@ -337,62 +588,14 @@ export default function JobsPage() {
                     ) : (
                       runs.map((run) => {
                         const runKey = `${key}/${run.runId}`;
-                        const hasDetail = Boolean(run.log || run.error);
-                        const isOpen = openRuns.has(runKey);
                         return (
-                          <div key={run.runId}>
-                            <div
-                              className="flex items-center gap-2.5 pl-12 pr-4 py-2 text-sm"
-                              style={{ cursor: hasDetail ? 'pointer' : undefined }}
-                              onClick={() => {
-                                if (!hasDetail) return;
-                                setOpenRuns((prev) => {
-                                  const next = new Set(prev);
-                                  if (next.has(runKey)) next.delete(runKey); else next.add(runKey);
-                                  return next;
-                                });
-                              }}
-                              data-testid={`job-run-${run.runId}`}
-                            >
-                              {run.status === 'ok'
-                                ? <CheckCircle2 size={14} className="shrink-0" style={{ color: 'var(--success)' }} />
-                                : <XCircle size={14} className="shrink-0" style={{ color: 'var(--error)' }} />}
-                              <span className="shrink-0 text-xs tabular-nums" title={fmtWhen(run.startedAt)} style={{ color: 'var(--fg-tertiary)', minWidth: '64px' }}>
-                                {fmtAgo(run.startedAt)}
-                              </span>
-                              <span className="shrink-0 text-xs tabular-nums" style={{ color: 'var(--fg-tertiary)', minWidth: '38px' }}>
-                                {fmtDuration(run)}
-                              </span>
-                              {run.trigger !== 'scheduled' && (
-                                <Pill color={run.trigger === 'manual' ? 'var(--olive)' : 'var(--clay)'}>
-                                  {run.trigger === 'manual' ? 'manual' : 'catch-up'}
-                                </Pill>
-                              )}
-                              <span className="flex-1 truncate" style={{ color: run.status === 'ok' ? 'var(--fg-secondary)' : 'var(--error)' }}>
-                                {run.status === 'ok' ? (run.summary || 'Completed') : (run.error || 'Failed')}
-                              </span>
-                              {hasDetail && (
-                                <ChevronDown
-                                  size={15}
-                                  className="shrink-0 transition-transform"
-                                  style={{ color: 'var(--fg-tertiary)', transform: isOpen ? 'rotate(180deg)' : undefined }}
-                                />
-                              )}
-                            </div>
-                            {isOpen && hasDetail && (
-                              <pre
-                                className="mx-12 mb-2 px-3 py-2 text-xs rounded border overflow-auto"
-                                style={{
-                                  color: 'var(--fg-primary)', background: 'var(--bg-white)',
-                                  borderColor: 'var(--border-tertiary)', whiteSpace: 'pre-wrap',
-                                  wordBreak: 'break-word', maxHeight: '240px',
-                                  fontFamily: 'var(--font-mono, "JetBrains Mono", monospace)',
-                                }}
-                              >
-                                {[run.error && `Error: ${run.error}`, run.log].filter(Boolean).join('\n\n')}
-                              </pre>
-                            )}
-                          </div>
+                          <RunRow
+                            key={run.runId}
+                            run={run}
+                            indent
+                            open={openRuns.has(runKey)}
+                            onToggle={() => toggleRun(runKey)}
+                          />
                         );
                       })
                     )}
