@@ -468,9 +468,17 @@ export default function JobsPage() {
                         {job?.title ?? task.jobId}
                       </span>
                       <Pill color="var(--sky)">one-time</Pill>
-                      {job?.runsOn === 'cloud' && task._source === 'cloud' && (
+                      {task._source === 'cloud' && (
                         <Pill color="var(--sky)" title="Runs on Airglow cloud — works while this machine is off">
                           <Cloud size={11} /> cloud
+                        </Pill>
+                      )}
+                      {/* A cloud job's task that fell back to local storage
+                          (signed out / app unpublished / cloud down) runs on
+                          this machine — surface the mismatch. */}
+                      {task._source === 'local' && job?.runsOn === 'cloud' && (
+                        <Pill color="var(--clay)" title="The cloud couldn't take this task when it was scheduled — it runs on this machine, only while it's awake">
+                          this device
                         </Pill>
                       )}
                     </div>
