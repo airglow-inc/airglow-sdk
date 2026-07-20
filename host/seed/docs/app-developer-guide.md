@@ -136,7 +136,7 @@ Scheduling is interval-since-last-run, not wall-clock cron: a job runs when its 
 
 ### One-shot runs
 
-Beyond recurring schedules, app code can queue single future runs of any declared job with `airglow.jobs.schedule(jobId, { at, config? })` — e.g. a button that sends one email now and schedules two follow-ups. The per-task `config` replaces the manifest config for that run; pending tasks survive restarts, appear under the Jobs tab's **Scheduled** view (cancellable), and their runs land in **History**. See `airglow.jobs` in the SDK reference.
+Beyond recurring schedules, app code can queue single future runs of any declared job with `airglow.jobs.schedule(jobId, { at, config? })` — e.g. a button that sends one email now and schedules two follow-ups. The per-task `config` replaces the manifest config for that run; pending tasks survive restarts, appear under the Jobs tab's **Scheduled** view (cancellable), and their runs land in **History**. Tasks for `runsOn: "cloud"` jobs are placed in the cloud scheduler (they fire even with the machine off; needs the app catalog-published and the user signed in — otherwise they fall back to the daemon). See `airglow.jobs` in the SDK reference.
 
 ```ts
 await sendEmail(config);                                      // now

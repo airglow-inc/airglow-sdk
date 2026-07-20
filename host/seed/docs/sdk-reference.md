@@ -114,6 +114,8 @@ jobs.list(): Promise<AirglowJobTask[]>   // this app's pending tasks, soonest fi
 
 `at` is at most a year out; a past `at` runs on the next scheduler tick. `config` replaces the job's manifest `config` for that run. Max 50 pending tasks per app.
 
+Placement follows the job's `runsOn`: tasks for `runsOn: "cloud"` jobs go to the cloud scheduler and fire even while the user's machine is off (requires the app catalog-published and the user signed in — otherwise the task falls back to the daemon; the schedule response's `placed` field says which). Daemon tasks run late-but-never-lost after sleep.
+
 ```ts
 await airglow.jobs.schedule('send-email', { at: Date.now() + 86400e3, config: { to: 'a@b.com' } });
 ```

@@ -265,8 +265,9 @@ export function buildSdkCode(appId: string, context: AirglowSdkContext = 'app_ui
   };
 
   // One-shot scheduled runs of manifest-declared jobs. schedule() creates a
-  // pending task the platform executes at \`at\` (daemon or cloud, wherever the
-  // app is served); the run shows up in the dashboard Jobs tab.
+  // pending task the platform executes at \`at\` — in the cloud scheduler for
+  // runsOn:"cloud" jobs (fires even with this machine off), on the daemon
+  // otherwise; the run shows up in the dashboard Jobs tab.
   const jobs = {
     async schedule(jobId, opts) {
       const at = opts && opts.at instanceof Date ? opts.at.getTime() : opts && opts.at;
