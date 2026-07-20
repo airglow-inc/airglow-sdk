@@ -160,8 +160,12 @@ export class JobScheduler {
       // tick after a long sleep) shouldn't fork-bomb the box.
       await this.execute(def, trigger).catch(() => {});
     }
-    // One-shot tasks, due when runAt has passed. A task for a job the app no
-    // longer declares is dropped (with a warning) rather than retried forever.
+    // One-shot tasks, due when runAt has passed. Tasks for runsOn:"cloud"
+    // jobs are forwarded to the cloud at schedule time (daemon/index.ts) and
+    // never stored here — anything in the local store is either a daemon job's
+    // task or the explicit dev fallback for an unpublished cloud job, so it
+    // executes locally by design. A task for a job the app no longer declares
+    // is dropped (with a warning) rather than retried forever.
     for (const task of this.allTasks()) {
       if (task.runAt > Date.now()) continue;
       const key = `${task.appId}/${task.jobId}`;
@@ -177,6 +181,11 @@ export class JobScheduler {
       await this.execute(effective, 'once', task.taskId).catch(() => {});
       this.removeTask(task.taskId);
     }
+  }
+
+  async findJob(appId: string, jobId: string): Promise<JobDef | null> {
+    const manifests = await this.apps.scanManifests();
+    return collectJobs(manifests).find((d) => d.appId === appId && d.jobId === jobId) ?? null;
   }
 
   async runNow(appId: string, jobId: string): Promise<{ ok: true; run: JobRun } | { ok: false; error: string }> {

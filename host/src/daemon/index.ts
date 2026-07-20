@@ -628,6 +628,42 @@ export async function runDaemon(argv: string[]): Promise<void> {
     // connector as a single-browser fallback.
     const reauthWs = (connectorSessionId ? rpcConnectorSockets.get(connectorSessionId) : null) ?? lastConnectorWs;
 
+    // Forward a jobs call to the cloud gateway with the caller's identity —
+    // used for one-shot tasks of runsOn:"cloud" jobs, which must live in the
+    // cloud scheduler to fire while this machine is asleep. Token precedence:
+    // the request's own Authorization (extension bridge), then the RPC-session
+    // identity (server-SDK loopback), then the last connector identity. A 401
+    // self-heals once via the same silent re-mint as the other gateway proxies.
+    const forwardJobs = async (
+      path: string,
+      payload: Record<string, unknown>,
+    ): Promise<{ ok: true; data: any } | { ok: false; reason: string; status?: number }> => {
+      const headerToken = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null;
+      const token = headerToken ?? sessionIdentity?.authToken ?? lastConnectorIdentity?.authToken ?? null;
+      if (!token) return { ok: false, reason: 'not signed in' };
+      const attempt = (tok: string) => fetch(`${connectorGatewayUrl()}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(10_000),
+      });
+      try {
+        let res = await attempt(token);
+        if (res.status === 401) {
+          const fresh = await refreshConnectorAuth(reauthWs);
+          if (fresh) res = await attempt(fresh);
+        }
+        const data: any = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          const message = typeof data?.error === 'string' ? data.error : data?.error?.message;
+          return { ok: false, reason: message || `HTTP ${res.status}`, status: res.status };
+        }
+        return { ok: true, data };
+      } catch (e: any) {
+        return { ok: false, reason: String(e?.message ?? e) };
+      }
+    };
+
     try {
       if (pathname === '/api/healthz' && req.method === 'GET') {
         return respondJson(200, { ok: true, service: 'airglow-daemon', version: HOST_VERSION, workspace });
@@ -909,21 +945,47 @@ export async function runDaemon(argv: string[]): Promise<void> {
           return respondJson(400, { error: 'expected { appId, jobId, at }' });
         }
         const at = typeof body.at === 'string' ? Date.parse(body.at) : Number(body.at);
+        // A runsOn:"cloud" job's task belongs in the cloud scheduler — that's
+        // what makes it fire with the laptop closed. Only when the cloud can't
+        // take it (signed out, app not catalog-published, cloud unreachable)
+        // does the task fall back to local storage as a dev convenience, and
+        // the response says so via `placed`.
+        const def = await jobs.findJob(body.appId, body.jobId);
+        if (def?.runsOn === 'cloud') {
+          const fwd = await forwardJobs('/api/jobs/schedule', { appId: body.appId, jobId: body.jobId, at, config: body.config });
+          if (fwd.ok) return respondJson(200, { ...fwd.data, placed: 'cloud' });
+          console.log(`[jobs/${body.appId}/${body.jobId}] cloud schedule unavailable (${fwd.reason}) — storing task locally, will run on this daemon`);
+        }
         const result = await jobs.schedule(body.appId, body.jobId, at, body.config);
-        return result.ok ? respondJson(200, result) : respondJson(result.status, { error: result.error });
+        return result.ok
+          ? respondJson(200, { ...result, placed: 'daemon' })
+          : respondJson(result.status, { error: result.error });
       }
       if (pathname === '/api/jobs/cancel' && req.method === 'POST') {
         const body: any = await req.json().catch(() => null);
         if (typeof body?.taskId !== 'string') return respondJson(400, { error: 'expected { taskId }' });
-        return jobs.cancel(body.taskId)
-          ? respondJson(200, { ok: true })
-          : respondJson(404, { error: 'task not found' });
+        if (jobs.cancel(body.taskId)) return respondJson(200, { ok: true });
+        // Not local — it may be a task this daemon forwarded to the cloud.
+        const fwd = await forwardJobs('/api/jobs/cancel', { taskId: body.taskId });
+        if (fwd.ok) return respondJson(200, fwd.data);
+        return respondJson(404, { error: 'task not found' });
       }
       if (pathname === '/api/jobs/tasks' && (req.method === 'GET' || req.method === 'POST')) {
         const appId = req.method === 'GET'
           ? url.searchParams.get('appId') || undefined
           : ((await req.json().catch(() => ({}))) as any)?.appId;
-        return respondJson(200, { ok: true, tasks: jobs.listTasks(typeof appId === 'string' ? appId : undefined) });
+        const appFilter = typeof appId === 'string' ? appId : undefined;
+        const local = jobs.listTasks(appFilter);
+        // The SDK's jobs.list() should also see tasks this daemon forwarded to
+        // the cloud; merge them in (dedup by taskId, cloud unreachable → local
+        // only). The dashboard reads cloud tasks from the cloud directly and
+        // uses GET /api/jobs, which stays local-only — no double-listing.
+        const fwd = req.method === 'POST' ? await forwardJobs('/api/jobs/tasks', { appId: appFilter }) : null;
+        const localIds = new Set(local.map((t) => t.taskId));
+        const cloudTasks = fwd?.ok && Array.isArray(fwd.data?.tasks)
+          ? fwd.data.tasks.filter((t: any) => !localIds.has(t?.taskId) && (!appFilter || t?.appId === appFilter))
+          : [];
+        return respondJson(200, { ok: true, tasks: [...local, ...cloudTasks] });
       }
       if (pathname === '/api/jobs/runs' && req.method === 'GET') {
         const limit = Number(url.searchParams.get('limit') || 50);
