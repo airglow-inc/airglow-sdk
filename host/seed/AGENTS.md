@@ -36,7 +36,7 @@ The browser belongs to the user; their open tabs are their workspace, not yours.
 - A tab runs un-throttled only while it's the active tab in its window; the tools activate your own tab before acting on it (without bringing the window to the front), so you don't need to manage focus — just work one tab at a time.
 - `shot` captures in place (no focus change). Screenshot your own tabs; a user tab only when the task requires it.
 - **Never let a tab play sound.** Your agent window is unfocused but audible. Prefer routes that make no noise (`airglow fetch`, a page without media); if a page you open autoplays audio or unmuted video, immediately mute and pause it: `airglow browser eval --tab N 'document.querySelectorAll("video,audio").forEach(m=>{m.muted=true;m.pause()})'`.
-- **Close your test tabs** (`close --tab N`) when you're done. Never close tabs you didn't open. You cannot launch browsers; use the existing one. There is no reload command — the platform reloads matching tabs when you change app source.
+- **Close your test tabs** (`close --tab N`) when you're done. Never close tabs you didn't open. You cannot launch browsers; use the existing one. There is no reload command, and editing app source never reloads any tab — the platform re-registers the changed userscript (picked up within a few seconds), which takes effect on the next load of a matching page. To see a change, load the page fresh in your own window (`open`/`nav`); the user reloads their own tabs themselves.
 
 ## Docs
 
