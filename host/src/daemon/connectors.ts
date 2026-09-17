@@ -20,6 +20,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AgentIdentity } from '../agent/api';
 
 const COMPOSIO_BASE = 'https://backend.composio.dev/api/v3.1';
 const USER_ID_PREFIX = 'airglow.';
@@ -30,8 +31,10 @@ export const AGENT_APP_ID = 'agent';
 // Where gateway-mode connector calls go. Independent of agent/api.ts
 // gatewayUrl(), which returns null in ANTHROPIC_API_KEY dev mode — an LLM
 // concern that must not flip the connector transport.
-export function connectorGatewayUrl(): string {
-  return (process.env.AIRGLOW_GATEWAY_URL || 'https://api.airglow.dev').replace(/\/+$/, '');
+// Precedence: the caller's own announced gateway (identity), then the boot
+// env (state/agent.env), then production.
+export function connectorGatewayUrl(identity?: AgentIdentity | null): string {
+  return (identity?.gatewayUrl || process.env.AIRGLOW_GATEWAY_URL || 'https://api.airglow.dev').replace(/\/+$/, '');
 }
 
 export interface ConnectorError extends Error {

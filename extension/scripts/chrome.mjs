@@ -289,9 +289,15 @@ if (!noCdp) {
   chromeArgs.push(
     // CDP websocket for debugging (default :9222; override via --cdp-port)
     `--remote-debugging-port=${cdpPort}`,
-    // CDP pipe for Extensions.loadUnpacked (only method that works on branded Chrome)
+    // CDP pipe for Extensions.loadUnpacked (only method that works on branded Chrome).
+    // The pipe (unlike the port) makes the browser detectable as automated by websites.
     '--remote-debugging-pipe',
     '--enable-unsafe-extension-debugging',
+    // --remote-debugging-pipe (not the port) sets navigator.webdriver=true, which
+    // Google and Shopify sign-in reject. This turns the property back off.
+    '--disable-blink-features=AutomationControlled',
+    // Suppresses the "unsupported command-line flag" infobar the line above triggers.
+    '--test-type',
   );
 }
 chromeArgs.push(`--user-data-dir=${userDataDir}`);

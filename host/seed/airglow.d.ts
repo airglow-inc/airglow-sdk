@@ -137,9 +137,11 @@ interface AirglowChatCompletion {
 interface AirglowLlm {
   /**
    * OpenAI chat-completions schema, proxied to OpenRouter. `payload` is the
-   * request body, passed through unchanged. Allowed models:
-   * `anthropic/claude-haiku-4.5`, `anthropic/claude-sonnet-5` (default),
-   * `anthropic/claude-opus-4.8`.
+   * request body, passed through unchanged. Any OpenRouter-catalog model
+   * priced within $10/MTok in and $50/MTok out is allowed (default
+   * `anthropic/claude-sonnet-5`); pricier models reject with
+   * LLM_MODEL_NOT_ALLOWED. Optional `session_id` (≤128 chars) groups one
+   * operation's calls in analytics.
    *
    *   await airglow.llm.chat({
    *     model: 'anthropic/claude-sonnet-5', max_tokens: 1024,

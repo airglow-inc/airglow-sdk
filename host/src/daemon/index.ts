@@ -328,6 +328,18 @@ export async function runDaemon(argv: string[]): Promise<void> {
   const rpcConnectorSockets = new Map<string, Bun.ServerWebSocket<unknown>>();
   let rpcConnectorSessionSeq = 0;
 
+  // The identity of the connected browser that owns `token`, if any. Lets
+  // gateway proxies follow the caller's announced gateway (identity.gatewayUrl)
+  // even when the request arrived with only an Authorization header
+  // (extension-bridge calls carry no RPC session nonce).
+  const identityForToken = (token: string | null): AgentIdentity | null => {
+    if (!token) return null;
+    for (const { identity } of connectorSocketsById.values()) {
+      if (identity.authToken === token) return identity;
+    }
+    return null;
+  };
+
   // Report the user's current installed catalog apps to the cloud (install,
   // uninstall, identity announce). reportInstalls dedupes + is fire-and-forget.
   const syncInstallTelemetry = () => reportInstalls(lastConnectorIdentity, Object.keys(catalog.provenance()));
@@ -432,30 +444,35 @@ export async function runDaemon(argv: string[]): Promise<void> {
     sink,
   );
 
-  // The gateway URL the daemon booted with (agent.env or unset). A non-empty
-  // override from the extension Settings wins; clearing it restores this.
-  const bootGatewayUrl = process.env.AIRGLOW_GATEWAY_URL;
-  function applyGatewayOverride(raw: unknown): void {
+  // A connector may announce a gateway URL override (Settings → Cloud API
+  // URL). It lives on that connector's identity and routes only that browser's
+  // agent/LLM/connector traffic — never process.env, which would poison every
+  // other connected browser (and outlive the browser that set it). Identity-
+  // less callers (CLI, jobs) fall back to lastConnectorIdentity, so the
+  // override still follows its own token instead of leaking across browsers.
+  function normalizeGatewayUrl(raw: unknown): string | null {
     const url = typeof raw === 'string' ? raw.trim().replace(/\/+$/, '') : '';
-    if (url && !/^https?:\/\//.test(url)) {
+    if (!url) return null;
+    if (!/^https?:\/\//.test(url)) {
       console.log(`ignoring invalid gateway URL override: ${url}`);
-      return;
+      return null;
     }
-    const next = url || bootGatewayUrl;
-    if (process.env.AIRGLOW_GATEWAY_URL === next || (!process.env.AIRGLOW_GATEWAY_URL && !next)) return;
-    if (next) process.env.AIRGLOW_GATEWAY_URL = next;
-    else delete process.env.AIRGLOW_GATEWAY_URL;
-    console.log(`agent gateway URL ${url ? `overridden: ${url}` : 'restored to default'}`);
+    return url;
   }
 
   // Chat-client messages arriving from a connector (the extension side).
   function handleAgentMessage(ws: Bun.ServerWebSocket<unknown>, m: any): boolean {
     switch (m.type) {
       case 'identity': {
+        const gatewayOverride = normalizeGatewayUrl(m.gatewayUrl);
+        if (gatewayOverride !== (connectorIdentities.get(ws)?.gatewayUrl ?? null)) {
+          console.log(`connector gateway ${gatewayOverride ? `override: ${gatewayOverride}` : 'restored to default'}`);
+        }
         connectorIdentities.set(ws, {
           userId: typeof m.userId === 'string' ? m.userId : null,
           email: typeof m.email === 'string' ? m.email : null,
           authToken: typeof m.authToken === 'string' && m.authToken ? m.authToken : null,
+          gatewayUrl: gatewayOverride,
         });
         const identity = connectorIdentities.get(ws as object) ?? null;
         lastConnectorIdentity = identity;
@@ -463,7 +480,6 @@ export async function runDaemon(argv: string[]): Promise<void> {
         const connectorId = (ws.data as any)?.connectorId;
         if (typeof connectorId === 'number' && identity) connectorSocketsById.set(connectorId, { ws, identity });
         if (typeof m.extensionId === 'string' && m.extensionId) bridge.setConnectorExtensionId(ws, m.extensionId);
-        if ('gatewayUrl' in m) applyGatewayOverride(m.gatewayUrl);
         syncInstallTelemetry(); // now we know who to attribute installs to
         apps.scanManifests().then(syncAppTelemetry).catch(() => {});
         return true;
@@ -623,6 +639,12 @@ export async function runDaemon(argv: string[]): Promise<void> {
     // lastConnectorIdentity, which is wrong when several browsers are connected.
     const connectorSessionId = req.headers.get('x-airglow-connector-session');
     const sessionIdentity = connectorSessionId ? rpcConnectorIdentities.get(connectorSessionId) ?? null : null;
+    // The identity gateway-bound proxies route by: the RPC session's browser,
+    // else the browser owning the request's Bearer token, else the last
+    // announced identity. Keeps each browser on its own gateway (and its token
+    // on the gateway that minted it) when several browsers are connected.
+    const headerBearer = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null;
+    const callerIdentity = sessionIdentity ?? identityForToken(headerBearer) ?? lastConnectorIdentity;
     // The socket to ask for a silent re-mint when a gateway loopback returns 401
     // AUTH_SESSION_INVALID: the browser that owns this RPC's token, else the last
     // connector as a single-browser fallback.
@@ -638,10 +660,9 @@ export async function runDaemon(argv: string[]): Promise<void> {
       path: string,
       payload: Record<string, unknown>,
     ): Promise<{ ok: true; data: any } | { ok: false; reason: string; status?: number }> => {
-      const headerToken = req.headers.get('authorization')?.replace(/^Bearer\s+/i, '') || null;
-      const token = headerToken ?? sessionIdentity?.authToken ?? lastConnectorIdentity?.authToken ?? null;
+      const token = headerBearer ?? sessionIdentity?.authToken ?? lastConnectorIdentity?.authToken ?? null;
       if (!token) return { ok: false, reason: 'not signed in' };
-      const attempt = (tok: string) => fetch(`${connectorGatewayUrl()}${path}`, {
+      const attempt = (tok: string) => fetch(`${connectorGatewayUrl(callerIdentity)}${path}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` },
         body: JSON.stringify(payload),
@@ -742,7 +763,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
       if (pathname === '/api/llm/v1/chat/completions' && req.method === 'POST') {
         const out = await handleLlmChatCompletions(
           req,
-          sessionIdentity ?? lastConnectorIdentity,
+          callerIdentity,
           () => refreshConnectorAuth(reauthWs),
         );
         // Streaming calls come back as a raw SSE Response — attach CORS and
@@ -828,7 +849,7 @@ export async function runDaemon(argv: string[]): Promise<void> {
         // request Authorization wins (extension-originated calls); CLI and
         // server-function loopbacks fall back to the last announced identity.
         if (!connectors.hasApiKey()) {
-          const gwBase = connectorGatewayUrl();
+          const gwBase = connectorGatewayUrl(callerIdentity);
           const headers: Record<string, string> = {};
           const auth = req.headers.get('authorization');
           // Precedence: a real Authorization header (extension-originated call)
@@ -1045,19 +1066,22 @@ export async function runDaemon(argv: string[]): Promise<void> {
           if (rpcAuth || rpcUserId) {
             sessionNonce = `rpc-${++rpcConnectorSessionSeq}`;
             const bearer = rpcAuth ? rpcAuth.replace(/^Bearer\s+/i, '') : null;
-            rpcConnectorIdentities.set(sessionNonce, {
+            const rpcIdentity: AgentIdentity = {
               userId: rpcUserId,
               email: req.headers.get('x-airglow-user-email'),
               authToken: bearer,
-            });
+            };
             // Pin the originating socket too, so a loopback 401 re-mints on the
             // browser that owns this token — match by token, else by user id.
             for (const { ws: cws, identity } of connectorSocketsById.values()) {
               if ((bearer && identity.authToken === bearer) || (!bearer && rpcUserId && identity.userId === rpcUserId)) {
                 rpcConnectorSockets.set(sessionNonce, cws);
+                // This RPC's loopbacks follow the gateway its browser announced.
+                rpcIdentity.gatewayUrl = identity.gatewayUrl ?? null;
                 break;
               }
             }
+            rpcConnectorIdentities.set(sessionNonce, rpcIdentity);
           }
           try {
             const [status, data] = await apps.handleRpc(appId, rpcMatch[1], body, sessionNonce);

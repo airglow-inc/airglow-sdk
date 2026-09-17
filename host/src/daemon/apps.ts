@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path';
 import { createHash } from 'node:crypto';
 import { cpus } from 'node:os';
 import { buildSdkCode } from '../../../sdk/airglow-sdk';
-import { parseLastJsonLine, selfCommand } from '../internal';
+import { parseLastJsonLine, selfCommand, parseEnvContent } from '../internal';
 import { composeUiHtml } from './ui-html';
 
 const SERVER_START = Date.now(); // folded into hashes — daemon restart busts caches
@@ -43,18 +43,8 @@ export class AppServer {
   // ── .env ──
 
   parseEnvFile(path: string): Record<string, string> {
-    const out: Record<string, string> = {};
-    let content: string;
-    try { content = readFileSync(path, 'utf-8'); }
-    catch { return out; }
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith('#')) continue;
-      const eq = trimmed.indexOf('=');
-      if (eq < 0) continue;
-      out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-    }
-    return out;
+    try { return parseEnvContent(readFileSync(path, 'utf-8')); }
+    catch { return {}; }
   }
 
   // ── Scanning & hashing ──

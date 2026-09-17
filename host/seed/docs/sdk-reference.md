@@ -114,7 +114,7 @@ jobs.list(): Promise<AirglowJobTask[]>   // this app's pending tasks, soonest fi
 
 `at` is at most a year out; a past `at` runs on the next scheduler tick. `config` replaces the job's manifest `config` for that run. Max 50 pending tasks per app.
 
-Placement follows the job's `runsOn`: tasks for `runsOn: "cloud"` jobs go to the cloud scheduler and fire even while the user's machine is off (requires the app catalog-published and the user signed in — otherwise the task falls back to the daemon; the schedule response's `placed` field says which). Daemon tasks run late-but-never-lost after sleep.
+Placement follows the job's `runsOn`: tasks for `runsOn: "cloud"` jobs go to the cloud scheduler and fire even while the user's machine is off (requires the app catalog-published and the user signed in — otherwise the task falls back to the daemon; the schedule response's `placed` field says which). Both placements fire within about a minute of `runAt`; daemon tasks additionally run late-but-never-lost after sleep.
 
 ```ts
 await airglow.jobs.schedule('send-email', { at: Date.now() + 86400e3, config: { to: 'a@b.com' } });
@@ -130,7 +130,7 @@ OpenAI chat-completions schema through the Airglow gateway (OpenRouter-backed) �
 llm.chat(payload, opts?: { onEvent?: (chunk) => void }): Promise<ChatCompletion>
 ```
 
-`payload` is the [chat-completions request body](https://openrouter.ai/docs/api-reference/chat-completion), passed through unchanged; the response comes back unchanged. Allowed models: `anthropic/claude-haiku-4.5`, `anthropic/claude-sonnet-5` (default), `anthropic/claude-opus-4.8` — others reject with `LLM_MODEL_NOT_ALLOWED`.
+`payload` is the [chat-completions request body](https://openrouter.ai/docs/api-reference/chat-completion), passed through unchanged; the response comes back unchanged. Any OpenRouter-catalog model priced within $10/MTok input and $50/MTok output is allowed (e.g. `anthropic/claude-sonnet-5` (default), `anthropic/claude-haiku-4.5`, `openai/gpt-5.6-luna`, `google/gemini-3.5-flash`, `x-ai/grok-4.5`, `moonshotai/kimi-k2.6`); pricier models reject with `LLM_MODEL_NOT_ALLOWED`. An app-supplied `session_id` (≤128 chars) groups one operation's calls in OpenRouter analytics; per-user attribution is stamped by the platform.
 
 ```ts
 const res = await airglow.llm.chat({

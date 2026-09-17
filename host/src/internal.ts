@@ -8,7 +8,28 @@
 // (user server code may console.log; the runner rebinds console to stderr,
 // but direct process.stdout writes still end up before the final line).
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { join, dirname } from 'node:path';
+
+// Minimal .env parsing shared by the RPC runner and the daemon's secrets
+// status: KEY=value lines, # comments, first '=' splits, and one pair of
+// matching surrounding quotes is stripped (dotenv/Bun convention — a pasted
+// KEY="sk-…" must not keep literal quotes in the value).
+export function parseEnvContent(content: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of content.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const eq = trimmed.indexOf('=');
+    if (eq < 0) continue;
+    let value = trimmed.slice(eq + 1).trim();
+    if (value.length >= 2 && (value[0] === '"' || value[0] === "'") && value.endsWith(value[0])) {
+      value = value.slice(1, -1);
+    }
+    out[trimmed.slice(0, eq).trim()] = value;
+  }
+  return out;
+}
 
 async function readStdinJson(): Promise<any> {
   const text = await new Response(Bun.stdin.stream()).text();
@@ -202,17 +223,12 @@ export async function runInternalRpc(): Promise<void> {
     const req = await readStdinJson();
     for (const envPath of req.envFiles ?? []) {
       try {
-        for (const line of readFileSync(envPath, 'utf8').split('\n')) {
-          const trimmed = line.trim();
-          if (!trimmed || trimmed.startsWith('#')) continue;
-          const eq = trimmed.indexOf('=');
-          if (eq < 0) continue;
-          const key = trimmed.slice(0, eq).trim();
-          if (!(key in process.env)) process.env[key] = trimmed.slice(eq + 1).trim();
+        for (const [key, value] of Object.entries(parseEnvContent(readFileSync(envPath, 'utf8')))) {
+          if (!(key in process.env)) process.env[key] = value;
         }
       } catch {}
     }
-    const mod = await import(String(req.entryPath));
+    const mod = await importServerEntry(String(req.entryPath));
     const handler = mod.default ?? mod[String(req.functionName)];
     if (typeof handler !== 'function') {
       await reply({ ok: false, error: `'${req.functionName}' has no default or named export` });
@@ -225,6 +241,81 @@ export async function runInternalRpc(): Promise<void> {
     await reply({ ok: false, error: String(e?.message ?? e) });
     process.exit(0);
   }
+}
+
+// Imports a server-function entry. In a compiled binary, dynamic import of
+// an on-disk file works but bare package specifiers inside it don't resolve
+// against the app's node_modules — every server function using an npm
+// dependency dies with "Cannot find package". Worse, that failed import
+// poisons this process's negative-resolution cache, which then makes even
+// Bun.build (whose resolver is otherwise fully functional in compiled mode —
+// userscript/UI bundling relies on it) report the same package as
+// unresolvable. So in compiled mode we never plain-import first: bundle the
+// entry into a self-contained file and import that. The bundle is written
+// next to the entry so import.meta.dir/url inside the function still point
+// at the app's server directory; the name is dot-prefixed and non-source-ext
+// so the daemon's app watcher ignores it. If no bundle attempt succeeds,
+// fall through to the plain import for a canonical error message.
+async function importServerEntry(entryPath: string): Promise<any> {
+  const isCompiled = Bun.main.includes('$bunfs');
+  if (isCompiled) {
+    const origCwd = process.cwd();
+    let code: string | null = null;
+    try {
+      // Retry with cwd at each ancestor carrying a node_modules (apps/<id>,
+      // then the workspace root where the hoisted install lives) — the
+      // compiled resolver anchors on cwd rather than the entry's path.
+      for (let dir = dirname(entryPath); ; dir = dirname(dir)) {
+        if (existsSync(join(dir, 'node_modules'))) {
+          process.chdir(dir);
+          // target 'node', not 'bun': node keeps node:* builtins external
+          // without consulting the embedded standalone graph. bun:* stays
+          // external so a function using e.g. bun:sqlite resolves it at
+          // import time.
+          const bundled = await Bun.build({
+            entrypoints: [entryPath],
+            target: 'node',
+            format: 'esm',
+            external: ['bun:*'],
+            // Server code may import @shared/* like any other app code; the
+            // plugin resolves it against cwd, which this loop has just set —
+            // it lands on the workspace root iteration, where shared/ lives.
+            plugins: [sharedAliasPlugin()],
+            throw: false,
+          });
+          if (bundled.success) { code = await bundled.outputs[0].text(); break; }
+        }
+        if (dir === dirname(dir)) break;
+      }
+    } finally {
+      process.chdir(origCwd);
+    }
+    if (code !== null) {
+      // A timeout-killed predecessor never reaches its finally — sweep
+      // orphaned bundles before writing this one. Only clearly stale ones:
+      // a concurrent RPC's live bundle (written moments ago, mid-import)
+      // must survive the sweep.
+      const entryDir = dirname(entryPath);
+      try {
+        for (const f of readdirSync(entryDir)) {
+          if (!f.startsWith('.rpc-bundle-') || !f.endsWith('.mjs')) continue;
+          try {
+            if (Date.now() - statSync(join(entryDir, f)).mtimeMs > 300_000) {
+              unlinkSync(join(entryDir, f));
+            }
+          } catch {}
+        }
+      } catch {}
+      const tmpPath = join(entryDir, `.rpc-bundle-${process.pid}.mjs`);
+      writeFileSync(tmpPath, code);
+      try {
+        return await import(tmpPath);
+      } finally {
+        try { unlinkSync(tmpPath); } catch {}
+      }
+    }
+  }
+  return await import(entryPath);
 }
 
 // argv to spawn this binary (compiled) or this entry via bun (source run).

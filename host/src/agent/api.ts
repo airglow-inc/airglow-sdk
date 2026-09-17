@@ -8,6 +8,11 @@ export interface AgentIdentity {
   // Server-issued session JWT (Google sign-in). When present the gateway
   // trusts it over the legacy x-airglow-* headers.
   authToken?: string | null;
+  // The gateway URL this identity's browser announced (Settings → Cloud API
+  // URL override); null/undefined for the default. Routing on the identity —
+  // not a process-wide env — keeps each connected browser on its own gateway,
+  // and keeps the token and the gateway it was minted against together.
+  gatewayUrl?: string | null;
 }
 
 export interface StreamHandlers {
@@ -62,21 +67,23 @@ export function agentModel(): string {
   return DEFAULT_MODEL;
 }
 
-export function gatewayUrl(): string | null {
+export function gatewayUrl(identity?: AgentIdentity | null): string | null {
   if (process.env.ANTHROPIC_API_KEY) return null; // dev: direct Anthropic
-  return llmGatewayUrl();
+  return llmGatewayUrl(identity);
 }
 
 // The gateway URL unconditionally. The app-LLM proxy (daemon/llm.ts) routes on
 // OPENROUTER_API_KEY (BYOK), not on the agent's dev key — an agent running
 // direct-Anthropic must not silently reroute app llm calls.
-export function llmGatewayUrl(): string {
-  return (process.env.AIRGLOW_GATEWAY_URL || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
+// Precedence: the caller's own announced gateway (identity), then the boot
+// env (state/agent.env), then production.
+export function llmGatewayUrl(identity?: AgentIdentity | null): string {
+  return (identity?.gatewayUrl || process.env.AIRGLOW_GATEWAY_URL || DEFAULT_GATEWAY_URL).replace(/\/+$/, '');
 }
 
 // No beta headers needed: adaptive thinking interleaves thinking between
 // tool calls natively (the old interleaved-thinking beta is obsolete).
-function endpoint(): { url: string; headers: Record<string, string> } {
+function endpoint(identity?: AgentIdentity | null): { url: string; headers: Record<string, string> } {
   const direct = process.env.ANTHROPIC_API_KEY;
   if (direct) {
     return {
@@ -84,7 +91,7 @@ function endpoint(): { url: string; headers: Record<string, string> } {
       headers: { 'x-api-key': direct, 'anthropic-version': '2023-06-01' },
     };
   }
-  return { url: `${gatewayUrl()}/api/agent/messages`, headers: {} };
+  return { url: `${gatewayUrl(identity)}/api/agent/messages`, headers: {} };
 }
 
 export async function streamMessage(
@@ -104,7 +111,7 @@ export async function streamMessage(
   // fired for the silent auth-refresh retry (that path doesn't consume an attempt).
   onRetry?: (attempt: number) => void,
 ): Promise<CompletedMessage> {
-  const { url, headers } = endpoint();
+  const { url, headers } = endpoint(identity);
   // Gateway auth is the Bearer session token only — legacy user-id/-email
   // headers are no longer read server-side.
   if (identity.authToken) headers['authorization'] = `Bearer ${identity.authToken}`;

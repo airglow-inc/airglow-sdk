@@ -50,7 +50,7 @@ export async function handleLlmChatCompletions(
 
   // BYOK wins over the gateway: the user opted out of the shared budget.
   const byok = process.env.OPENROUTER_API_KEY?.trim() || null;
-  const gw = byok ? null : llmGatewayUrl();
+  const gw = byok ? null : llmGatewayUrl(fallbackIdentity);
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
   if (gw) {
     // Gateway path: forward the payload untouched — the cloud gateway owns
